@@ -362,7 +362,7 @@ export async function runLiteraryAnalysis(body: any, requestId: string, sessionS
         const target = typeof item?.target === 'string' ? item.target.trim() : '';
         if (!source || !target || splitCompoundCanonicalName(source) || splitCompoundCanonicalName(target)) return [];
         const kind = normalizeCanonicalEntityKind(item.kind);
-        if (kind !== 'person' && !isWorthCanonicalEntityMapping({ source, kind, significance: item.description || item.significance })) return [];
+        if (kind !== 'person' && !isWorthCanonicalEntityMapping({ source, kind, significance: item.description || item.significance, explicitBookSpecificMeaning: item.bookSpecificMeaning === true })) return [];
         if (!validateCanonicalTarget({ source, target, targetLang: body.target || 'zh', kind }).valid) return [];
         return [{ ...item, kind, reviewStatus: 'suggested', confirmationSource: 'evidence-verified', targetConfidence: 'candidate', targetEvidenceRefs: [] }];
       }),
