@@ -200,14 +200,14 @@ node --import tsx scripts/translation-chain-dump.mjs \
 
 ### 9.1 已实施的修改
 
-1. **加强全书预处理的专名识别。** `contextGraph.ts` 的分析版本升级到 `context-graph-v8-canonical-name-preflight`，使旧版图谱不再满足预处理就绪条件；新的实体阶段明确要求识别反复出现的家族、氏族、王朝、派系、组织与地名，并禁止把虚构专名替换成其现实历史原型。这样不会只依赖翻译批次结束后才回写的 `context_delta`。
+1. **加强全书预处理的专名识别。** `contextGraph.ts` 的分析版本升级到 `context-graph-v8-canonical-name-preflight`，使旧版图谱不再满足预处理就绪条件；新的实体阶段明确要求识别反复出现的家族、氏族、王朝、派系、组织与地名，并禁止把虚构专名替换成其现实历史原型或将现实原型作为别名。这样不会只依赖翻译批次结束后才回写的 `context_delta`。
 2. **为非人物专名建立本次 Run 的临时规范映射。** Context Graph 已存在且原文可见的非人物命名实体（如 `organization` / clan）现在可以在首次出现批次使用预处理选定的 `suggestedTranslation`，其状态标记为 `run-canonical`。初译和 Reviewer 都通过相同的 marker masking/restore 使用它，同波次不再需要互相读取对方的新结果。这是运行级一致性，不会把模型建议伪装成用户确认的永久记忆。
 3. **继续保留防剧透边界。** 对人物/角色的候选映射，仍要求先前已接受的译文独立使用过该目标译名；不能只凭“the King”在前文出现，就把后续才揭示的“Pirate Queen”提前注入。只有明确确认的映射可以在首次出现时生效；未来别名仍不能泄漏。
-4. **提高规范名称状态的合并优先级。** 项目中已确认的 `confirmed-memory/confirmed` 映射优先于运行级映射；已有独立接受译文支持的 `auto` 映射也优先于新的运行级建议；普通 `candidate` 不得覆盖 `run-canonical`。因此模型生成的矛盾候选不能在下一波悄悄重置同一名称。
+4. **提高规范名称状态的合并优先级，并规范化附属元数据。** 项目中已确认的 `confirmed-memory/confirmed` 映射优先于运行级映射；已有独立接受译文支持的 `auto` 映射也优先于新的运行级建议；普通 `candidate` 不得覆盖 `run-canonical`。同时，服务端在持久化 `context_delta` 前，会将与当前有效专名映射匹配的 `entityCandidates.targetProposal` 自动改写为已生效的规范译名，并记录 `canonicalizedContextEntityCandidates` 计数，避免译文已经统一、但附属元数据又创建“米诺原/源氏”冲突。
 5. **修复非人物确认映射的首次出现处理。** 项目记忆中已确认的组织、家族、地点等规范名不再像过去那样只给 `kind=person` 特殊豁免。只要原文名称可见，就可以从第一处出现开始获得名称保护；仍会过滤不可见的未来别名。
-6. **增加回归测试。** 覆盖虚构氏族的预处理规则、首见及后续批次共享同一运行级名称、确认过的组织名称在首见处生效、确认/自动佐证映射的优先级，以及人物身份揭示的防剧透逻辑。
+6. **增加回归测试。** 覆盖虚构氏族的预处理规则、首见及后续批次共享同一运行级名称、确认过的组织名称在首见处生效、确认/自动佐证映射的优先级、context delta 自动规范化，以及人物身份揭示的防剧透逻辑。
 
-实现代码还保留了 `graphNameMappingExcludedTargetNotPreviouslyAccepted` 与 `graphNameMappingsActivatedRunCanonical` 诊断计数，方便从批次 brief 和运行日志判断候选究竟因防剧透被排除，还是作为运行级规范名启用。
+实现代码还保留了 `graphNameMappingExcludedTargetNotPreviouslyAccepted` 与 `graphNameMappingsActivatedRunCanonical` 诊断计数，方便从批次 brief 和运行日志判断候选究竟因防剧透被排除，还是作为运行级规范名启用；`translation.context-delta.parsed` 事件另会记录被自动归一化的实体候选数量。
 
 ### 9.2 自动化原则与边界
 
@@ -222,7 +222,7 @@ node --import tsx scripts/translation-chain-dump.mjs \
 
 ### 9.3 验证状态
 
-截至提交 `5bb3e63b9f7a6a353d8427d79fc60a6765319682`，GitHub Actions 的 **Local Agent Service** 工作流完成成功：本地服务测试、TypeScript typecheck、API route manifest drift 检查和确定性 book-scan benchmark 均通过。
+截至提交 `6b097c455799fa3b82e91f4a2c7c1b12?`，GitHub Actions 的 **Local Agent Service** 工作流完成成功：本地服务测试、TypeScript typecheck、API route manifest drift 检查和确定性 book-scan benchmark 均通过。
 
 仓库整体 **CI** 工作流仍有其他测试失败，涉及网页翻译缓存键版本断言、网页审校 Prompt 断言、URL 路由默认参数、旧 API 路由以及翻译历史语言字段；这些失败不在本次修改的文件路径内。没有把整体 CI 标记为通过。
 
