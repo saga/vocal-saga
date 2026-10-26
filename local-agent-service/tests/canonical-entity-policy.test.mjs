@@ -40,6 +40,7 @@ test('splits list-style compound names but does not split actual slash names', (
 
 test('rejects malformed mixed-script and multi-target Chinese names', () => {
   assert.equal(validateCanonicalTarget({ source: 'Achiko', target: 'achi子', targetLang: 'zh', kind: 'person' }).reason, 'mixed-script-residue');
+  assert.equal(validateCanonicalTarget({ source: 'Achiko', target: 'ACHI子', targetLang: 'zh', kind: 'person' }).reason, 'mixed-script-residue');
   assert.equal(validateCanonicalTarget({ source: 'Sire', target: '船长（敬称）／大人', targetLang: 'zh', kind: 'title' }).valid, false);
   assert.equal(validateCanonicalTarget({ source: 'Council', target: '御众（议和班）', targetLang: 'zh', kind: 'organization' }).reason, 'annotation-target');
 });
