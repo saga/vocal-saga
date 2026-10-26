@@ -806,7 +806,7 @@ export function buildTranslationBrief(
       const userConfirmedMapping = entity.reviewStatus === 'confirmed' && entity.confirmationSource === 'user-confirmed';
       const entityKind = normalizeCanonicalEntityKind(entity.kind);
       if (!source || !target || !validateCanonicalTarget({ source, target, targetLang: String(context?.run?.targetLang || 'zh'), kind: entityKind }).valid) continue;
-      if (!userConfirmedMapping && !isWorthCanonicalEntityMapping({ source, kind: entityKind, significance: entity.description || entity.evidence })) continue;
+      if (!userConfirmedMapping && !isWorthCanonicalEntityMapping({ source, kind: entityKind, significance: entity.description || entity.evidence, explicitBookSpecificMeaning: entity.bookSpecificMeaning === true })) continue;
       const confirmedPersonMapping = entity.kind === 'person' && userConfirmedMapping;
       // A confirmed person name is a canonical mapping in 人物管理. Activate it only when the
       // canonical source or one of its aliases is visible; omit later-only aliases without suppressing
