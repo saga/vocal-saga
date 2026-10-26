@@ -1,3 +1,4 @@
+import { isWorthCanonicalEntityMapping, normalizeCanonicalEntityKind, splitCompoundCanonicalName, validateCanonicalTarget } from './canonicalEntityPolicy.ts';
 /**
  * 初译阶段的上下文增量契约。
  *
@@ -38,6 +39,9 @@ export type ContextDeltaDiagnostics = {
   candidateCount: number;
   acceptedEntityCandidates: number;
   rejectedEntityCandidates: number;
+  droppedLowValueEntityCandidates: number;
+  rejectedCompoundEntityCandidates: number;
+  rejectedTargetQualityCandidates: number;
   acceptedEntityMentions: number;
   rejectedEntityMentions: number;
   acceptedRelationships: number;
@@ -116,6 +120,7 @@ export function validateTranslationContextDelta(
   const diagnostics: ContextDeltaDiagnostics = {
     candidateCount: 0,
     acceptedEntityCandidates: 0, rejectedEntityCandidates: 0,
+    droppedLowValueEntityCandidates: 0, rejectedCompoundEntityCandidates: 0, rejectedTargetQualityCandidates: 0,
     acceptedEntityMentions: 0, rejectedEntityMentions: 0,
     acceptedRelationships: 0, rejectedRelationships: 0,
     acceptedOpenQuestions: 0, rejectedOpenQuestions: 0,
@@ -138,28 +143,89 @@ export function validateTranslationContextDelta(
     const canonicalSource = text(candidate.canonical_source ?? candidate.canonicalSource, 120);
     const targetProposal = text(candidate.target_proposal ?? candidate.targetProposal, 120);
     const aliasesRaw = Array.isArray(candidate.aliases) ? candidate.aliases.slice(0, 12) : [];
-    const kindValue = text(candidate.kind, 40).toLocaleLowerCase();
-    const kind = ['character', 'person', 'character_epithet', 'nickname', 'place', 'object', 'title', 'organization', 'group', 'animal', 'role', 'other'].includes(kindValue)
-      ? kindValue : 'other';
+    const kind = normalizeCanonicalEntityKind(candidate.kind);
     const evidence = sourceEvidence(candidate.evidence, sourceById);
     const matchingEvidence = evidence.some((entry) => hasName(entry.sourceQuote, canonicalSource));
     if (!originalLocalId || seenLocalIds.has(originalLocalId) || !canonicalSource || !targetProposal || !evidence.length || !matchingEvidence) {
       diagnostics.rejectedEntityCandidates++;
       continue;
     }
+
+    const sourceCompound = splitCompoundCanonicalName(canonicalSource);
+    const targetCompound = splitCompoundCanonicalName(targetProposal);
+    const expanded: Array<{ source: string; target: string; evidence: ContextEvidence[]; localId: string }> = [];
+    if (sourceCompound) {
+      if (!targetCompound || sourceCompound.parts.length !== targetCompound.parts.length) {
+        diagnostics.rejectedEntityCandidates++;
+        diagnostics.rejectedCompoundEntityCandidates++;
+        continue;
+      }
+      const pairs = sourceCompound.parts.map((sourcePart, index) => ({
+        source: sourcePart,
+        target: targetCompound.parts[index] || '',
+        evidence: evidence.filter((entry) => hasName(entry.sourceQuote, sourcePart)),
+      }));
+      if (pairs.some((pair) => !pair.target || !pair.evidence.length)) {
+        diagnostics.rejectedEntityCandidates++;
+        diagnostics.rejectedCompoundEntityCandidates++;
+        continue;
+      }
+      pairs.forEach((pair, index) => expanded.push({
+        ...pair,
+        localId: (originalLocalId + ':' + String(index + 1)).slice(0, 64),
+      }));
+      localIds.set(originalLocalId, expanded[0]!.localId);
+    } else {
+      // A single source name must never carry a multi-target list.
+      if (targetCompound) {
+        diagnostics.rejectedEntityCandidates++;
+        diagnostics.rejectedCompoundEntityCandidates++;
+        continue;
+      }
+      expanded.push({ source: canonicalSource, target: targetProposal, evidence, localId: originalLocalId });
+      localIds.set(originalLocalId, originalLocalId);
+    }
+
     seenLocalIds.add(originalLocalId);
-    const aliases = Array.from(new Set(aliasesRaw.map((alias) => text(alias, 80)).filter((alias) =>
-      alias && normalized(alias) !== normalized(canonicalSource) &&
-      segments.some((segment) => hasName(segment.text, alias)) &&
-      evidence.some((entry) => hasName(entry.sourceQuote, alias)
-    )))).slice(0, 8);
-    const localId = (idPrefix + originalLocalId).slice(0, 80);
-    localIds.set(originalLocalId, localId);
-    delta.entityCandidates.push({
-      localId, canonicalSource, aliases, kind, targetProposal, evidence,
-      ...(text(candidate.reason, 180) ? { reason: text(candidate.reason, 180) } : {}),
-    });
-    diagnostics.acceptedEntityCandidates++;
+    for (const item of expanded) {
+      if (kind !== 'person' && !isWorthCanonicalEntityMapping({
+        source: item.source, kind,
+        mentions: segments.filter((segment) => hasName(segment.text, item.source)).length,
+        chapterCount: new Set(segments.filter((segment) => hasName(segment.text, item.source))
+          .map((segment: any) => String(segment.contextPath || '')).filter(Boolean)).size,
+        significance: text(candidate.reason, 180),
+      })) {
+        diagnostics.droppedLowValueEntityCandidates++;
+        continue;
+      }
+      const targetQuality = validateCanonicalTarget({
+        source: item.source, target: item.target, targetLang: 'zh', kind,
+      });
+      if (!targetQuality.valid) {
+        diagnostics.rejectedEntityCandidates++;
+        diagnostics.rejectedTargetQualityCandidates++;
+        continue;
+      }
+      const aliases = Array.from(new Set(aliasesRaw.map((alias) => text(alias, 80)).filter((alias) =>
+        alias && !splitCompoundCanonicalName(alias) &&
+        normalized(alias) !== normalized(item.source) &&
+        segments.some((segment) => hasName(segment.text, alias)) &&
+        item.evidence.some((entry) => hasName(entry.sourceQuote, alias)
+      )))).slice(0, 8);
+      const localId = item.localId;
+      if (seenLocalIds.has(localId) && localId !== originalLocalId) {
+        // Split candidates get stable unique suffixes; protect against malicious duplicated output IDs.
+        diagnostics.rejectedEntityCandidates++;
+        continue;
+      }
+      seenLocalIds.add(localId);
+      delta.entityCandidates.push({
+        localId, canonicalSource: item.source, aliases, kind,
+        targetProposal: targetQuality.normalizedTarget, evidence: item.evidence,
+        ...(text(candidate.reason, 180) ? { reason: text(candidate.reason, 180) } : {}),
+      });
+      diagnostics.acceptedEntityCandidates++;
+    }
   }
 
   const knownNames = new Set<string>();
