@@ -14,7 +14,7 @@ import { getCodeBuddyTaskProfile } from '../agents/taskProfiles.ts';
 import { getDocumentProjectStore } from './projectStore.ts';
 import { planBookSamples, scanBookSegments, scanBookSegmentsConcurrent, type BookScanResult } from './bookScan.ts';
 import { logError, logInfo, logWarn } from '../log.ts';
-import { isWorthCanonicalEntityMapping, normalizeCanonicalEntityKind, splitCompoundCanonicalName, validateCanonicalTarget } from './canonicalEntityPolicy.ts';
+import { canonicalTargetsConflict, isWorthCanonicalEntityMapping, normalizeCanonicalEntityKind, splitCompoundCanonicalName, validateCanonicalTarget } from './canonicalEntityPolicy.ts';
 import {
   buildContextGraphWorkflowPrompt,
   buildContextGraphWorkflowSchema,
@@ -1307,7 +1307,7 @@ async function runAnalysis(projectId: string, runId: string): Promise<void> {
       if (!targetCheck.valid) invalidEntityTargetCount++;
       if (targetCheck.valid) {
         const priorTarget = canonicalTargetBySource.get(entityKey);
-        if (priorTarget && normalize(priorTarget) !== normalize(targetCheck.normalizedTarget)) {
+        if (priorTarget && canonicalTargetsConflict(priorTarget, targetCheck.normalizedTarget)) {
           conflictingCanonicalSources.add(entityKey);
           conflictingEntityTargetCount++;
           audit.disposition = 'dropped-conflicting-canonical-target';
