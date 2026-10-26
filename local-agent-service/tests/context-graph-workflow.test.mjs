@@ -61,6 +61,7 @@ test('entity preflight preserves fictional clan names instead of replacing histo
   assert.match(prompt, /现实历史原型/);
   assert.match(prompt, /现实原型不是源文别名/);
   assert.match(prompt, /一个 canonical name/);
+  assert.match(prompt, /bookSpecificMeaning=true/);
 });
 
 test('CodeBuddy workflow turns can resume a persisted SDK session', () => {
