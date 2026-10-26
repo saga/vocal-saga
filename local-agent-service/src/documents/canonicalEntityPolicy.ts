@@ -130,10 +130,16 @@ export function validateCanonicalTarget(input: {
   // A whole-string quote is formatting, not part of the canonical name.
   target = target.replace(/^[\"'“”‘’《》「」『』]+|[\"'“”‘’《》「」『』]+$/g, '').trim();
   if (!target) return { valid: false, normalizedTarget: '', reason: 'empty' };
-  if (hasCompoundCanonicalSyntax(target) || /\s+\/\s+|／|\s+\|\s+/.test(target)) {
+  // NFKC turns a full-width slash into '/', so judge Chinese targets after normalization.
+  // A slash embedded in a Chinese target almost always means multiple alternatives; preserve
+  // Latin product names such as AC/DC only when there is no CJK text around the delimiter.
+  if (hasCompoundCanonicalSyntax(target) ||
+      /[|]/.test(target) ||
+      (/\//.test(target) && (/\p{Script=Han}/u.test(target) || /\s\/\s/.test(target)))) {
     return { valid: false, normalizedTarget: target, reason: 'compound-target' };
   }
-  if (/[（(][^）)]*[）)]\s*$/.test(target)) {
+  // Parenthetical translations/notes are not part of a canonical name ("ship (honorific)").
+  if (/[（(][^）)]*[）)]/.test(target)) {
     return { valid: false, normalizedTarget: target, reason: 'annotation-target' };
   }
   if (/^[\p{P}\p{S}\p{N}\s]+$/u.test(target)) {
