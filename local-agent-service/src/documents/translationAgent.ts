@@ -1170,7 +1170,7 @@ export function mergeConfirmedMemoryNameMappings(
     return [{ ...mapping, aliases }];
   });
   const confirmedEntityMappings = (Array.isArray(memory.entities) ? memory.entities : [])
-    .filter((entity: any) => entity?.reviewStatus === 'confirmed' &&
+    .filter((entity: any) => entity?.reviewStatus === 'confirmed' && entity?.confirmationSource === 'user-confirmed' &&
       typeof entity?.source === 'string' && entity.source.trim() &&
       typeof entity?.target === 'string' && entity.target.trim() &&
       !isGenericCanonicalNameForm(entity.source))
@@ -1183,13 +1183,13 @@ export function mergeConfirmedMemoryNameMappings(
         target: entity.target.trim(),
         aliases,
         kind: typeof entity.kind === 'string' ? entity.kind : 'other',
-        sourceStatus: 'confirmed-memory',
+        sourceStatus: 'confirmed-memory', confirmationSource: 'user-confirmed',
       }];
     });
   // 人物管理里的规范原文名/译名是独立的权威入口。旧数据可能只保存 characterVoices，
   // 没有对应 entities；已确认档案可保护译名，但候选档案只能进入软提示而非强制保护。
   const confirmedCharacterMappings = (Array.isArray(memory.characterVoices) ? memory.characterVoices : [])
-    .filter((profile: any) => profile?.status === 'confirmed' && profile?.useForTranslation !== false &&
+    .filter((profile: any) => profile?.status === 'confirmed' && profile?.confirmationSource === 'user-confirmed' && profile?.useForTranslation !== false &&
       typeof profile?.canonicalSourceName === 'string' && profile.canonicalSourceName.trim() &&
       typeof profile?.targetName === 'string' && profile.targetName.trim() &&
       !isGenericCanonicalNameForm(profile.canonicalSourceName))
@@ -1202,7 +1202,7 @@ export function mergeConfirmedMemoryNameMappings(
         target: profile.targetName.trim(),
         aliases,
         kind: 'character',
-        sourceStatus: 'confirmed-memory',
+        sourceStatus: 'confirmed-memory', confirmationSource: 'user-confirmed',
       }];
     });
   const combinedMappings: Array<Record<string, any>> = [...graphMappings, ...confirmedEntityMappings, ...confirmedCharacterMappings];
