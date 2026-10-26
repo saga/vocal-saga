@@ -1261,13 +1261,14 @@ async function runAnalysis(projectId: string, runId: string): Promise<void> {
       aliasesInput: unknown,
       evidence: Evidence[],
       audit: CandidateAudit,
+      bookSpecificMeaning = false,
     ) => {
       const normalizedKind = normalizeCanonicalEntityKind(rawKind);
       const occurrences = segments.filter((segment) => sourceNameMatches(segment.text, entityName));
       const chapterCount = new Set(occurrences.map((segment) => segment.contextPath).filter(Boolean)).size;
       if (!isWorthCanonicalEntityMapping({
         source: entityName, kind: normalizedKind,
-        mentions: occurrences.length, chapterCount, significance,
+        mentions: occurrences.length, chapterCount, significance, explicitBookSpecificMeaning: bookSpecificMeaning,
       })) {
         droppedLowValueEntityCount++;
         return false;
@@ -1282,6 +1283,7 @@ async function runAnalysis(projectId: string, runId: string): Promise<void> {
         aliases,
         entityKind: normalizedKind,
         significance: safeText(significance, 360),
+        bookSpecificMeaning,
         suggestedTranslation: targetCheck.valid ? targetCheck.normalizedTarget : '',
         ...(targetCheck.valid ? {} : { suggestedTranslationQuality: targetCheck.reason || 'invalid-target' }),
         targetLang,
@@ -1343,6 +1345,7 @@ async function runAnalysis(projectId: string, runId: string): Promise<void> {
         for (const pair of pairs) {
           if (saveEntityCandidate(
             pair.source, pair.target, raw.kind, significance, [], pair.evidence, audit,
+            raw.bookSpecificMeaning === true || raw.book_specific_meaning === true,
           )) saved++;
         }
         if (!saved && audit.disposition === 'not-evaluated') audit.disposition = 'dropped-low-value-compound-parts';
@@ -1356,7 +1359,8 @@ async function runAnalysis(projectId: string, runId: string): Promise<void> {
         saveEntityCandidate(name, '', raw.kind, significance, aliases, evidence, audit);
         continue;
       }
-      saveEntityCandidate(name, target, raw.kind, significance, aliases, evidence, audit);
+      saveEntityCandidate(name, target, raw.kind, significance, aliases, evidence, audit,
+        raw.bookSpecificMeaning === true || raw.book_specific_meaning === true);
     }
 
     const identities = nameMap(persistedNodes);
@@ -2224,6 +2228,7 @@ export function buildProjectContextGraphBundle(
       kind: row.kind === 'character' ? 'person' : safeText(attributes.entityKind, 40) || 'other',
       aliases,
       evidenceBacked: true,
+      explicitBookSpecificMeaning: attributes.bookSpecificMeaning === true,
       // This preflight choice is deterministic within this Run but is not persisted as user-confirmed.
       sourceStatus: row.status === 'confirmed' ? 'confirmed' : 'run-canonical',
     }];
