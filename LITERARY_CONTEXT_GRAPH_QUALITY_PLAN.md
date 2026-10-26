@@ -1,6 +1,6 @@
 # 文学翻译预处理与实体译名质量改进计划（合并版）
 
-**状态：** 研究结论与实施计划；本文件更新不包含业务代码修改。  
+**状态：** 已实施主要代码修改并完成专用验证；本文同时记录实施范围、剩余限制与验收结果。  
 **适用项目：** \`Shogun\`（项目 ID：\`4fa564de-b0ec-485d-88dc-562ad1bf66d3\`，数据快照见 \`entity-style-quality-plan.md\`）。  
 **涉及仓库：** \`saga/vocal-saga\` 与 \`saga/fanyi-extension\`。  
 **目标原则：** 能由服务端确定性完成的就自动完成；人工操作只保留给真实歧义、用户偏好和不可安全自动决定的冲突。自动化不能将机器推断伪装成人工确认，也不能覆盖用户已接受的译文。
@@ -235,3 +235,44 @@
 5. 两个仓库的相关单测、Local Agent Service 测试/typecheck/route manifest/book-scan 基准和扩展 Vitest/生产 build 按可运行范围实际执行；报告所有通过与失败，不将未执行检查写成通过。
 
 **关键取舍：** 不要为追求实体表“整洁”而把所有疑似项交给用户逐条确认；也不要为追求自动化而把所有有引文的字符串都变成强规范。正确路径是服务端自动过滤低价值项、自动修复结构格式错误、自动提升真正经过独立验证的映射，对无法确定的机器候选降级并继续翻译。
+
+
+## 11. 实施记录与验证结果（2026-10-26）
+
+### 11.1 已实施
+
+**服务端唯一策略。** 新增 `local-agent-service/src/documents/canonicalEntityPolicy.ts`，由 Context Graph、动态 `context_delta`、TranslationBrief 映射筛选、Reviewer 专名保护和旧文学分析端点复用。它负责 kind 归一、低价值实体过滤、复合名称识别/拆分、目标译名形态校验和目标冲突判断。
+
+**文风版本与长度。** 五个核心文风字段在 `voiceContext.ts` 与扩展 `literary.ts` 中的上限对齐到 1000 字；rules/avoid 的字段数量与单项长度也对齐。缺失字段不再序列化为空字符串。Context Graph 状态返回 source revision、分析版本、文风完整度、缺失字段和更新时间；`projectStore.ts` 的文学 Run fingerprint 纳入全部五维、rules、avoid 及分析身份信息。
+
+**文风自动应用。** 当前版本的全书文风完整时，服务端直接在 TranslationBrief 中将其作为机器基准注入初译和 Reviewer，不再要求用户先“载入”再“确认”。扩展自动补齐编辑面板中缺失的字段，记录机器来源版本和 source revision；用户编辑或明确确认的文风不会被静默覆盖，并提供停用/恢复机器基准的入口。机器自动应用不会显示为“用户已确认”。
+
+**实体降噪与清单修复。** Context Graph 现在只保留符合专名价值策略的实体候选，普通国家名、普通称谓、单次词汇和常见概念不再默认进入长期规范表。一条实体只允许一个源名和一个目标；成对清单只有在源/目标数相符且每个源项都有独立原文证据时才拆分。无法配对的组合被拒绝，不阻断该批译文。模型给同一来源提出互相冲突的规范目标时，不再按输出顺序随机择一；机器候选映射被置为不可用并记录诊断。真实名称如 `AC/DC`、`OS/2` 不因斜杠被机械拆分。
+
+**目标译名质量。** 中文目标会拒绝目标侧多译名斜杠串、解释性括注、源名称原样残留和异常混合脚本姓名（如 `achi子`）。不合格目标不能生成强制 masking/restore 映射。扩展的实体表默认折叠由服务端标注的低价值、复合名称和目标格式异常历史记录，仍保留记录，并允许用户展开检查或编辑；未执行破坏性批量删除或直接改写已接受译文。
+
+**证据与权威来源。** 源文 quote 验证通过不再等价于目标译名已经正确或用户已经确认。Project/Run 映射只把明确 `user-confirmed` 作为用户权威；机器候选需要符合目标质量和实体价值策略，动态译名仍通过独立已接受译文佐证升级。扩展旧文学分析路径也应用相同的实体目标筛选，不再单凭 segment/quote 就自动确认目标译名。机器运行级候选不会伪装成永久确认。
+
+### 11.2 关键文件
+
+- 服务端策略：`local-agent-service/src/documents/canonicalEntityPolicy.ts`
+- Context Graph：`local-agent-service/src/documents/contextGraph.ts`、`contextGraphWorkflow.ts`
+- TranslationBrief 与目标记忆：`translationBrief.ts`、`translationContextDelta.ts`、`translationAgent.ts`、`voiceContext.ts`
+- 文风 fingerprint：`local-agent-service/src/documents/projectStore.ts`
+- 旧文学分析 endpoint：`local-agent-service/src/literary.ts`
+- 扩展记忆模型：`src/entrypoints/utils/document/literary.ts`
+- 扩展文风同步和实体 UI：`src/entrypoints/document/useLiteraryMemoryEditor.ts`、`useContextGraph.ts`、`App.vue`
+- 回归测试：`local-agent-service/tests/canonical-entity-policy.test.mjs`、`translation-context-delta.test.mjs`、`context-graph-workflow.test.mjs`、`document-agent-prompt.test.mjs`、`translation-brief.test.mjs`，以及扩展 `src/__tests__/literaryMemory.test.ts`、`document.test.ts`。
+
+### 11.3 验证结果
+
+- **Local Agent Service 专用工作流通过**：[run 40303845779](https://github.com/saga/vocal-saga/actions/runs/40303845779)。249 项服务端测试、TypeScript 类型检查、API route manifest drift 检查与 deterministic book-scan benchmark 均成功。
+- **扩展 CI 通过**：[run 40302936718](https://github.com/saga/fanyi-extension/actions/runs/40302936718)。另外，新增长文风字段与 provenance 测试所在的 [run 40302255307](https://github.com/saga/fanyi-extension/actions/runs/40302255307) 也通过。
+- **vocal-saga 仓库通用 CI 仍未通过**：[最新对应 run 40303845800](https://github.com/saga/vocal-saga/actions/runs/40303845800)。失败来自既有的网页翻译测试：页面缓存测试仍断言 `page-v3`（实现已是 `page-v4`）、URL 路由对 `auto` target 的默认值断言、旧 `/api/translate/url` 路由测试，以及翻译历史语言字段断言。这些文件/路径不属于本次文学文档翻译修改范围；没有把通用 CI 描述为通过。
+- 本次没有连接用户本机的 Shogun SQLite 数据库，所以没有对现存实体表执行迁移，也没有批量改写用户已经接受的译文。当前实现会在新 Context Graph 重分析时重新构建机器候选，运行时过滤不合格的旧映射，并在扩展 UI 中折叠低价值/异常记录。执行任何存量迁移前，仍需对目标项目做只读 dry-run 核对实际数据。
+
+### 11.4 保留的边界
+
+- 目标形态检查是确定性防线，不是语义翻译正确性的证明。对于未被用户确认的个人名，目标译名仍需要独立接受译文佐证才适合形成跨 Run 强规范。
+- `bookSpecificMeaning` 只允许跨章节重复且有具体意义说明的特殊概念作为例外；它不能让一次性普通词汇、标准国名或普通宗教通名绕过筛选。
+- 所有元数据候选的过滤和自动修复都不能使正文译文丢失或阻断整本翻译。强规范冲突保留诊断，已接受译文与明确用户确认始终优先。
