@@ -16,8 +16,8 @@ const items = [{
 
 const conflictingMappings = {
   nameMappings: [
-    { source: 'Yabu', target: '矢部', aliases: [], sourceStatus: 'confirmed' },
-    { source: 'Yabu', target: '薮', aliases: [], sourceStatus: 'confirmed-memory' },
+    { source: 'Yabu', target: '矢部', aliases: [], kind: 'person', sourceStatus: 'confirmed' },
+    { source: 'Yabu', target: '薮', aliases: [], kind: 'person', sourceStatus: 'confirmed-memory', confirmationSource: 'user-confirmed' },
   ],
 };
 
@@ -50,7 +50,7 @@ test('model-facing JSON masks the canonical name using the same TranslationBrief
   };
   const brief = {
     contextGraph: { nameMappings: [
-      { source: 'Yabu', target: '薮', aliases: [], sourceStatus: 'confirmed-memory' },
+      { source: 'Yabu', target: '薮', aliases: [], kind: 'person', sourceStatus: 'confirmed-memory', confirmationSource: 'user-confirmed' },
     ] },
     precedingSegments: [],
     glossary: { document_terms: [] },
