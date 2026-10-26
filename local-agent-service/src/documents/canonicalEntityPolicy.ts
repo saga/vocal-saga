@@ -154,8 +154,10 @@ export function validateCanonicalTarget(input: {
     // A source acronym can legitimately remain Latin; arbitrary mixed romanized fragments cannot.
     const latinRuns = target.match(/[A-Za-z]{2,}/g) || [];
     const hasCjk = /[\u3400-\u9fff\u3040-\u30ff]/u.test(target);
+    const kind = normalizeCanonicalEntityKind(input.kind);
     const onlyApprovedAcronyms = latinRuns.every((run) =>
-      LATIN_ACRONYM_ALLOWLIST.has(run.toUpperCase()) || /^[A-Z0-9]{2,}$/.test(run));
+      LATIN_ACRONYM_ALLOWLIST.has(run.toUpperCase()) ||
+      (kind !== 'person' && /^[A-Z][a-z][A-Za-z0-9]+$/.test(run)));
     if (hasCjk && latinRuns.length && !onlyApprovedAcronyms) {
       return { valid: false, normalizedTarget: target, reason: 'mixed-script-residue' };
     }
