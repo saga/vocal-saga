@@ -1759,7 +1759,7 @@ export function getContextGraphStatus(projectId: string, runId?: string): Record
   };
   const styleRules = uniqueStrings(getMeta(db, revisionId, 'styleRules'), 24, 240);
   const styleAvoid = uniqueStrings(getMeta(db, revisionId, 'styleAvoid'), 16, 240);
-  const requiredStyleFields = [
+  const requiredStyleFields: Array<[string, string]> = [
     ['narrativeStyle', styleFields.narrativeStyle],
     ['styleRegister', styleFields.styleRegister],
     ['styleRhythm', styleFields.styleRhythm],
