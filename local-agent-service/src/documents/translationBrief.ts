@@ -987,12 +987,13 @@ export function buildTranslationBrief(
       Array.isArray(candidateStyle.rules) && candidateStyle.rules.some((item: unknown) => typeof item === 'string' && item.trim());
     const userStyle = temporalMemory.styleGuideStatus === 'confirmed' && temporalMemory.styleGuideConfirmationSource === 'user-confirmed'
       ? temporalMemory.styleGuide : null;
-    graph.styleGuide = userStyle ? { ...userStyle, sourceStatus: 'user-confirmed' } : styleReady ? {
+    const machineStyleEnabled = temporalMemory.styleGuideAutoDisabled !== true;
+    graph.styleGuide = userStyle ? { ...userStyle, sourceStatus: 'user-confirmed' } : styleReady && machineStyleEnabled ? {
       narrativeStyle: candidateStyle.narrativeStyle, register: candidateStyle.register, rhythm: candidateStyle.rhythm,
       dialogue: candidateStyle.dialogue, diction: candidateStyle.diction, rules: candidateStyle.rules, avoid: candidateStyle.avoid || [],
       sourceStatus: 'machine-applied', analysisVersion: graph.analysisVersion,
-    } : { narrativeStyle: '', rules: [], sourceStatus: 'unavailable' };
-    graph.styleGuideReady = !!userStyle || styleReady;
+    } : { narrativeStyle: '', rules: [], sourceStatus: machineStyleEnabled ? 'unavailable' : 'user-disabled' };
+    graph.styleGuideReady = !!userStyle || (styleReady && machineStyleEnabled);
     graph.policyVersion = 'context-graph-v5-canonical-entity-style-quality';
     graph.constraints = [...(Array.isArray(graph.constraints) ? graph.constraints : []),
       'styleGuide 只约束文风、句法、语域和词汇选择；绝不可用它推断或补写人物身份、事件、秘密与剧情结论。'];
