@@ -183,8 +183,8 @@ export function validateTranslationContextDelta(
         diagnostics.rejectedCompoundEntityCandidates++;
         continue;
       }
-      expanded.push({ source: canonicalSource, target: targetProposal, evidence, localId: originalLocalId });
-      localIds.set(originalLocalId, originalLocalId);
+      expanded.push({ source: canonicalSource, target: targetProposal, evidence, localId: (idPrefix + originalLocalId).slice(0, 64) });
+      localIds.set(originalLocalId, (idPrefix + originalLocalId).slice(0, 64));
     }
 
     seenLocalIds.add(originalLocalId);
