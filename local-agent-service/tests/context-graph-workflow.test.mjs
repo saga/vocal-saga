@@ -37,7 +37,7 @@ test('B defines five isolated stages with stage-specific required schemas', () =
     assert.deepEqual(Object.keys(schema.properties), fields);
     assert.deepEqual(schema.required, fields);
   }
-  assert.equal(CONTEXT_GRAPH_WORKFLOW_VERSION, 'context-graph-workflow-v1');
+  assert.equal(CONTEXT_GRAPH_WORKFLOW_VERSION, 'context-graph-workflow-v2-canonical-entity-quality');
 });
 
 test('A/B assignment starts with B for legacy projects, alternates, and supports forcing a strategy', () => {
@@ -60,7 +60,7 @@ test('entity preflight preserves fictional clan names instead of replacing histo
   assert.match(prompt, /氏族|家族|宗族/);
   assert.match(prompt, /现实历史原型/);
   assert.match(prompt, /现实原型不是源文别名/);
-  assert.match(prompt, /统一的规范 name/);
+  assert.match(prompt, /一个 canonical name/);
 });
 
 test('CodeBuddy workflow turns can resume a persisted SDK session', () => {
