@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildBatches, buildCanonicalTermProtections, buildStandaloneReviewContextGraph, buildStandaloneReviewMemory, buildStandaloneReviewVoiceContext, buildUserPrompt, canonicalMarkerCountsMatch, chunkMissingTranslationItems, maskCanonicalTermText, mergeConfirmedMemoryNameMappings, protectCanonicalReviewSegments, restoreCanonicalMarkersDeep, restoreCanonicalTermMarkers } from '../src/documents/translationAgent.ts';
+import { buildBatches, buildCanonicalTermProtections, buildStandaloneReviewContextGraph, buildStandaloneReviewMemory, buildStandaloneReviewVoiceContext, buildUserPrompt, canonicalMarkerCountsMatch, chunkMissingTranslationItems, maskCanonicalTermText, mergeConfirmedMemoryNameMappings, normalizeContextDeltaCanonicalTargets, protectCanonicalReviewSegments, restoreCanonicalMarkersDeep, restoreCanonicalTermMarkers } from '../src/documents/translationAgent.ts';
 import { normalizeDocumentTranslationStrategy } from '../src/documents/projectStore.ts';
 import { buildProjectVoiceContext } from '../src/documents/voiceContext.ts';
 import { isLiteraryReviewFindingGrounded } from '../src/literary.ts';
@@ -407,6 +407,26 @@ test('run-canonical preflight mappings protect the first occurrence without conf
   });
   assert.deepEqual(corroboratedWins.map((item) => item.target), ['蓑原'],
     'a corroborated accepted translation should outrank a fresh run-only suggestion');
+});
+
+test('context-delta entity targets follow the effective canonical name mapping', () => {
+  const protections = buildCanonicalTermProtections([{ id: 'minowara', text: 'The Minowara Shoguns ruled the realm.' }], {
+    nameMappings: [{ source: 'Minowara', target: '蓑原', aliases: [], sourceStatus: 'run-canonical' }],
+  });
+  const delta = {
+    entityCandidates: [
+      { canonicalSource: 'Minowara', targetProposal: '源氏', reason: '根据历史语境推断' },
+      { canonicalSource: 'Takashima', targetProposal: '高岛', reason: '已有稳定译名' },
+    ],
+  };
+
+  const normalized = normalizeContextDeltaCanonicalTargets(delta, protections);
+
+  assert.equal(normalized, 1);
+  assert.equal(delta.entityCandidates[0].targetProposal, '蓑原',
+    'a metadata candidate must not reintroduce a different translation after the source name was protected');
+  assert.equal(delta.entityCandidates[1].targetProposal, '高岛',
+    'unmapped candidates remain unchanged rather than being invented by the normalizer');
 });
 
 test('confirmed project-memory names are protected by Reviewer even when graph mapping is absent', () => {
