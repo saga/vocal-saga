@@ -19,6 +19,7 @@ import { buildTranslationBrief, summarizeTranslationBrief, type TranslationBrief
 import { runProjectQualityAudit, createQualityRepairRun } from './qualityAudit.ts';
 import { CONTEXT_GRAPH_ANALYSIS_VERSION, getContextGraphStatus, startContextGraphAnalysis } from './contextGraph.ts';
 import { logError, logInfo, logWarn } from '../log.ts';
+import { isWorthCanonicalEntityMapping, validateCanonicalTarget } from './canonicalEntityPolicy.ts';
 import {
   combineTranslationContextDeltas,
   emptyTranslationContextDelta,
@@ -369,6 +370,7 @@ function canonicalTermPattern(value: string): string {
 export function buildCanonicalTermProtections(
   items: Array<{ id: string; text: string }>,
   contextGraph: Record<string, unknown> | null,
+  targetLang = 'zh',
 ): CanonicalTermProtection[] {
   const mappings = Array.isArray((contextGraph as any)?.nameMappings)
     ? (contextGraph as any).nameMappings as Array<Record<string, any>>
@@ -380,11 +382,18 @@ export function buildCanonicalTermProtections(
     if (status === 'run-canonical') return 1;
     return 0;
   };
-  const active = mappings.filter((mapping) =>
-    priorityFor(String(mapping?.sourceStatus || '')) > 0 &&
-    typeof mapping?.source === 'string' && mapping.source.trim() &&
-    typeof mapping?.target === 'string' && mapping.target.trim(),
-  );
+  const active = mappings.filter((mapping) => {
+    const sourceStatus = String(mapping?.sourceStatus || '');
+    if (priorityFor(sourceStatus) <= 0 ||
+        typeof mapping?.source !== 'string' || !mapping.source.trim() ||
+        typeof mapping?.target !== 'string' || !mapping.target.trim()) return false;
+    const userConfirmed = sourceStatus === 'confirmed-memory' && mapping.confirmationSource === 'user-confirmed';
+    const kind = String(mapping.kind || 'other');
+    if (!userConfirmed && !isWorthCanonicalEntityMapping({ source: mapping.source, kind })) return false;
+    return validateCanonicalTarget({
+      source: mapping.source, target: mapping.target, targetLang, kind,
+    }).valid;
+  });
   type NameCandidate = { sourceForm: string; target: string; priority: number; conflicting: boolean };
   const candidateByName = new Map<string, NameCandidate>();
   for (const mapping of active) {
@@ -751,7 +760,7 @@ export function buildUserPrompt(template: string, items: TranslationItem[], cont
   const effectiveContextGraph = context.run.translationMode === 'literary'
     ? translationBrief?.contextGraph ?? contextGraph : null;
   const termProtections = context.run.translationMode === 'literary'
-    ? buildCanonicalTermProtections(items, effectiveContextGraph)
+    ? buildCanonicalTermProtections(items, effectiveContextGraph, String(context.run.targetLang || 'zh'))
     : [];
   const payloadItems = items.map((item) => ({
     ...item,
@@ -900,7 +909,7 @@ async function translateBatch(context: any, items: TranslationItem[], requestId:
   // and both Reviewers. Do not append unfiltered memory mappings here: that made the validator
   // require markers that buildUserPrompt had never sent, turning otherwise valid segments into failures.
   const termProtections = context.run.translationMode === 'literary'
-    ? buildCanonicalTermProtections(items, contextGraph)
+    ? buildCanonicalTermProtections(items, contextGraph, String(context.run.targetLang || 'zh'))
     : [];
   logInfo('document-agent', 'batch ready · batch=' + batchIndex +
     ' · mode=' + context.run.translationMode +
@@ -1085,6 +1094,7 @@ async function translateBatch(context: any, items: TranslationItem[], requestId:
         translations,
         requestId.slice(-24) + ':',
         Array.isArray(context.memory?.entities) ? context.memory.entities : [],
+        String(context.run.targetLang || 'zh'),
       )
     : { delta: emptyTranslationContextDelta(), diagnostics: null };
   const deltaDiagnostics = deltaResult.diagnostics;
