@@ -41,7 +41,7 @@ const STAGE_INSTRUCTIONS: Record<ContextGraphWorkflowStageId, string> = {
   entities: [
     '只完成非人物重要实体识别，例如地点、组织、物件、作品、术语。避免把一般名词、书名中的偶然词面或人物重复录为实体。',
     '必须重点覆盖反复出现的专名实体，包括虚构家族/宗族/氏族/王朝/派系、国家、组织与地名。若 scan hints 标出该专名并且样本中出现，应为其提供一个统一的规范 name、suggestedTranslation 和可核验 evidence，不要因为它不是人物而漏掉。',
-    '虚构专名不得被归化成其现实历史原型或相似名称；例如虚构氏族即使明显借鉴真实氏族，也必须翻译原文中的虚构名称，不能用真实氏族名替代。suggestedTranslation 是本书本次运行的预选规范译名，后续翻译应统一使用；它不是已获用户确认的全局事实。',
+    '虚构专名不得被归化成其现实历史原型或相似名称；例如虚构氏族即使明显借鉴真实氏族，也必须翻译原文中的虚构名称，不能用真实氏族名替代。现实原型不是源文别名，不能把原型名称写入 aliases。suggestedTranslation 是本书本次运行的预选规范译名，后续翻译应统一使用；它不是已获用户确认的全局事实。',
     '实体需要稳定 name、aliases、kind、significance、suggestedTranslation 和可核验 evidence。目标译名使用目标语言；证据不足时不要猜测。只返回 entities 字段。',
   ].join('\n'),
   relationships: [
