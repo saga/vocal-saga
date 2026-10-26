@@ -2024,6 +2024,7 @@ export function buildProjectContextGraphBundle(
     graphNameMappingExcludedAliasBoundary: 0,
     graphNameMappingExcludedEvidenceNotVisible: 0,
     graphNameMappingExcludedInvalidTarget: 0,
+    graphNameMappingExcludedTargetNotPreviouslyAccepted: 0,
     graphNameMappingsActivatedRunCanonical: 0,
     graphNameMappingExcludedTargetLanguage: 0,
   };
@@ -2063,11 +2064,24 @@ export function buildProjectContextGraphBundle(
       nameMappingDiagnostics.graphNameMappingExcludedEvidenceNotVisible++;
       return [];
     }
-    // The full-book analysis has already selected one suggested target for this source name.
-    // Treat it as run-canonical (not user-confirmed): consistency is enforced within this Run,
-    // while confirmed LiteraryMemory mappings still override it. We do not wait for a prior
-    // accepted translation, which cannot exist at the first occurrence. This does not persist
-    // the mapping as confirmed project memory.
+    // Character targets can encode a later identity reveal ("The King" -> "Pirate Queen").
+    // Keep the established temporal target gate for characters; a repeated name is not evidence
+    // that a proposed identity or rendering is safe. Non-character named entities such as clans,
+    // organizations, locations and objects can use a run-scoped canonical spelling on first use,
+    // provided the canonical source and its evidence are visible and no future-only alias is used.
+    const entityKind = String(attributes.entityKind || '').toLocaleLowerCase();
+    const characterLike = row.kind === 'character' ||
+      ['person', 'character', 'character_epithet', 'nickname'].includes(entityKind);
+    if (row.status !== 'confirmed' && characterLike) {
+      const targetWasPreviouslyUsed = priorAcceptedTranslations.some((entry) =>
+        quoteMentions(entry.source, row.name) && normalize(entry.target).includes(normalize(target)));
+      if (!targetWasPreviouslyUsed) {
+        nameMappingDiagnostics.graphNameMappingExcludedTargetNotPreviouslyAccepted++;
+        return [];
+      }
+    }
+    // For non-character proper-name entities, the pre-analysis target is stable for this Run,
+    // but is not persisted as a user-confirmed project-memory fact.
     const allAliases = uniqueStrings(attributes.aliases, 12, 100)
       .filter((alias) => normalize(alias) !== normalize(row.name));
     // Do not leak aliases that appear only in later chapters. An alias visible in the current
