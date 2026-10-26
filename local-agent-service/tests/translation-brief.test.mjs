@@ -568,7 +568,7 @@ test('explicit confirmed glossary mappings without AI evidence activate on first
   store.saveLiteraryMemory(project.projectId, {
     entities: [{
       source: 'the King', target: '国王', aliases: ['King'], kind: 'person',
-      reviewStatus: 'confirmed',
+      reviewStatus: 'confirmed', confirmationSource: 'user-confirmed',
     }],
     relationships: [], styleGuide: {}, chapterSummaries: [], recentExamples: [],
     characterVoices: [], relationshipVoiceRules: [], voiceAnchors: [],
@@ -607,7 +607,7 @@ test('confirmed organization name mapping is protected on its first occurrence',
   ]);
   store.saveLiteraryMemory(project.projectId, {
     entities: [{
-      source: 'Minowara', target: '蓑原', kind: 'organization', aliases: [], reviewStatus: 'confirmed',
+      source: 'Minowara', target: '蓑原', kind: 'organization', aliases: [], reviewStatus: 'confirmed', confirmationSource: 'user-confirmed',
     }],
     relationships: [], styleGuide: {}, chapterSummaries: [], recentExamples: [],
     characterVoices: [], relationshipVoiceRules: [], voiceAnchors: [],
@@ -638,7 +638,7 @@ test('canonical mappings and relevant context survive a legacy character budget 
       target: '规范译名' + String(i).padStart(2, '0') + '固定称呼',
       aliases,
       kind: 'person',
-      reviewStatus: 'confirmed',
+      reviewStatus: 'confirmed', confirmationSource: 'user-confirmed',
     });
   }
   const project = store.createProject({
@@ -1071,7 +1071,7 @@ test('conflicting confirmed character profile and entity targets are not arbitra
       target: '矢部',
       aliases: [],
       kind: 'person',
-      reviewStatus: 'confirmed',
+      reviewStatus: 'confirmed', confirmationSource: 'user-confirmed',
       evidence: 'Yabu returned to the camp.',
     }],
     relationships: [],
@@ -1084,7 +1084,7 @@ test('conflicting confirmed character profile and entity targets are not arbitra
       canonicalSourceName: 'Yabu',
       targetName: '薮',
       aliases: [],
-      status: 'confirmed',
+      status: 'confirmed', confirmationSource: 'user-confirmed',
       useForTranslation: true,
       voiceCore: { register: '', syntaxRhythm: [], lexicalPreferences: [], discourseHabits: [], stanceModality: [], humorIrony: '', disfluency: '', avoid: [] },
       evidence: [{
