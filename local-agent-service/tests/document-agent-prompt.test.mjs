@@ -411,7 +411,7 @@ test('run-canonical preflight mappings protect the first occurrence without conf
 
 test('context-delta entity targets follow the effective canonical name mapping', () => {
   const protections = buildCanonicalTermProtections([{ id: 'minowara', text: 'The Minowara Shoguns ruled the realm.' }], {
-    nameMappings: [{ source: 'Minowara', target: '蓑原', aliases: [], sourceStatus: 'run-canonical' }],
+    nameMappings: [{ source: 'Minowara', target: '蓑原', aliases: [], kind: 'organization', sourceStatus: 'run-canonical' }],
   });
   const delta = {
     entityCandidates: [
