@@ -823,9 +823,10 @@ export function buildTranslationBrief(
       // and aliases must still be visible at this temporal boundary, but a character's voice-evidence
       // quote need not be from an earlier segment; otherwise the same confirmed name could disappear
       // from some batches and translator/Reviewer behavior would drift.
-      const explicitCanonicalMapping = entity.reviewStatus === 'confirmed' &&
-        (entity.kind === 'person' ||
-          ((!Array.isArray(entity.evidenceRefs) || entity.evidenceRefs.length === 0) && !evidence));
+      // A user-confirmed source→target name mapping is canonical regardless of entity kind.
+      // It must work on the first source occurrence too; requiring earlier evidence would make
+      // confirmed organization/clan/place names behave differently from confirmed character names.
+      const explicitCanonicalMapping = entity.reviewStatus === 'confirmed';
       const evidenceVisible = explicitCanonicalMapping ||
         (Array.isArray(entity.evidenceRefs) && entity.evidenceRefs.length
           ? visibleEvidenceRefs.length > 0
