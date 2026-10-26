@@ -37,7 +37,7 @@ test('does not keep one-off language register and glossary terms as canonical en
   assert.equal(isWorthCanonicalEntityMapping({ source: 'neh', kind: 'language register', mentions: 1, chapterCount: 1 }), false);
   assert.equal(isWorthCanonicalEntityMapping({ source: 'Ingeles', kind: 'term', mentions: 1, chapterCount: 1 }), false);
   assert.equal(isWorthCanonicalEntityMapping({
-    source: 'God', kind: 'concept', mentions: 5, chapterCount: 3,
+    source: 'God', kind: 'concept', mentions: 1, chapterCount: 1,
     significance: 'Central named religious concept', explicitBookSpecificMeaning: true,
   }), false, 'an explicit flag cannot make a one-off concept canonical without cross-chapter evidence');
 });
