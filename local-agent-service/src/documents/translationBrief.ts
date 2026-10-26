@@ -8,7 +8,7 @@ import { buildProjectVoiceContext } from './voiceContext.ts';
 import { buildProjectContextGraphBundle } from './contextGraph.ts';
 import { getDocumentProjectStore, normalizeDocumentTranslationStrategy } from './projectStore.ts';
 
-export const TRANSLATION_BRIEF_POLICY_VERSION = 'translation-brief-v5-evidence-ranked-context';
+export const TRANSLATION_BRIEF_POLICY_VERSION = 'translation-brief-v6-run-canonical-name-preflight';
 // Safety ceiling only; this is not a retrieval target. Prefer complete relevant context over silent pruning.
 export const MAX_TRANSLATION_BRIEF_CHARS = 1_000_000;
 
@@ -975,7 +975,7 @@ export function buildTranslationBrief(
   // Keep only per-batch, evidence-bounded characters/entities/relationships and chapter prefix summaries.
   if (graph) {
     graph.styleGuide = { narrativeStyle: '', rules: [] };
-    graph.policyVersion = 'context-graph-v3-temporal-target-evidence';
+    graph.policyVersion = 'context-graph-v4-run-canonical-name-preflight';
   }
   // Graph chapter order is derived from source segment order and therefore is the canonical
   // boundary. Do not use memory-only summaries when chapter matching could be ambiguous.
