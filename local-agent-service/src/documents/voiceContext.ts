@@ -241,6 +241,13 @@ export function sanitizeProjectLiteraryMemory(input: unknown): Record<string, an
   };
   const styleGuideStatus = raw.styleGuideStatus === 'confirmed' ? 'confirmed' : 'candidate';
   const styleGuideConfirmationSource = confirmationSource(raw.styleGuideConfirmationSource, styleGuideStatus === 'confirmed');
+  const rawStyleGuideOrigin = raw.styleGuideOrigin;
+  const styleGuideOrigin = ['context-graph', 'user-edited', 'user-confirmed', 'legacy-unknown'].includes(String(rawStyleGuideOrigin))
+    ? String(rawStyleGuideOrigin)
+    : styleGuideConfirmationSource === 'user-confirmed' ? 'user-confirmed' : 'legacy-unknown';
+  const styleGuideAnalysisVersion = text(raw.styleGuideAnalysisVersion, 120);
+  const styleGuideSourceRevisionId = text(raw.styleGuideSourceRevisionId, 200);
+  const styleGuideAutoDisabled = raw.styleGuideAutoDisabled === true;
   const characterVoices = Array.isArray(raw.characterVoices) ? raw.characterVoices.flatMap((item: any) => {
     if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
     const canonicalSourceName = text(item.canonicalSourceName || item.source || item.name, 120);
@@ -359,6 +366,10 @@ export function sanitizeProjectLiteraryMemory(input: unknown): Record<string, an
   const memory: Record<string, any> = {
     version: 2, entities, relationships, styleGuide, styleGuideStatus,
     ...(styleGuideConfirmationSource ? { styleGuideConfirmationSource } : {}),
+    styleGuideOrigin,
+    ...(styleGuideAnalysisVersion ? { styleGuideAnalysisVersion } : {}),
+    ...(styleGuideSourceRevisionId ? { styleGuideSourceRevisionId } : {}),
+    styleGuideAutoDisabled,
     chapterSummaries, recentExamples, characterVoices, relationshipVoiceRules, voiceAnchors,
     openQuestions: list(raw.openQuestions, 40, 200),
   };
