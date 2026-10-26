@@ -442,8 +442,8 @@ export function normalizeContextDeltaCanonicalTargets(
   protections: CanonicalTermProtection[],
 ): number {
   const keyOf = (value: unknown): string => normalizeCanonicalTerm(String(value || ''))
-    .replace(/^(?:the|a|an)\\s+/, '')
-    .replace(/(?:['’]s)\\b/g, '')
+    .replace(/^(?:the|a|an)\s+/, '')
+    .replace(/(?:['’]s)\b/g, '')
     .trim();
   const targetBySource = new Map<string, string>();
   const conflicts = new Set<string>();
