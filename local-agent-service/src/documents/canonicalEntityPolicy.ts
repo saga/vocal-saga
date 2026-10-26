@@ -95,7 +95,7 @@ export function isWorthCanonicalEntityMapping(input: EntityWorthInput): boolean 
   const explicitMeaning = input.explicitBookSpecificMeaning === true;
   if (explicitMeaning) return true;
 
-  if (COUNTRY_OR_NATIONALITY.has(source) || GENERIC_NON_PERSON_TERMS.has(source)) return false;
+  if (kind !== 'person' && (COUNTRY_OR_NATIONALITY.has(source) || GENERIC_NON_PERSON_TERMS.has(source))) return false;
 
   // Other/unknown is deliberately conservative. Frequent ordinary words should not fill the glossary.
   if (kind === 'other' || kind === 'title') {
