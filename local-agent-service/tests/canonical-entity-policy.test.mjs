@@ -23,7 +23,7 @@ test('excludes common words and standard country names from book-specific entity
     assert.equal(isWorthCanonicalEntityMapping({ source, kind, mentions: 20, chapterCount: 10 }), false, source);
   }
   assert.equal(isWorthCanonicalEntityMapping({
-    source: 'God of the Mountain', kind: 'concept', explicitBookSpecificMeaning: true, mentions: 1, chapterCount: 1, significance: 'A named faith-specific concept',
+    source: 'God of the Mountain', kind: 'concept', explicitBookSpecificMeaning: true, mentions: 3, chapterCount: 2, significance: 'A named faith-specific concept',
   }), true);
 });
 
@@ -39,7 +39,7 @@ test('does not keep one-off language register and glossary terms as canonical en
   assert.equal(isWorthCanonicalEntityMapping({
     source: 'God', kind: 'concept', mentions: 5, chapterCount: 3,
     significance: 'Central named religious concept', explicitBookSpecificMeaning: true,
-  }), true);
+  }), false, 'an explicit flag cannot make a one-off concept canonical without cross-chapter evidence');
 });
 
 test('splits list-style compound names but does not split actual slash names', () => {
