@@ -1177,6 +1177,20 @@ async function runAnalysis(projectId: string, runId: string): Promise<void> {
     });
   db.exec('BEGIN IMMEDIATE');
   try {
+    // Rebuild machine candidates transactionally so a newer analysis cannot leave stale low-quality
+    // candidates active. User-confirmed/rejected nodes survive; rollback restores the prior graph on failure.
+    db.prepare(
+      "DELETE FROM context_graph_evidence WHERE source_revision_id = ? AND (node_id IN " +
+      "(SELECT node_id FROM context_graph_nodes WHERE source_revision_id = ? AND status = 'candidate') OR edge_id IN " +
+      "(SELECT edge_id FROM context_graph_edges WHERE source_revision_id = ? AND status = 'candidate'))"
+    ).run(revisionId, revisionId, revisionId);
+    db.prepare("DELETE FROM context_graph_edges WHERE source_revision_id = ? AND status = 'candidate'").run(revisionId);
+    db.prepare("DELETE FROM context_graph_nodes WHERE source_revision_id = ? AND status = 'candidate'").run(revisionId);
+    db.prepare(
+      "UPDATE context_graph_chapters SET summary = NULL, summary_kind = NULL, segment_ids_json = '[]', updated_at = ? " +
+      "WHERE source_revision_id = ? AND summary_kind = 'model'"
+    ).run(new Date().toISOString(), revisionId);
+    saveMeta(db, revisionId, 'stylePolicyVersion', 'literary-style-v2-auto-context');
     saveMeta(db, revisionId, 'bookSummary', safeText(data.bookSummary, 4000));
     saveMeta(db, revisionId, 'narrativeStyle', safeText(data.narrativeStyle, 1200));
     saveMeta(db, revisionId, 'styleRegister', safeText(data.styleRegister, 1000));
@@ -1736,17 +1750,36 @@ export function getContextGraphStatus(projectId: string, runId?: string): Record
       active: activeAnalyses.get(projectId) === item.run_id && ['queued', 'running'].includes(String(item.status)),
     };
   });
+  const styleFields = {
+    narrativeStyle: safeText(getMeta(db, revisionId, 'narrativeStyle'), 1000),
+    styleRegister: safeText(getMeta(db, revisionId, 'styleRegister'), 1000),
+    styleRhythm: safeText(getMeta(db, revisionId, 'styleRhythm'), 1000),
+    styleDialogue: safeText(getMeta(db, revisionId, 'styleDialogue'), 1000),
+    styleDiction: safeText(getMeta(db, revisionId, 'styleDiction'), 1000),
+  };
+  const styleRules = uniqueStrings(getMeta(db, revisionId, 'styleRules'), 24, 240);
+  const styleAvoid = uniqueStrings(getMeta(db, revisionId, 'styleAvoid'), 16, 240);
+  const requiredStyleFields = [
+    ['narrativeStyle', styleFields.narrativeStyle],
+    ['styleRegister', styleFields.styleRegister],
+    ['styleRhythm', styleFields.styleRhythm],
+    ['styleDialogue', styleFields.styleDialogue],
+    ['styleDiction', styleFields.styleDiction],
+  ] as const;
+  const styleMissingFields = requiredStyleFields.filter(([, value]) => !value.trim()).map(([key]) => key)
+    .concat(styleRules.length ? [] : ['styleRules']);
   // UI/status DTO only: never return graph nodes, edges, evidence or chapter summaries while polling.
   return {
     sourceRevisionId: revisionId, segmentCount,
+    analysisVersion: String(progress.analysisVersion || ''),
+    styleGuideReady: status === 'completed' && progress.analysisVersion === CONTEXT_GRAPH_ANALYSIS_VERSION && styleMissingFields.length === 0,
+    styleMissingFields,
+    styleFieldCoverage: Object.fromEntries(requiredStyleFields.map(([key, value]) => [key, !!value.trim()])),
+    styleGuideUpdatedAt: row?.finished_at || null,
     overview: {
-      narrativeStyle: getMeta(db, revisionId, 'narrativeStyle') || '',
-      styleRegister: getMeta(db, revisionId, 'styleRegister') || '',
-      styleRhythm: getMeta(db, revisionId, 'styleRhythm') || '',
-      styleDialogue: getMeta(db, revisionId, 'styleDialogue') || '',
-      styleDiction: getMeta(db, revisionId, 'styleDiction') || '',
-      styleRules: getMeta(db, revisionId, 'styleRules') || [],
-      styleAvoid: getMeta(db, revisionId, 'styleAvoid') || [],
+      ...styleFields,
+      styleRules,
+      styleAvoid,
     },
     counts, status, phase: row?.phase || 'not-started', runId: row?.run_id || null,
     progress, startedAt: row?.started_at || null, finishedAt: row?.finished_at || null,
@@ -2197,7 +2230,8 @@ export function buildProjectContextGraphBundle(
   });
 
   const result = {
-    policyVersion: 'context-graph-v7-run-canonical-name-preflight',
+    policyVersion: 'context-graph-v8-canonical-entity-quality',
+    analysisVersion: CONTEXT_GRAPH_ANALYSIS_VERSION,
     knowledgeBoundaryOrdinal: knowledgeBoundary,
     nameMappings,
     retrievalDiagnostics: nameMappingDiagnostics,
