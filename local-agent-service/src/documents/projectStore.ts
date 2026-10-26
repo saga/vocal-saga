@@ -1198,8 +1198,23 @@ export class DocumentProjectStore {
     ).get();
     if (!exists) return null;
     const meta = db.prepare(
-      "SELECT key, value FROM context_graph_meta WHERE source_revision_id = ? AND key IN ('narrativeStyle','styleRules') ORDER BY key"
+      "SELECT key, value FROM context_graph_meta WHERE source_revision_id = ? AND key IN (" +
+        "'narrativeStyle','styleRegister','styleRhythm','styleDialogue','styleDiction','styleRules','styleAvoid','styleEvidence'," +
+        "'styleFieldCoverage','stylePolicyVersion') ORDER BY key"
     ).all(sourceRevisionId) as any[];
+    const latestAnalysis = db.prepare(
+      "SELECT progress_json FROM context_graph_runs WHERE source_revision_id = ? AND status = 'completed' ORDER BY started_at DESC, rowid DESC LIMIT 1"
+    ).get(sourceRevisionId) as { progress_json?: string } | undefined;
+    let analysisIdentity: unknown = null;
+    try {
+      const progress = JSON.parse(latestAnalysis?.progress_json || '{}');
+      analysisIdentity = {
+        analysisVersion: progress.analysisVersion || null,
+        workflowVersion: progress.workflowVersion || null,
+        sourceLang: progress.sourceLang || null,
+        targetLang: progress.targetLang || null,
+      };
+    } catch { analysisIdentity = null; }
     const nodes = db.prepare(
       'SELECT node_id, kind, status, attributes_json FROM context_graph_nodes WHERE source_revision_id = ? ORDER BY node_id'
     ).all(sourceRevisionId) as any[];
@@ -1212,7 +1227,7 @@ export class DocumentProjectStore {
     const chapters = db.prepare(
       'SELECT chapter_key, summary, summary_kind FROM context_graph_chapters WHERE source_revision_id = ? ORDER BY chapter_order, chapter_key'
     ).all(sourceRevisionId) as any[];
-    return hash(JSON.stringify({ meta, nodes, edges, evidence, chapters }));
+    return hash(JSON.stringify({ analysisIdentity, meta, nodes, edges, evidence, chapters }));
   }
 
   private makeRunFingerprint(
