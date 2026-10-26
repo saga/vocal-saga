@@ -5,7 +5,7 @@
  * B runs independently checkpointed turns in one persistent CodeBuddy session where supported.
  * SQLite checkpoints, not the model session, are the source of truth for completed work.
  */
-export const CONTEXT_GRAPH_WORKFLOW_VERSION = 'context-graph-workflow-v1';
+export const CONTEXT_GRAPH_WORKFLOW_VERSION = 'context-graph-workflow-v2-canonical-entity-quality';
 
 export const CONTEXT_GRAPH_WORKFLOW_STAGES = [
   {
