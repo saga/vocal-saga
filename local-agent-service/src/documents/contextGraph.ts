@@ -2024,7 +2024,6 @@ export function buildProjectContextGraphBundle(
     graphNameMappingExcludedAliasBoundary: 0,
     graphNameMappingExcludedEvidenceNotVisible: 0,
     graphNameMappingExcludedInvalidTarget: 0,
-    graphNameMappingExcludedTargetNotPreviouslyAccepted: 0,
     graphNameMappingsActivatedRunCanonical: 0,
     graphNameMappingExcludedTargetLanguage: 0,
   };
@@ -2091,7 +2090,7 @@ export function buildProjectContextGraphBundle(
   });
 
   const result = {
-    policyVersion: 'context-graph-v6-target-evidence-guard',
+    policyVersion: 'context-graph-v7-run-canonical-name-preflight',
     knowledgeBoundaryOrdinal: knowledgeBoundary,
     nameMappings,
     retrievalDiagnostics: nameMappingDiagnostics,
@@ -2131,7 +2130,6 @@ export function buildProjectContextGraphBundle(
     ' · excluded(nameNotVisible=' + nameMappingDiagnostics.graphNameMappingExcludedNameNotVisible +
     ', aliasBoundary=' + nameMappingDiagnostics.graphNameMappingExcludedAliasBoundary +
     ', evidenceNotVisible=' + nameMappingDiagnostics.graphNameMappingExcludedEvidenceNotVisible +
-    ', targetNotPrev=' + nameMappingDiagnostics.graphNameMappingExcludedTargetNotPreviouslyAccepted +
     ', runCanonicalActivated=' + nameMappingDiagnostics.graphNameMappingsActivatedRunCanonical +
     ', invalidTarget=' + nameMappingDiagnostics.graphNameMappingExcludedInvalidTarget + ')');
   return selectedNodes.length || (result.nameMappings as any[]).length || chapterSummaries.length ||
