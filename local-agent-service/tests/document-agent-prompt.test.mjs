@@ -346,7 +346,7 @@ test('evidence-backed automatic name mappings protect and restore canonical term
     nameMappings: [{
       source: 'the King',
       target: '国王',
-      aliases: ['King'],
+      aliases: ['King'], kind: 'person',
       sourceStatus: 'auto',
     }],
   };
@@ -383,7 +383,7 @@ test('candidate-only or conflicting name mappings are not forced into translatio
 test('run-canonical preflight mappings protect the first occurrence without confirming project memory', () => {
   const source = 'The Minowara Shoguns dominated the realm.';
   const protections = buildCanonicalTermProtections([{ id: 'minowara-1', text: source }], {
-    nameMappings: [{ source: 'Minowara', target: '蓑原', aliases: [], sourceStatus: 'run-canonical' }],
+    nameMappings: [{ source: 'Minowara', target: '蓑原', aliases: [], kind: 'organization', sourceStatus: 'run-canonical' }],
   });
   assert.equal(protections.length, 1);
   const masked = maskCanonicalTermText(source, protections);
@@ -392,8 +392,8 @@ test('run-canonical preflight mappings protect the first occurrence without conf
 
   const confirmedWins = buildCanonicalTermProtections([{ id: 'minowara-1', text: source }], {
     nameMappings: [
-      { source: 'Minowara', target: '米诺原', aliases: [], sourceStatus: 'run-canonical' },
-      { source: 'Minowara', target: '蓑原', aliases: [], sourceStatus: 'confirmed-memory' },
+      { source: 'Minowara', target: '米诺原', aliases: [], kind: 'organization', sourceStatus: 'run-canonical' },
+      { source: 'Minowara', target: '蓑原', aliases: [], kind: 'organization', sourceStatus: 'confirmed-memory', confirmationSource: 'user-confirmed' },
     ],
   });
   assert.deepEqual(confirmedWins.map((item) => item.target), ['蓑原'],
@@ -401,8 +401,8 @@ test('run-canonical preflight mappings protect the first occurrence without conf
 
   const corroboratedWins = buildCanonicalTermProtections([{ id: 'minowara-1', text: source }], {
     nameMappings: [
-      { source: 'Minowara', target: '米诺原', aliases: [], sourceStatus: 'run-canonical' },
-      { source: 'Minowara', target: '蓑原', aliases: [], sourceStatus: 'auto' },
+      { source: 'Minowara', target: '米诺原', aliases: [], kind: 'organization', sourceStatus: 'run-canonical' },
+      { source: 'Minowara', target: '蓑原', aliases: [], kind: 'organization', sourceStatus: 'auto' },
     ],
   });
   assert.deepEqual(corroboratedWins.map((item) => item.target), ['蓑原'],
@@ -474,10 +474,10 @@ test('confirmed character voice name is protected even when LiteraryMemory.entit
 test('generic titles and aliases that point to another character are not protected as names', () => {
   const graph = {
     nameMappings: [{
-      source: 'Blackthorne', target: '布莱克索恩',
-      aliases: ["Lord Toranaga's", 'General'], sourceStatus: 'confirmed-memory',
+      source: 'Blackthorne', target: '布莱克索恩', kind: 'person',
+      aliases: ["Lord Toranaga's", 'General'], sourceStatus: 'confirmed-memory', confirmationSource: 'user-confirmed',
     }, {
-      source: 'Yabu', target: '薮', aliases: ['Lord'], sourceStatus: 'confirmed-memory',
+      source: 'Yabu', target: '薮', kind: 'person', aliases: ['Lord'], sourceStatus: 'confirmed-memory', confirmationSource: 'user-confirmed',
     }],
   };
   const protections = buildCanonicalTermProtections([{
@@ -500,7 +500,7 @@ test('buildUserPrompt masks automatically active entity names in source segments
     memory: {},
   };
   const graph = {
-    nameMappings: [{ source: 'the King', target: '国王', aliases: [], sourceStatus: 'auto' }],
+    nameMappings: [{ source: 'the King', target: '国王', aliases: [], kind: 'person', sourceStatus: 'auto' }],
   };
   const prompt = buildUserPrompt('', [{ id: 'p1', text: 'The King took him away.' }], context, [], graph);
   const payload = JSON.parse(prompt.slice(prompt.indexOf('{')));
