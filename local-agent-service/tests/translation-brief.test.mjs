@@ -46,7 +46,7 @@ test('TranslationBrief is revision-pinned, bounded and hashes the source selecti
   assert.equal(first.memoryRevisionId, run.literaryMemoryRevisionId);
   assert.deepEqual(first.sourceSegmentIds, ['c1-1']);
   assert.equal(first.chapterPath, 'Chapter 1');
-  assert.equal(first.policyVersion, 'translation-brief-v5-evidence-ranked-context');
+  assert.equal(first.policyVersion, 'translation-brief-v6-run-canonical-name-preflight');
   assert.ok(first.contextChars <= MAX_TRANSLATION_BRIEF_CHARS);
   assert.match(first.contextHash, /^[a-f0-9]{64}$/);
   assert.notEqual(first.contextHash, second.contextHash, 'context identity changes when source IDs and preceding context change');
@@ -56,7 +56,7 @@ test('TranslationBrief is revision-pinned, bounded and hashes the source selecti
   assert.equal(snapshots.length, 1);
   assert.equal(snapshots[0].contextHash, first.contextHash);
   assert.deepEqual(snapshots[0].sourceSegmentIds, ['c1-1']);
-  assert.equal(snapshots[0].brief.policyVersion, 'translation-brief-v5-evidence-ranked-context');
+  assert.equal(snapshots[0].brief.policyVersion, 'translation-brief-v6-run-canonical-name-preflight');
 
   const configuredContext = {
     ...context,
@@ -536,6 +536,7 @@ test('preflight canonical name mapping protects first and later occurrences with
   assert.equal(firstMapping?.sourceStatus, 'run-canonical',
     'whole-book preflight mapping should be usable at the first occurrence without prior translation evidence');
   assert.equal(buildCanonicalTermProtections([firstSource], firstBrief.contextGraph)[0]?.target, '蓑原');
+  store.setRunStatus(project.projectId, firstRun.runId, 'cancelled', 'test finished building first TranslationBrief');
 
   const laterRun = store.createRun(project.projectId, { scope: { type: 'ids', ids: ['minowara-second'] } });
   const laterContext = store.getRunContext(project.projectId, laterRun.runId);
