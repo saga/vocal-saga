@@ -189,22 +189,22 @@ export function validateTranslationContextDelta(
 
     seenLocalIds.add(originalLocalId);
     for (const item of expanded) {
-      if (kind !== 'person' && !isWorthCanonicalEntityMapping({
-        source: item.source, kind,
-        mentions: segments.filter((segment) => hasName(segment.text, item.source)).length,
-        chapterCount: new Set(segments.filter((segment) => hasName(segment.text, item.source))
-          .map((segment: any) => String(segment.contextPath || '')).filter(Boolean)).size,
-        significance: text(candidate.reason, 180),
-      })) {
-        diagnostics.droppedLowValueEntityCandidates++;
-        continue;
-      }
       const targetQuality = validateCanonicalTarget({
         source: item.source, target: item.target, targetLang, kind,
       });
       if (!targetQuality.valid) {
         diagnostics.rejectedEntityCandidates++;
         diagnostics.rejectedTargetQualityCandidates++;
+        continue;
+      }
+      if (kind !== 'person' && !isWorthCanonicalEntityMapping({
+        source: item.source, kind,
+        mentions: segments.filter((segment) => hasName(segment.text, item.source)).length,
+        chapterCount: new Set(segments.filter((segment) => hasName(segment.text, item.source))
+          .map((segment: any) => String((segment as any).contextPath || '')).filter(Boolean)).size,
+        significance: text(candidate.reason, 180),
+      })) {
+        diagnostics.droppedLowValueEntityCandidates++;
         continue;
       }
       const aliases = Array.from(new Set(aliasesRaw.map((alias) => text(alias, 80)).filter((alias) =>
