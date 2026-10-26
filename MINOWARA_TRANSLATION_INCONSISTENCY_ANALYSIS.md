@@ -222,7 +222,7 @@ node --import tsx scripts/translation-chain-dump.mjs \
 
 ### 9.3 验证状态
 
-截至提交 `6b097c455799fa3b82d147ceef6be4d4def62ec6`，GitHub Actions 的 **Local Agent Service** 工作流完成成功：本地服务测试、TypeScript typecheck、API route manifest drift 检查和确定性 book-scan benchmark 均通过。
+截至提交 `eaf851bb8d5f6c0f4a0ea61e8e4471bc73e037f2`，GitHub Actions 的 **Local Agent Service** 工作流完成成功：本地服务测试、TypeScript typecheck、API route manifest drift 检查和确定性 book-scan benchmark 均通过。
 
 仓库整体 **CI** 工作流仍有其他测试失败，涉及网页翻译缓存键版本断言、网页审校 Prompt 断言、URL 路由默认参数、旧 API 路由以及翻译历史语言字段；这些失败不在本次修改的文件路径内。没有把整体 CI 标记为通过。
 
