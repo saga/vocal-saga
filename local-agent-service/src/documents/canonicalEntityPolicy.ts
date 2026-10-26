@@ -24,7 +24,7 @@ const GENERIC_NON_PERSON_TERMS = new Set([
   'queen', 'the queen', 'emperor', 'the emperor', 'heir', 'the heir',
   'lord', 'the lord', 'king', 'the king', 'sir', 'sire', 'captain', 'the captain',
 ]);
-const LATIN_ACRONYM_ALLOWLIST = new Set([
+const LATIN_ACRONYM_ALLOWLIST: Set<string> = new Set([
   'AI', 'API', 'CPU', 'DNA', 'GPU', 'HDMI', 'HTTP', 'HTTPS', 'IBM', 'IP', 'ISBN',
   'NASA', 'NATO', 'NFC', 'OK', 'OS', 'PDF', 'RAM', 'SQL', 'TCP', 'TV', 'USB', 'URL', 'WWII',
 ]);
@@ -147,6 +147,7 @@ export function validateCanonicalTarget(input: {
   }
 
   const targetLang = input.targetLang.toLocaleLowerCase();
+  const sourceUpper = String(input.source).trim().toUpperCase();
   const sourceNorm = normalized(source);
   const targetNorm = normalized(target);
   if (targetLang === 'zh' || targetLang.startsWith('zh-')) {
@@ -158,7 +159,7 @@ export function validateCanonicalTarget(input: {
     if (hasCjk && latinRuns.length && !onlyApprovedAcronyms) {
       return { valid: false, normalizedTarget: target, reason: 'mixed-script-residue' };
     }
-    if (sourceNorm && targetNorm === sourceNorm && !LATIN_ACRONYM_ALLOWLIST.has(source.toUpperCase())) {
+    if (sourceNorm && targetNorm === sourceNorm && !LATIN_ACRONYM_ALLOWLIST.has(sourceUpper)) {
       return { valid: false, normalizedTarget: target, reason: 'source-retained' };
     }
   }
