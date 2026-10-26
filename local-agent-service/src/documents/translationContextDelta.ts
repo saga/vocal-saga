@@ -15,6 +15,7 @@ export type ContextEntityCandidate = {
   targetProposal: string;
   evidence: ContextEvidence[];
   reason?: string;
+  bookSpecificMeaning?: boolean;
 };
 export type ContextEntityMention = {
   segmentId: string;
@@ -203,6 +204,7 @@ export function validateTranslationContextDelta(
         chapterCount: new Set(segments.filter((segment) => hasName(segment.text, item.source))
           .map((segment: any) => String((segment as any).contextPath || '')).filter(Boolean)).size,
         significance: text(candidate.reason, 180),
+        explicitBookSpecificMeaning: candidate.book_specific_meaning === true || candidate.bookSpecificMeaning === true,
       })) {
         diagnostics.droppedLowValueEntityCandidates++;
         continue;
@@ -224,6 +226,7 @@ export function validateTranslationContextDelta(
         localId, canonicalSource: item.source, aliases, kind,
         targetProposal: targetQuality.normalizedTarget, evidence: item.evidence,
         ...(text(candidate.reason, 180) ? { reason: text(candidate.reason, 180) } : {}),
+        ...((candidate.book_specific_meaning === true || candidate.bookSpecificMeaning === true) ? { bookSpecificMeaning: true } : {}),
       });
       diagnostics.acceptedEntityCandidates++;
     }
