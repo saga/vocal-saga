@@ -20,7 +20,7 @@ test('all literary style dimensions are required by the single-call A schema', (
     assert.equal(ANALYSIS_SCHEMA.properties[field].minLength, 1, field + ' must not be an empty string');
   }
   assert.equal(ANALYSIS_SCHEMA.properties.styleRules.minItems, 1);
-  assert.match(CONTEXT_GRAPH_ANALYSIS_VERSION, /v7-workflow-ab-style-required/);
+  assert.match(CONTEXT_GRAPH_ANALYSIS_VERSION, /v8-canonical-name-preflight/);
 });
 
 test('B defines five isolated stages with stage-specific required schemas', () => {
@@ -53,6 +53,13 @@ test('B style prompt asks for concrete values in every field instead of allowing
   assert.match(prompt, /必须分别填写/);
   assert.match(prompt, /styleRules 至少给出一条/);
   assert.doesNotMatch(prompt, /某维度证据不足时返回空字符串/);
+});
+
+test('entity preflight preserves fictional clan names instead of replacing historical analogues', () => {
+  const prompt = buildContextGraphWorkflowPrompt('entities', 'SAMPLED SOURCE TEXT', {}, false);
+  assert.match(prompt, /氏族|家族|宗族/);
+  assert.match(prompt, /现实历史原型/);
+  assert.match(prompt, /统一的规范 name/);
 });
 
 test('CodeBuddy workflow turns can resume a persisted SDK session', () => {
