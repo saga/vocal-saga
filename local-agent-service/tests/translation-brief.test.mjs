@@ -15,7 +15,7 @@ const { buildProjectContextGraphBundle } = await import('../src/documents/contex
 const { selectRecentPriorChapterSummaries } = await import('../src/documents/contextGraph.ts');
 const { contextGraphCandidateDisposition } = await import('../src/documents/contextGraph.ts');
 const { buildTranslationBrief, summarizeTranslationBrief, MAX_TRANSLATION_BRIEF_CHARS } = await import('../src/documents/translationBrief.ts');
-const { buildBatches, buildUserPrompt } = await import('../src/documents/translationAgent.ts');
+const { buildBatches, buildCanonicalTermProtections, buildUserPrompt } = await import('../src/documents/translationAgent.ts');
 
 test('TranslationBrief is revision-pinned, bounded and hashes the source selection', () => {
   const store = getDocumentProjectStore();
@@ -493,6 +493,60 @@ test('source-ordered dynamic memory replaces conflicting unconfirmed Context Gra
     'source-ordered dynamic memory should replace an unconfirmed, conflicting book-wide candidate');
 });
 
+
+test('preflight canonical name mapping protects first and later occurrences without a prior accepted translation', () => {
+  const store = getDocumentProjectStore();
+  const project = store.createProject({
+    title: 'Run Canonical Fictional Clan',
+    format: 'txt',
+    sourceFileName: 'run-canonical-minowara.txt',
+    prompt: { translationMode: 'literary', sourceLang: 'en', targetLang: 'zh' },
+    segments: [
+      { id: 'minowara-first', text: 'After sixty years the Minowara prevailed over the Takashima.', kind: 'paragraph', contextPath: 'Chapter 1' },
+      { id: 'minowara-second', text: 'The Minowara Shoguns dominated the realm.', kind: 'paragraph', contextPath: 'Chapter 1' },
+    ],
+  });
+  ensureTestContextGraph(store, project);
+  const { db, currentSourceRevisionId } = store.getProjectContext(project.projectId);
+  buildProjectContextGraphBundle(project.projectId, [
+    { id: 'minowara-first', text: 'After sixty years the Minowara prevailed over the Takashima.', contextPath: 'Chapter 1' },
+  ], [], currentSourceRevisionId, 'zh');
+  db.prepare(
+    'INSERT INTO context_graph_nodes(node_id, source_revision_id, kind, name, normalized_name, attributes_json, status, created_at, updated_at) ' +
+    'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+  ).run(
+    'graph-minowara', currentSourceRevisionId, 'entity', 'Minowara', 'minowara',
+    JSON.stringify({ suggestedTranslation: '蓑原', aliases: [], entityKind: 'organization', targetLang: 'zh' }),
+    'candidate', new Date().toISOString(), new Date().toISOString(),
+  );
+  db.prepare(
+    'INSERT INTO context_graph_evidence(source_revision_id, node_id, edge_id, segment_id, quote, role, created_at) ' +
+    'VALUES (?, ?, NULL, ?, ?, ?, ?)'
+  ).run(
+    currentSourceRevisionId, 'graph-minowara', 'minowara-first',
+    'the Minowara prevailed over the Takashima', 'name', new Date().toISOString(),
+  );
+
+  const firstRun = store.createRun(project.projectId, { scope: { type: 'ids', ids: ['minowara-first'] } });
+  const firstContext = store.getRunContext(project.projectId, firstRun.runId);
+  const firstSource = store.getSegments(project.projectId, { limit: 10 }).find((item) => item.id === 'minowara-first');
+  const firstBrief = buildTranslationBrief(firstContext, [firstSource], []);
+  const firstMapping = firstBrief.contextGraph?.nameMappings.find((mapping) => mapping.source === 'Minowara');
+  assert.equal(firstMapping?.target, '蓑原');
+  assert.equal(firstMapping?.sourceStatus, 'run-canonical',
+    'whole-book preflight mapping should be usable at the first occurrence without prior translation evidence');
+  assert.equal(buildCanonicalTermProtections([firstSource], firstBrief.contextGraph)[0]?.target, '蓑原');
+
+  const laterRun = store.createRun(project.projectId, { scope: { type: 'ids', ids: ['minowara-second'] } });
+  const laterContext = store.getRunContext(project.projectId, laterRun.runId);
+  const laterSource = store.getSegments(project.projectId, { limit: 10 }).find((item) => item.id === 'minowara-second');
+  const laterBrief = buildTranslationBrief(laterContext, [laterSource], []);
+  const laterMapping = laterBrief.contextGraph?.nameMappings.find((mapping) => mapping.source === 'Minowara');
+  assert.equal(laterMapping?.target, '蓑原');
+  assert.equal(laterMapping?.sourceStatus, 'run-canonical',
+    'the same preflight target remains stable in later batches without a human approval step');
+  assert.equal(buildCanonicalTermProtections([laterSource], laterBrief.contextGraph)[0]?.target, '蓑原');
+});
 
 test('explicit confirmed glossary mappings without AI evidence activate on first visible mention', () => {
   const store = getDocumentProjectStore();
