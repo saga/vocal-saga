@@ -575,7 +575,10 @@ function buildTemporallyVisibleMemory(
   // Free-form whole-book summaries/examples may reveal future plot. A style guide is safe only
   // after the user explicitly confirms it in the workspace; model suggestions stay out of prompts.
   const userConfirmedStyleGuide = rawMemory.styleGuideStatus === 'confirmed' && rawMemory.styleGuideConfirmationSource === 'user-confirmed';
-  rawMemory.styleGuide = userConfirmedStyleGuide ? rawMemory.styleGuide : {};
+  // Explicit user edits are safe to use as a style override; machine-generated book-wide style
+  // stays separately versioned and is injected from the current Context Graph below.
+  const userEditedStyleGuide = rawMemory.styleGuideOrigin === 'user-edited';
+  rawMemory.styleGuide = userConfirmedStyleGuide || userEditedStyleGuide ? rawMemory.styleGuide : {};
   rawMemory.styleGuideStatus = userConfirmedStyleGuide ? 'confirmed' : 'candidate';
   rawMemory.chapterSummaries = [];
   rawMemory.recentExamples = retrievedExamples;
@@ -985,10 +988,14 @@ export function buildTranslationBrief(
     const styleReady = graph.analysisVersion === CONTEXT_GRAPH_ANALYSIS_VERSION &&
       required.every((key) => typeof candidateStyle[key] === 'string' && candidateStyle[key].trim()) &&
       Array.isArray(candidateStyle.rules) && candidateStyle.rules.some((item: unknown) => typeof item === 'string' && item.trim());
-    const userStyle = temporalMemory.styleGuideStatus === 'confirmed' && temporalMemory.styleGuideConfirmationSource === 'user-confirmed'
-      ? temporalMemory.styleGuide : null;
+    const userConfirmedStyle = temporalMemory.styleGuideStatus === 'confirmed' &&
+      temporalMemory.styleGuideConfirmationSource === 'user-confirmed';
+    const userEditedStyle = temporalMemory.styleGuideOrigin === 'user-edited';
+    const userStyle = userConfirmedStyle || userEditedStyle ? temporalMemory.styleGuide : null;
     const machineStyleEnabled = temporalMemory.styleGuideAutoDisabled !== true;
-    graph.styleGuide = userStyle ? { ...userStyle, sourceStatus: 'user-confirmed' } : styleReady && machineStyleEnabled ? {
+    graph.styleGuide = userStyle ? {
+      ...userStyle, sourceStatus: userConfirmedStyle ? 'user-confirmed' : 'user-edited',
+    } : styleReady && machineStyleEnabled ? {
       narrativeStyle: candidateStyle.narrativeStyle, register: candidateStyle.register, rhythm: candidateStyle.rhythm,
       dialogue: candidateStyle.dialogue, diction: candidateStyle.diction, rules: candidateStyle.rules, avoid: candidateStyle.avoid || [],
       sourceStatus: 'machine-applied', analysisVersion: graph.analysisVersion,
