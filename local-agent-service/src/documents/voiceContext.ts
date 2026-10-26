@@ -206,7 +206,7 @@ export function sanitizeProjectLiteraryMemory(input: unknown): Record<string, an
       ...(targetEvidenceRefs.length ? { targetEvidenceRefs } : {}),
       targetConfidence,
       canonicalMappingDisposition,
-      reviewStatus: userConfirmed ? 'confirmed' : 'suggested',
+      reviewStatus: item.reviewStatus === 'confirmed' ? 'confirmed' : 'suggested',
       ...(confirmation ? { confirmationSource: confirmation } : {}),
     }];
   }) : []);
