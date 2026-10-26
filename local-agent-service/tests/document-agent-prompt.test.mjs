@@ -716,13 +716,13 @@ test('reviewer canonical mappings are scoped to reviewed source and confirmed ta
   const merged = mergeConfirmedMemoryNameMappings({
     nameMappings: [
       { source: 'Yabu', target: '矢部', aliases: ['Lord'], sourceStatus: 'auto' },
-      { source: 'Blackthorne', target: '布莱克索恩', aliases: [], sourceStatus: 'confirmed-memory' },
+      { source: 'Blackthorne', target: '布莱克索恩', aliases: [], kind: 'person', sourceStatus: 'confirmed-memory', confirmationSource: 'user-confirmed' },
     ],
   }, {
     entities: [],
     characterVoices: [
-      { canonicalSourceName: 'Yabu', targetName: '薮', aliases: ['Yabu-san', 'Lord', "Lord Toranaga's"], status: 'confirmed' },
-      { canonicalSourceName: 'Omi', targetName: '近江', aliases: [], status: 'confirmed' },
+      { canonicalSourceName: 'Yabu', targetName: '薮', aliases: ['Yabu-san', 'Lord', "Lord Toranaga's"], status: 'confirmed', confirmationSource: 'user-confirmed' },
+      { canonicalSourceName: 'Omi', targetName: '近江', aliases: [], status: 'confirmed', confirmationSource: 'user-confirmed' },
     ],
   }, [{ id: 'review-yabu', source: 'Yabu returned before sunset.' }]);
   assert.deepEqual(merged.nameMappings.map((item) => [item.source, item.target]), [['Yabu', '薮']]);
