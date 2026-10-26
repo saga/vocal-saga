@@ -185,5 +185,8 @@ test('rejects a compound target for one source name and suspicious mixed-script 
     ],
   }, segments, new Map([['sire-1', '船长（敬称）／大人对船员说话。'], ['achiko-1', 'achi子走进房间。']]));
   assert.equal(result.delta.entityCandidates.length, 0);
-  assert.equal(result.diagnostics.rejectedTargetQualityCandidates, 2);
+  assert.equal(result.diagnostics.rejectedCompoundEntityCandidates, 1,
+    'a slash-separated target is rejected as a compound mapping before target-shape validation');
+  assert.equal(result.diagnostics.rejectedTargetQualityCandidates, 1,
+    'the mixed-script personal name is rejected by target-shape validation');
 });
