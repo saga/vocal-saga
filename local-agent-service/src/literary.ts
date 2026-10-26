@@ -4,6 +4,7 @@ import { getCodeBuddyTaskProfile } from './agents/taskProfiles.ts';
 import { parseAgentModel } from './json.ts';
 import { buildProjectVoiceContext, sanitizeProjectLiteraryMemory } from './documents/voiceContext.ts';
 import { logInfo } from './log.ts';
+import { isWorthCanonicalEntityMapping, normalizeCanonicalEntityKind, splitCompoundCanonicalName, validateCanonicalTarget } from './documents/canonicalEntityPolicy.ts';
 
 // 文学分析的 structured output schema，只约束顶层形状，不禁止扩展字段。
 export const LITERARY_ANALYSIS_SCHEMA: Record<string, unknown> = {
@@ -356,7 +357,15 @@ export async function runLiteraryAnalysis(body: any, requestId: string, sessionS
     chapterTitle,
     memory: {
       version: 2,
-      entities: parsed.entities.slice(0, 120).map((item: any) => ({ ...item, reviewStatus: 'suggested' })),
+      entities: parsed.entities.slice(0, 120).flatMap((item: any) => {
+        const source = typeof item?.source === 'string' ? item.source.trim() : '';
+        const target = typeof item?.target === 'string' ? item.target.trim() : '';
+        if (!source || !target || splitCompoundCanonicalName(source) || splitCompoundCanonicalName(target)) return [];
+        const kind = normalizeCanonicalEntityKind(item.kind);
+        if (kind !== 'person' && !isWorthCanonicalEntityMapping({ source, kind, significance: item.description || item.significance })) return [];
+        if (!validateCanonicalTarget({ source, target, targetLang: body.target || 'zh', kind }).valid) return [];
+        return [{ ...item, kind, reviewStatus: 'suggested', confirmationSource: 'evidence-verified', targetConfidence: 'candidate', targetEvidenceRefs: [] }];
+      }),
       relationships: parsed.relationships.slice(0, 160).map((item: any) => ({ ...item, reviewStatus: 'suggested' })),
       styleGuide: parsed.styleGuide && typeof parsed.styleGuide === 'object' ? parsed.styleGuide : {},
       chapterSummaries: summary ? [{ chapter: chapterTitle, summary }] : [],
