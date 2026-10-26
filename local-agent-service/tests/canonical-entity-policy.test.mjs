@@ -22,13 +22,23 @@ test('excludes common words and standard country names from book-specific entity
     assert.equal(isWorthCanonicalEntityMapping({ source, kind, mentions: 20, chapterCount: 10 }), false, source);
   }
   assert.equal(isWorthCanonicalEntityMapping({
-    source: 'God of the Mountain', kind: 'concept', explicitBookSpecificMeaning: true,
+    source: 'God of the Mountain', kind: 'concept', explicitBookSpecificMeaning: true, mentions: 1, chapterCount: 1, significance: 'A named faith-specific concept',
   }), true);
 });
 
 test('retains important fictional names and named groups', () => {
   assert.equal(isWorthCanonicalEntityMapping({ source: 'Minowara', kind: 'clan' }), true);
   assert.equal(isWorthCanonicalEntityMapping({ source: 'The Council of Regents', kind: 'organization' }), true);
+});
+
+test('does not keep one-off language register and glossary terms as canonical entities', () => {
+  assert.equal(isWorthCanonicalEntityMapping({ source: 'Dozo', kind: 'term', mentions: 1, chapterCount: 1 }), false);
+  assert.equal(isWorthCanonicalEntityMapping({ source: 'neh', kind: 'language register', mentions: 1, chapterCount: 1 }), false);
+  assert.equal(isWorthCanonicalEntityMapping({ source: 'Ingeles', kind: 'term', mentions: 1, chapterCount: 1 }), false);
+  assert.equal(isWorthCanonicalEntityMapping({
+    source: 'God', kind: 'concept', mentions: 5, chapterCount: 3,
+    significance: 'Central named religious concept', explicitBookSpecificMeaning: true,
+  }), true);
 });
 
 test('splits list-style compound names but does not split actual slash names', () => {
