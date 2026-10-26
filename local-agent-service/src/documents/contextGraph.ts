@@ -1304,7 +1304,14 @@ async function runAnalysis(projectId: string, runId: string): Promise<void> {
       const targetCheck = validateCanonicalTarget({
         source: entityName, target: effectiveTargetName, targetLang, kind: normalizedKind,
       });
-      if (!targetCheck.valid) invalidEntityTargetCount++;
+      if (!targetCheck.valid) {
+        invalidEntityTargetCount++;
+        if (canonicalTargetBySource.has(entityKey)) {
+          // A malformed duplicate must not erase an already valid candidate for the same source.
+          audit.disposition = 'dropped-invalid-target-conflicts-with-valid-candidate';
+          return false;
+        }
+      }
       if (targetCheck.valid) {
         const priorTarget = canonicalTargetBySource.get(entityKey);
         if (priorTarget && canonicalTargetsConflict(priorTarget, targetCheck.normalizedTarget)) {
