@@ -144,3 +144,46 @@ test('a dynamic target stays a candidate until actual translated surfaces corrob
   assert.equal(corroborated.memory.entities[0].targetEvidenceRefs.length, 2);
   assert.equal(new Set(corroborated.memory.entities[0].targetEvidenceRefs.map((item) => item.segmentId)).size, 2);
 });
+
+test('filters common terms from canonical memory while preserving normal translations', () => {
+  const result = validateTranslationContextDelta({
+    entity_candidates: [{
+      local_id: 'god', canonical_source: 'God', aliases: [], kind: 'concept',
+      target_proposal: '上帝', evidence: [{ segment_id: 'god-1', quote: 'God spoke to him.' }],
+    }],
+  }, [{ id: 'god-1', text: 'God spoke to him.' }], new Map([['god-1', '上帝对他说话。']]));
+  assert.equal(result.delta.entityCandidates.length, 0);
+  assert.equal(result.diagnostics.droppedLowValueEntityCandidates, 1);
+});
+
+test('splits compound source and target lists only when every pair has evidence', () => {
+  const result = validateTranslationContextDelta({
+    entity_candidates: [{
+      local_id: 'clans', canonical_source: 'North Clan / South Clan', aliases: [], kind: 'organization',
+      target_proposal: '北氏族／南氏族',
+      evidence: [{ segment_id: 'clan-1', quote: 'North Clan / South Clan met at dawn.' }],
+    }],
+  }, [{ id: 'clan-1', text: 'North Clan / South Clan met at dawn.' }],
+  new Map([['clan-1', '北氏族与南氏族在黎明时相遇。']]), 'test:');
+  assert.deepEqual(result.delta.entityCandidates.map((item) => [item.canonicalSource, item.targetProposal]), [
+    ['North Clan', '北氏族'], ['South Clan', '南氏族'],
+  ]);
+  assert.equal(result.diagnostics.acceptedEntityCandidates, 2);
+});
+
+test('rejects a compound target for one source name and suspicious mixed-script name targets', () => {
+  const segments = [
+    { id: 'sire-1', text: 'Sire addressed the crew.' },
+    { id: 'achiko-1', text: 'Achiko entered the room.' },
+  ];
+  const result = validateTranslationContextDelta({
+    entity_candidates: [
+      { local_id: 'sire', canonical_source: 'Sire', aliases: [], kind: 'title',
+        target_proposal: '船长（敬称）／大人', evidence: [{ segment_id: 'sire-1', quote: 'Sire addressed the crew.' }] },
+      { local_id: 'achiko', canonical_source: 'Achiko', aliases: [], kind: 'person',
+        target_proposal: 'achi子', evidence: [{ segment_id: 'achiko-1', quote: 'Achiko entered the room.' }] },
+    ],
+  }, segments, new Map([['sire-1', '船长（敬称）／大人对船员说话。'], ['achiko-1', 'achi子走进房间。']]));
+  assert.equal(result.delta.entityCandidates.length, 0);
+  assert.equal(result.diagnostics.rejectedTargetQualityCandidates, 2);
+});
