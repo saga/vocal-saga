@@ -59,6 +59,7 @@ test('entity preflight preserves fictional clan names instead of replacing histo
   const prompt = buildContextGraphWorkflowPrompt('entities', 'SAMPLED SOURCE TEXT', {}, false);
   assert.match(prompt, /氏族|家族|宗族/);
   assert.match(prompt, /现实历史原型/);
+  assert.match(prompt, /现实原型不是源文别名/);
   assert.match(prompt, /统一的规范 name/);
 });
 
