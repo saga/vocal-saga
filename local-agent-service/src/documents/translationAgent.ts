@@ -387,9 +387,10 @@ export function buildCanonicalTermProtections(
     if (priorityFor(sourceStatus) <= 0 ||
         typeof mapping?.source !== 'string' || !mapping.source.trim() ||
         typeof mapping?.target !== 'string' || !mapping.target.trim()) return false;
-    const userConfirmed = sourceStatus === 'confirmed-memory' && mapping.confirmationSource === 'user-confirmed';
+    const explicitlyConfirmed = sourceStatus === 'confirmed' ||
+      (sourceStatus === 'confirmed-memory' && mapping.confirmationSource === 'user-confirmed');
     const kind = String(mapping.kind || 'other');
-    if (!userConfirmed && !isWorthCanonicalEntityMapping({ source: mapping.source, kind })) return false;
+    if (!explicitlyConfirmed && !isWorthCanonicalEntityMapping({ source: mapping.source, kind })) return false;
     return validateCanonicalTarget({
       source: mapping.source, target: mapping.target, targetLang, kind,
     }).valid;
