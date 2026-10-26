@@ -380,6 +380,26 @@ test('candidate-only or conflicting name mappings are not forced into translatio
   assert.deepEqual(conflict, [], 'conflicting targets must not be selected arbitrarily');
 });
 
+test('run-canonical preflight mappings protect the first occurrence without confirming project memory', () => {
+  const source = 'The Minowara Shoguns dominated the realm.';
+  const protections = buildCanonicalTermProtections([{ id: 'minowara-1', text: source }], {
+    nameMappings: [{ source: 'Minowara', target: '蓑原', aliases: [], sourceStatus: 'run-canonical' }],
+  });
+  assert.equal(protections.length, 1);
+  const masked = maskCanonicalTermText(source, protections);
+  assert.match(masked, /__VSA_TERM_000__/);
+  assert.equal(restoreCanonicalTermMarkers(masked, protections), 'The 蓑原 Shoguns dominated the realm.');
+
+  const confirmedWins = buildCanonicalTermProtections([{ id: 'minowara-1', text: source }], {
+    nameMappings: [
+      { source: 'Minowara', target: '米诺原', aliases: [], sourceStatus: 'run-canonical' },
+      { source: 'Minowara', target: '蓑原', aliases: [], sourceStatus: 'confirmed-memory' },
+    ],
+  });
+  assert.deepEqual(confirmedWins.map((item) => item.target), ['蓑原'],
+    'an explicitly confirmed project mapping must override the run-scoped preflight choice');
+});
+
 test('confirmed project-memory names are protected by Reviewer even when graph mapping is absent', () => {
   const merged = mergeConfirmedMemoryNameMappings(
     { nameMappings: [] },
