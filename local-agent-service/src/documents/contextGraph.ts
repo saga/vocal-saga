@@ -1253,6 +1253,9 @@ async function runAnalysis(projectId: string, runId: string): Promise<void> {
     let droppedCompoundEntityCount = 0;
     let invalidEntityTargetCount = 0;
     let splitCompoundEntityCount = 0;
+    let conflictingEntityTargetCount = 0;
+    const canonicalTargetBySource = new Map<string, string>();
+    const conflictingCanonicalSources = new Set<string>();
     const saveEntityCandidate = (
       entityName: string,
       targetName: string,
@@ -1263,6 +1266,15 @@ async function runAnalysis(projectId: string, runId: string): Promise<void> {
       audit: CandidateAudit,
       bookSpecificMeaning = false,
     ) => {
+      if (persistedNodes.filter((node) => node.kind === 'entity').length >= 120) {
+        audit.disposition = 'dropped-valid-candidate-limit';
+        return false;
+      }
+      const entityKey = normalize(entityName);
+      if (conflictingCanonicalSources.has(entityKey)) {
+        audit.disposition = 'dropped-conflicting-canonical-target';
+        return false;
+      }
       const normalizedKind = normalizeCanonicalEntityKind(rawKind);
       const occurrences = segments.filter((segment) => sourceNameMatches(segment.text, entityName));
       const chapterCount = new Set(occurrences.map((segment) => segment.contextPath).filter(Boolean)).size;
@@ -1273,10 +1285,52 @@ async function runAnalysis(projectId: string, runId: string): Promise<void> {
         droppedLowValueEntityCount++;
         return false;
       }
+      // A manually confirmed target is the canonical value; model re-analysis may refresh evidence
+      // but never silently replace the explicit user choice for the same target language.
+      let effectiveTargetName = targetName;
+      const existingId = nodeId(revisionId, 'entity', entityName);
+      const existingNode = db.prepare(
+        'SELECT status, attributes_json FROM context_graph_nodes WHERE source_revision_id = ? AND node_id = ?'
+      ).get(revisionId, existingId) as { status?: string; attributes_json?: string } | undefined;
+      if (existingNode?.status === 'confirmed') {
+        try {
+          const priorAttributes = JSON.parse(existingNode.attributes_json || '{}');
+          if (priorAttributes.targetLang === targetLang && typeof priorAttributes.suggestedTranslation === 'string' &&
+              priorAttributes.suggestedTranslation.trim()) {
+            effectiveTargetName = priorAttributes.suggestedTranslation;
+          }
+        } catch { /* invalid legacy attributes are revalidated below */ }
+      }
       const targetCheck = validateCanonicalTarget({
-        source: entityName, target: targetName, targetLang, kind: normalizedKind,
+        source: entityName, target: effectiveTargetName, targetLang, kind: normalizedKind,
       });
       if (!targetCheck.valid) invalidEntityTargetCount++;
+      if (targetCheck.valid) {
+        const priorTarget = canonicalTargetBySource.get(entityKey);
+        if (priorTarget && normalize(priorTarget) !== normalize(targetCheck.normalizedTarget)) {
+          conflictingCanonicalSources.add(entityKey);
+          conflictingEntityTargetCount++;
+          audit.disposition = 'dropped-conflicting-canonical-target';
+          // Same source with two plausible targets is ambiguous: do not let array order choose.
+          // Invalidate the earlier machine candidate, but never touch a confirmed user mapping.
+          if (existingNode?.status !== 'confirmed') {
+            const priorId = nodeId(revisionId, 'entity', entityName);
+            const priorRow = db.prepare(
+              'SELECT attributes_json FROM context_graph_nodes WHERE source_revision_id = ? AND node_id = ?'
+            ).get(revisionId, priorId) as { attributes_json?: string } | undefined;
+            if (priorRow) {
+              let priorAttributes: Record<string, unknown> = {};
+              try { priorAttributes = JSON.parse(priorRow.attributes_json || '{}'); } catch { priorAttributes = {}; }
+              priorAttributes.suggestedTranslation = '';
+              priorAttributes.suggestedTranslationQuality = 'conflicting-target-candidates';
+              db.prepare('UPDATE context_graph_nodes SET attributes_json = ?, updated_at = ? WHERE source_revision_id = ? AND node_id = ?')
+                .run(JSON.stringify(priorAttributes), new Date().toISOString(), revisionId, priorId);
+            }
+          }
+          return false;
+        }
+        if (!priorTarget) canonicalTargetBySource.set(entityKey, targetCheck.normalizedTarget);
+      }
       const aliases = uniqueStrings(aliasesInput, 12, 100)
         .filter((item) => normalize(item) !== normalize(entityName) && !splitCompoundCanonicalName(item));
       const attributes = {
@@ -1519,7 +1573,7 @@ async function runAnalysis(projectId: string, runId: string): Promise<void> {
         invalidEvidenceByCategory,
         outputAuditVersion: outputAudit.auditVersion,
         modelCandidateCounts: outputAudit.rawCounts,
-        entityPolicy: { droppedLowValueEntityCount, droppedCompoundEntityCount, invalidEntityTargetCount, splitCompoundEntityCount },
+        entityPolicy: { droppedLowValueEntityCount, droppedCompoundEntityCount, invalidEntityTargetCount, splitCompoundEntityCount, conflictingEntityTargetCount },
         droppedCandidateCounts: {
           characters: outputAudit.persistedCounts.characterCandidatesDroppedForEvidence,
           entities: outputAudit.persistedCounts.entityCandidatesDroppedForEvidence,
