@@ -5,6 +5,7 @@ import {
   normalizeCanonicalEntityKind,
   splitCompoundCanonicalName,
   validateCanonicalTarget,
+  canonicalTargetsConflict,
 } from '../src/documents/canonicalEntityPolicy.ts';
 
 test('normalizes model entity kinds into a small canonical vocabulary', () => {
@@ -53,6 +54,12 @@ test('rejects malformed mixed-script and multi-target Chinese names', () => {
   assert.equal(validateCanonicalTarget({ source: 'Achiko', target: 'ACHI子', targetLang: 'zh', kind: 'person' }).reason, 'mixed-script-residue');
   assert.equal(validateCanonicalTarget({ source: 'Sire', target: '船长（敬称）／大人', targetLang: 'zh', kind: 'title' }).valid, false);
   assert.equal(validateCanonicalTarget({ source: 'Council', target: '御众（议和班）', targetLang: 'zh', kind: 'organization' }).reason, 'annotation-target');
+});
+
+test('detects conflicting canonical target proposals without choosing by order', () => {
+  assert.equal(canonicalTargetsConflict('蓑原', '源氏'), true);
+  assert.equal(canonicalTargetsConflict('蓑原', '蓑原'), false);
+  assert.equal(canonicalTargetsConflict('', '蓑原'), false);
 });
 
 test('accepts natural Chinese names and approved acronym preservation', () => {
