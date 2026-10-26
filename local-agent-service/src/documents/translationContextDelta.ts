@@ -179,7 +179,7 @@ export function validateTranslationContextDelta(
       }
       pairs.forEach((pair, index) => expanded.push({
         ...pair,
-        localId: (originalLocalId + ':' + String(index + 1)).slice(0, 64),
+        localId: (idPrefix + originalLocalId).slice(0, 56) + ':part' + String(index + 1),
       }));
       // The original local ID refers to the whole list and is ambiguous after splitting.
       // Do not silently bind its entity mentions to the first element; mentions must identify
@@ -365,6 +365,7 @@ export function combineTranslationContextDeltas(
       } else {
         const prior = combined.entityCandidates[index]!;
         prior.aliases = Array.from(new Set([...prior.aliases, ...candidate.aliases])).slice(0, 8);
+        prior.bookSpecificMeaning = prior.bookSpecificMeaning === true || candidate.bookSpecificMeaning === true;
         prior.evidence = [...prior.evidence, ...candidate.evidence].filter((item, i, all) =>
           all.findIndex((other) => other.segmentId === item.segmentId && normalized(other.sourceQuote) === normalized(item.sourceQuote)) === i).slice(0, 4);
       }
