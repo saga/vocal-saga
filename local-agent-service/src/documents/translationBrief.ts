@@ -5,10 +5,10 @@
 import { createHash } from 'node:crypto';
 import { logInfo } from '../log.ts';
 import { buildProjectVoiceContext } from './voiceContext.ts';
-import { buildProjectContextGraphBundle } from './contextGraph.ts';
+import { buildProjectContextGraphBundle, CONTEXT_GRAPH_ANALYSIS_VERSION } from './contextGraph.ts';
 import { getDocumentProjectStore, normalizeDocumentTranslationStrategy } from './projectStore.ts';
 
-export const TRANSLATION_BRIEF_POLICY_VERSION = 'translation-brief-v6-run-canonical-name-preflight';
+export const TRANSLATION_BRIEF_POLICY_VERSION = 'translation-brief-v7-canonical-entity-style-quality';
 // Safety ceiling only; this is not a retrieval target. Prefer complete relevant context over silent pruning.
 export const MAX_TRANSLATION_BRIEF_CHARS = 1_000_000;
 
@@ -741,7 +741,7 @@ export function buildTranslationBrief(
     // source-evidenced LiteraryMemory. The previous null result skipped that entire merge path,
     // so confirmed names silently disappeared from the actual translation request.
     graph = {
-      policyVersion: 'context-graph-v6-target-evidence-guard',
+      policyVersion: 'context-graph-v5-canonical-entity-style-quality',
       knowledgeBoundaryOrdinal: null,
       currentChapter: chapterPath,
       chapterSummaries: [],
@@ -798,7 +798,8 @@ export function buildTranslationBrief(
       const target = String(entity?.target || '').trim();
       const evidence = String(entity?.evidence || '').trim();
       const rawAliases = Array.isArray(entity.aliases) ? entity.aliases : [];
-      const confirmedPersonMapping = entity.kind === 'person' && entity.reviewStatus === 'confirmed';
+      const userConfirmedMapping = entity.reviewStatus === 'confirmed' && entity.confirmationSource === 'user-confirmed';
+      const confirmedPersonMapping = entity.kind === 'person' && userConfirmedMapping;
       // A confirmed person name is a canonical mapping in 人物管理. Activate it only when the
       // canonical source or one of its aliases is visible; omit later-only aliases without suppressing
       // the whole translation name.
@@ -826,7 +827,7 @@ export function buildTranslationBrief(
       // A user-confirmed source→target name mapping is canonical regardless of entity kind.
       // It must work on the first source occurrence too; requiring earlier evidence would make
       // confirmed organization/clan/place names behave differently from confirmed character names.
-      const explicitCanonicalMapping = entity.reviewStatus === 'confirmed';
+      const explicitCanonicalMapping = userConfirmedMapping;
       const evidenceVisible = explicitCanonicalMapping ||
         (Array.isArray(entity.evidenceRefs) && entity.evidenceRefs.length
           ? visibleEvidenceRefs.length > 0
@@ -848,8 +849,8 @@ export function buildTranslationBrief(
         evidenceBacked: true,
         targetConfidence: entity.reviewStatus === 'confirmed' ? 'confirmed' :
           corroboratedTarget ? 'corroborated' : 'candidate',
-        sourceStatus: entity.reviewStatus === 'confirmed' ? 'confirmed-memory' :
-          corroboratedTarget ? 'auto' : 'candidate',
+        sourceStatus: userConfirmedMapping ? 'confirmed-memory' : corroboratedTarget ? 'auto' : 'candidate',
+        confirmationSource: entity.confirmationSource || 'legacy-unknown',
       };
       const names = new Set([source, ...aliases].map((name) => normalizedSourceText(name)));
       const index = graph.nameMappings.findIndex((mapping: any) =>
@@ -971,11 +972,25 @@ export function buildTranslationBrief(
       logInfo('translation-brief', 'confirmed character profile mapping conflicts=' + characterProfileMappingConflictCount);
     }
   }
-  // Context Graph style notes are book-wide and have no ordinal-bearing evidence links.
-  // Keep only per-batch, evidence-bounded characters/entities/relationships and chapter prefix summaries.
+  // A completed, version-matched style-only baseline is auto-applied. Its fields must never
+  // supply plot facts or identity claims; user-confirmed style memory has priority.
   if (graph) {
-    graph.styleGuide = { narrativeStyle: '', rules: [] };
-    graph.policyVersion = 'context-graph-v4-run-canonical-name-preflight';
+    const candidateStyle = graph.styleGuide && typeof graph.styleGuide === 'object' ? graph.styleGuide : {};
+    const required = ['narrativeStyle', 'register', 'rhythm', 'dialogue', 'diction'];
+    const styleReady = graph.analysisVersion === CONTEXT_GRAPH_ANALYSIS_VERSION &&
+      required.every((key) => typeof candidateStyle[key] === 'string' && candidateStyle[key].trim()) &&
+      Array.isArray(candidateStyle.rules) && candidateStyle.rules.some((item: unknown) => typeof item === 'string' && item.trim());
+    const userStyle = rawMemory.styleGuideStatus === 'confirmed' && rawMemory.styleGuideConfirmationSource === 'user-confirmed'
+      ? rawMemory.styleGuide : null;
+    graph.styleGuide = userStyle ? { ...userStyle, sourceStatus: 'user-confirmed' } : styleReady ? {
+      narrativeStyle: candidateStyle.narrativeStyle, register: candidateStyle.register, rhythm: candidateStyle.rhythm,
+      dialogue: candidateStyle.dialogue, diction: candidateStyle.diction, rules: candidateStyle.rules, avoid: candidateStyle.avoid || [],
+      sourceStatus: 'machine-applied', analysisVersion: graph.analysisVersion,
+    } : { narrativeStyle: '', rules: [], sourceStatus: 'unavailable' };
+    graph.styleGuideReady = !!userStyle || styleReady;
+    graph.policyVersion = 'context-graph-v5-canonical-entity-style-quality';
+    graph.constraints = [...(Array.isArray(graph.constraints) ? graph.constraints : []),
+      'styleGuide 只约束文风、句法、语域和词汇选择；绝不可用它推断或补写人物身份、事件、秘密与剧情结论。'];
   }
   // Graph chapter order is derived from source segment order and therefore is the canonical
   // boundary. Do not use memory-only summaries when chapter matching could be ambiguous.
