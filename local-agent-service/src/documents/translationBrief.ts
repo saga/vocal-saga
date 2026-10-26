@@ -1005,7 +1005,7 @@ export function buildTranslationBrief(
       graphNameMappingsBeforeBudget: Array.isArray((graph as any)?.nameMappings) ? (graph as any).nameMappings.length : 0,
       strongNameMappingsBeforeBudget: Array.isArray((graph as any)?.nameMappings)
         ? (graph as any).nameMappings.filter((mapping: any) =>
-            ['confirmed', 'confirmed-memory', 'auto'].includes(String(mapping.sourceStatus))).length : 0,
+            ['confirmed', 'confirmed-memory', 'run-canonical', 'auto'].includes(String(mapping.sourceStatus))).length : 0,
       acceptedExamplesInjected: Array.isArray((voiceContext as any)?.recentExamples) ? (voiceContext as any).recentExamples.length : 0,
       dialogueParticipantsInjected: Array.isArray((voiceContext as any)?.dialogueParticipants)
         ? (voiceContext as any).dialogueParticipants.length : 0,
@@ -1032,7 +1032,7 @@ export function buildTranslationBrief(
   diagnostic.graphNameMappingsAfterBudget = finalMappings.length;
   diagnostic.graphNameMappingsTrimmedByBudget = 0;
   diagnostic.strongNameMappingsAfterBudget = finalMappings.filter((mapping: any) =>
-    ['confirmed', 'confirmed-memory', 'auto'].includes(String(mapping.sourceStatus))).length;
+    ['confirmed', 'confirmed-memory', 'run-canonical', 'auto'].includes(String(mapping.sourceStatus))).length;
   diagnostic.strongNameMappingsTrimmedByBudget = 0;
   diagnostic.graphCharactersTrimmedByBudget = 0;
   diagnostic.graphEntitiesTrimmedByBudget = 0;
@@ -1057,7 +1057,7 @@ export function buildTranslationBrief(
   logInfo('translation-brief', 'assembled · segments=' + brief.sourceSegmentIds.length +
     ' · chars=' + brief.contextChars +
     ' · graphMappings=' + (Array.isArray((brief.contextGraph as any)?.nameMappings) ? (brief.contextGraph as any).nameMappings.length : 0) +
-    ' (strong=' + (Array.isArray((brief.contextGraph as any)?.nameMappings) ? (brief.contextGraph as any).nameMappings.filter((m: any) => ['confirmed','confirmed-memory','auto'].includes(String(m.sourceStatus))).length : 0) + ')' +
+    ' (strong=' + (Array.isArray((brief.contextGraph as any)?.nameMappings) ? (brief.contextGraph as any).nameMappings.filter((m: any) => ['confirmed','confirmed-memory','run-canonical','auto'].includes(String(m.sourceStatus))).length : 0) + ')' +
     ' · voiceEntities=' + (Array.isArray((brief.voiceContext as any)?.entities) ? (brief.voiceContext as any).entities.length : 0) +
     ' · voiceCharacters=' + (Array.isArray((brief.voiceContext as any)?.characterVoices) ? (brief.voiceContext as any).characterVoices.length : 0) +
     ' · preceding=' + brief.precedingSegments.length);
