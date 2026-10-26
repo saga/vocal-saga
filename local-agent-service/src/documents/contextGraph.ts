@@ -2218,6 +2218,7 @@ export function buildProjectContextGraphBundle(
     graphNameMappingExcludedTargetNotPreviouslyAccepted: 0,
     graphNameMappingsActivatedRunCanonical: 0,
     graphNameMappingExcludedTargetLanguage: 0,
+    graphNameMappingExcludedLowValue: 0,
   };
   const nameMappings = graphNameRows.flatMap((row) => {
     // A model-generated alias alone cannot reveal a canonical identity whose formal name first
@@ -2231,6 +2232,25 @@ export function buildProjectContextGraphBundle(
     try { attributes = JSON.parse(row.attributes_json); } catch { attributes = {}; }
     const target = safeText(attributes.suggestedTranslation, 120);
     if (!target) {
+      nameMappingDiagnostics.graphNameMappingExcludedInvalidTarget++;
+      return [];
+    }
+    const explicitUserConfirmation = row.status === 'confirmed';
+    const entityKindForPolicy = row.kind === 'character' ? 'person' : attributes.entityKind || 'other';
+    if (!explicitUserConfirmation && !isWorthCanonicalEntityMapping({
+      source: row.name,
+      kind: entityKindForPolicy,
+      significance: attributes.significance,
+      explicitBookSpecificMeaning: attributes.bookSpecificMeaning === true,
+    })) {
+      nameMappingDiagnostics.graphNameMappingExcludedLowValue++;
+      return [];
+    }
+    const targetQuality = validateCanonicalTarget({
+      source: row.name, target, targetLang: String(targetLang || attributes.targetLang || 'zh'),
+      kind: entityKindForPolicy,
+    });
+    if (!explicitUserConfirmation && !targetQuality.valid) {
       nameMappingDiagnostics.graphNameMappingExcludedInvalidTarget++;
       return [];
     }
@@ -2292,6 +2312,7 @@ export function buildProjectContextGraphBundle(
       explicitBookSpecificMeaning: attributes.bookSpecificMeaning === true,
       // This preflight choice is deterministic within this Run but is not persisted as user-confirmed.
       sourceStatus: row.status === 'confirmed' ? 'confirmed' : 'run-canonical',
+      confirmationSource: row.status === 'confirmed' ? 'user-confirmed' : 'legacy-unknown',
     }];
   });
 
