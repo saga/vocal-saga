@@ -863,7 +863,7 @@ export function buildTranslationBrief(
         // A source-ordered dynamic candidate outranks an unconfirmed whole-book proposal.
         // Keep an already confirmed Context Graph mapping, but avoid injecting two competing targets.
         const existing = graph.nameMappings[index];
-        if (!['confirmed', 'confirmed-memory'].includes(String(existing?.sourceStatus || ''))) {
+        if (!['confirmed', 'confirmed-memory', 'run-canonical'].includes(String(existing?.sourceStatus || ''))) {
           graph.nameMappings[index] = { ...existing, ...incoming };
         }
       }
@@ -873,8 +873,8 @@ export function buildTranslationBrief(
       const inCurrent = names.some((name: unknown) => items.some((item) => sourceNameMatches(item.text, name))) ? 2 : 0;
       const inPreceding = names.some((name: unknown) => visiblePrecedingSegments.some((item) =>
         sourceNameMatches(item.text, name))) ? 1 : 0;
-      const statusRank = ['confirmed', 'confirmed-memory'].includes(String(mapping.sourceStatus)) ? 4 :
-        mapping.sourceStatus === 'auto' ? 3 : 1;
+      const statusRank = ['confirmed', 'confirmed-memory'].includes(String(mapping.sourceStatus)) ? 5 :
+        mapping.sourceStatus === 'run-canonical' ? 4 : mapping.sourceStatus === 'auto' ? 3 : 1;
       return statusRank + inCurrent + inPreceding;
     };
     graph.nameMappings.sort((a: any, b: any) => mappingRelevance(b) - mappingRelevance(a));
@@ -942,7 +942,7 @@ export function buildTranslationBrief(
       }
       const matched = graph.nameMappings.filter(matches);
       if (status === 'candidate' && matched.some((mapping: any) =>
-          ['confirmed', 'confirmed-memory'].includes(String(mapping?.sourceStatus || '')))) continue;
+          ['confirmed', 'confirmed-memory', 'run-canonical'].includes(String(mapping?.sourceStatus || '')))) continue;
       const mergedAliases = safeCanonicalSourceAliases(source, [
         ...aliases,
         ...matched.flatMap((mapping: any) => Array.isArray(mapping?.aliases) ? mapping.aliases : []),
@@ -952,8 +952,8 @@ export function buildTranslationBrief(
     }
     graph.nameMappings.sort((a: any, b: any) => {
       const rank = (mapping: any) => {
-        const statusRank = ['confirmed', 'confirmed-memory'].includes(String(mapping?.sourceStatus || '')) ? 4 :
-          mapping?.sourceStatus === 'auto' ? 3 : 1;
+        const statusRank = ['confirmed', 'confirmed-memory'].includes(String(mapping?.sourceStatus || '')) ? 5 :
+          mapping?.sourceStatus === 'run-canonical' ? 4 : mapping?.sourceStatus === 'auto' ? 3 : 1;
         const names = [mapping?.source, ...(Array.isArray(mapping?.aliases) ? mapping.aliases : [])];
         const inCurrent = names.some((name: unknown) => items.some((item) => sourceNameMatches(item.text, name))) ? 2 : 0;
         const inPreceding = names.some((name: unknown) => visiblePrecedingSegments.some((item) =>
