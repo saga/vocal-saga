@@ -7,6 +7,7 @@ import { logInfo } from '../log.ts';
 import { buildProjectVoiceContext } from './voiceContext.ts';
 import { buildProjectContextGraphBundle, CONTEXT_GRAPH_ANALYSIS_VERSION } from './contextGraph.ts';
 import { getDocumentProjectStore, normalizeDocumentTranslationStrategy } from './projectStore.ts';
+import { isWorthCanonicalEntityMapping, normalizeCanonicalEntityKind, validateCanonicalTarget } from './canonicalEntityPolicy.ts';
 
 export const TRANSLATION_BRIEF_POLICY_VERSION = 'translation-brief-v7-canonical-entity-style-quality';
 // Safety ceiling only; this is not a retrieval target. Prefer complete relevant context over silent pruning.
@@ -800,6 +801,9 @@ export function buildTranslationBrief(
       const evidence = String(entity?.evidence || '').trim();
       const rawAliases = Array.isArray(entity.aliases) ? entity.aliases : [];
       const userConfirmedMapping = entity.reviewStatus === 'confirmed' && entity.confirmationSource === 'user-confirmed';
+      const entityKind = normalizeCanonicalEntityKind(entity.kind);
+      if (!source || !target || !validateCanonicalTarget({ source, target, targetLang: String(context?.run?.targetLang || 'zh'), kind: entityKind }).valid) continue;
+      if (!userConfirmedMapping && !isWorthCanonicalEntityMapping({ source, kind: entityKind, significance: entity.description || entity.evidence })) continue;
       const confirmedPersonMapping = entity.kind === 'person' && userConfirmedMapping;
       // A confirmed person name is a canonical mapping in 人物管理. Activate it only when the
       // canonical source or one of its aliases is visible; omit later-only aliases without suppressing
