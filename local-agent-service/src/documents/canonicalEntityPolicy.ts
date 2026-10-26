@@ -105,7 +105,7 @@ export function isWorthCanonicalEntityMapping(input: EntityWorthInput): boolean 
 
   // Concepts and unclassified terms require evidence of book-level recurrence; a source quote alone
   // is not enough to turn every glossary word or language example into a canonical entity.
-  if (kind === 'concept') return recurring && hasSignificance;
+  if (kind === 'concept') return (((input.mentions || 0) >= 3 || (input.chapterCount || 0) >= 2) && hasSignificance);
   if (kind === 'other' || kind === 'title') {
     return recurring && hasSignificance &&
       /^[A-Z][\p{L}\p{M}'’.-]*(?:\s+[A-Z][\p{L}\p{M}'’.-]*){0,5}$/u.test(input.source.trim());
