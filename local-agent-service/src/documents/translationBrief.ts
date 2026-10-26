@@ -863,7 +863,9 @@ export function buildTranslationBrief(
         // A source-ordered dynamic candidate outranks an unconfirmed whole-book proposal.
         // Keep an already confirmed Context Graph mapping, but avoid injecting two competing targets.
         const existing = graph.nameMappings[index];
-        if (!['confirmed', 'confirmed-memory', 'run-canonical'].includes(String(existing?.sourceStatus || ''))) {
+        const existingStatus = String(existing?.sourceStatus || '');
+        if (!['confirmed', 'confirmed-memory'].includes(existingStatus) &&
+            (existingStatus !== 'run-canonical' || incoming.sourceStatus === 'auto')) {
           graph.nameMappings[index] = { ...existing, ...incoming };
         }
       }
@@ -874,7 +876,7 @@ export function buildTranslationBrief(
       const inPreceding = names.some((name: unknown) => visiblePrecedingSegments.some((item) =>
         sourceNameMatches(item.text, name))) ? 1 : 0;
       const statusRank = ['confirmed', 'confirmed-memory'].includes(String(mapping.sourceStatus)) ? 5 :
-        mapping.sourceStatus === 'run-canonical' ? 4 : mapping.sourceStatus === 'auto' ? 3 : 1;
+        mapping.sourceStatus === 'auto' ? 4 : mapping.sourceStatus === 'run-canonical' ? 3 : 1;
       return statusRank + inCurrent + inPreceding;
     };
     graph.nameMappings.sort((a: any, b: any) => mappingRelevance(b) - mappingRelevance(a));
@@ -942,7 +944,7 @@ export function buildTranslationBrief(
       }
       const matched = graph.nameMappings.filter(matches);
       if (status === 'candidate' && matched.some((mapping: any) =>
-          ['confirmed', 'confirmed-memory', 'run-canonical'].includes(String(mapping?.sourceStatus || '')))) continue;
+          ['confirmed', 'confirmed-memory', 'run-canonical', 'auto'].includes(String(mapping?.sourceStatus || '')))) continue;
       const mergedAliases = safeCanonicalSourceAliases(source, [
         ...aliases,
         ...matched.flatMap((mapping: any) => Array.isArray(mapping?.aliases) ? mapping.aliases : []),
@@ -953,7 +955,7 @@ export function buildTranslationBrief(
     graph.nameMappings.sort((a: any, b: any) => {
       const rank = (mapping: any) => {
         const statusRank = ['confirmed', 'confirmed-memory'].includes(String(mapping?.sourceStatus || '')) ? 5 :
-          mapping?.sourceStatus === 'run-canonical' ? 4 : mapping?.sourceStatus === 'auto' ? 3 : 1;
+          mapping?.sourceStatus === 'auto' ? 4 : mapping?.sourceStatus === 'run-canonical' ? 3 : 1;
         const names = [mapping?.source, ...(Array.isArray(mapping?.aliases) ? mapping.aliases : [])];
         const inCurrent = names.some((name: unknown) => items.some((item) => sourceNameMatches(item.text, name))) ? 2 : 0;
         const inPreceding = names.some((name: unknown) => visiblePrecedingSegments.some((item) =>
@@ -1005,7 +1007,7 @@ export function buildTranslationBrief(
       graphNameMappingsBeforeBudget: Array.isArray((graph as any)?.nameMappings) ? (graph as any).nameMappings.length : 0,
       strongNameMappingsBeforeBudget: Array.isArray((graph as any)?.nameMappings)
         ? (graph as any).nameMappings.filter((mapping: any) =>
-            ['confirmed', 'confirmed-memory', 'run-canonical', 'auto'].includes(String(mapping.sourceStatus))).length : 0,
+            ['confirmed', 'confirmed-memory', 'auto', 'run-canonical'].includes(String(mapping.sourceStatus))).length : 0,
       acceptedExamplesInjected: Array.isArray((voiceContext as any)?.recentExamples) ? (voiceContext as any).recentExamples.length : 0,
       dialogueParticipantsInjected: Array.isArray((voiceContext as any)?.dialogueParticipants)
         ? (voiceContext as any).dialogueParticipants.length : 0,
@@ -1032,7 +1034,7 @@ export function buildTranslationBrief(
   diagnostic.graphNameMappingsAfterBudget = finalMappings.length;
   diagnostic.graphNameMappingsTrimmedByBudget = 0;
   diagnostic.strongNameMappingsAfterBudget = finalMappings.filter((mapping: any) =>
-    ['confirmed', 'confirmed-memory', 'run-canonical', 'auto'].includes(String(mapping.sourceStatus))).length;
+    ['confirmed', 'confirmed-memory', 'auto', 'run-canonical'].includes(String(mapping.sourceStatus))).length;
   diagnostic.strongNameMappingsTrimmedByBudget = 0;
   diagnostic.graphCharactersTrimmedByBudget = 0;
   diagnostic.graphEntitiesTrimmedByBudget = 0;
@@ -1057,7 +1059,7 @@ export function buildTranslationBrief(
   logInfo('translation-brief', 'assembled · segments=' + brief.sourceSegmentIds.length +
     ' · chars=' + brief.contextChars +
     ' · graphMappings=' + (Array.isArray((brief.contextGraph as any)?.nameMappings) ? (brief.contextGraph as any).nameMappings.length : 0) +
-    ' (strong=' + (Array.isArray((brief.contextGraph as any)?.nameMappings) ? (brief.contextGraph as any).nameMappings.filter((m: any) => ['confirmed','confirmed-memory','run-canonical','auto'].includes(String(m.sourceStatus))).length : 0) + ')' +
+    ' (strong=' + (Array.isArray((brief.contextGraph as any)?.nameMappings) ? (brief.contextGraph as any).nameMappings.filter((m: any) => ['confirmed','confirmed-memory','auto','run-canonical'].includes(String(m.sourceStatus))).length : 0) + ')' +
     ' · voiceEntities=' + (Array.isArray((brief.voiceContext as any)?.entities) ? (brief.voiceContext as any).entities.length : 0) +
     ' · voiceCharacters=' + (Array.isArray((brief.voiceContext as any)?.characterVoices) ? (brief.voiceContext as any).characterVoices.length : 0) +
     ' · preceding=' + brief.precedingSegments.length);
