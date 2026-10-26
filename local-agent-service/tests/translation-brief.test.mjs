@@ -589,6 +589,40 @@ test('explicit confirmed glossary mappings without AI evidence activate on first
     'aliases present in the current source batch must remain available for exact name protection');
 });
 
+test('confirmed organization name mapping is protected on its first occurrence', () => {
+  const store = getDocumentProjectStore();
+  const project = store.createProject({
+    title: 'Confirmed Clan Name',
+    format: 'txt',
+    sourceFileName: 'confirmed-clan-name.txt',
+    prompt: { translationMode: 'literary', sourceLang: 'en', targetLang: 'zh' },
+    segments: [
+      { id: 'clan-first', text: 'After sixty years the Minowara prevailed.', kind: 'paragraph', contextPath: 'Chapter 1' },
+    ],
+  });
+  ensureTestContextGraph(store, project);
+  buildProjectContextGraphBundle(project.projectId, [
+    { id: 'clan-first', text: 'After sixty years the Minowara prevailed.', contextPath: 'Chapter 1' },
+  ]);
+  store.saveLiteraryMemory(project.projectId, {
+    entities: [{
+      source: 'Minowara', target: '蓑原', kind: 'organization', aliases: [], reviewStatus: 'confirmed',
+    }],
+    relationships: [], styleGuide: {}, chapterSummaries: [], recentExamples: [],
+    characterVoices: [], relationshipVoiceRules: [], voiceAnchors: [],
+  });
+  const run = store.createRun(project.projectId, { scope: { type: 'ids', ids: ['clan-first'] } });
+  const context = store.getRunContext(project.projectId, run.runId);
+  const source = store.getSegments(project.projectId, { limit: 10 }).find((item) => item.id === 'clan-first');
+  const brief = buildTranslationBrief(context, [source], []);
+  const mapping = brief.contextGraph?.nameMappings.find((item) => item.source === 'Minowara');
+
+  assert.equal(mapping?.target, '蓑原');
+  assert.equal(mapping?.sourceStatus, 'confirmed-memory');
+  assert.equal(buildCanonicalTermProtections([source], brief.contextGraph)[0]?.target, '蓑原',
+    'confirmed organization/clan mappings must not disappear merely because this is the first source occurrence');
+});
+
 test('canonical mappings and relevant context survive a legacy character budget preference', () => {
   const store = getDocumentProjectStore();
   const entities = [];
