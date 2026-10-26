@@ -114,6 +114,13 @@ export function isWorthCanonicalEntityMapping(input: EntityWorthInput): boolean 
   return ['person', 'place', 'object', 'organization', 'work', 'artifact'].includes(kind);
 }
 
+/** A source name with two distinct normalized targets is ambiguous; do not choose by output order. */
+export function canonicalTargetsConflict(left: unknown, right: unknown): boolean {
+  const a = normalized(left);
+  const b = normalized(right);
+  return !!a && !!b && a !== b;
+}
+
 export type TargetQualityResult = {
   valid: boolean;
   normalizedTarget: string;
