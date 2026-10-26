@@ -433,7 +433,7 @@ test('confirmed project-memory names are protected by Reviewer even when graph m
   const merged = mergeConfirmedMemoryNameMappings(
     { nameMappings: [] },
     { entities: [
-      { source: 'Yabu', target: '薮', kind: 'person', aliases: [], reviewStatus: 'confirmed' },
+      { source: 'Yabu', target: '薮', kind: 'person', aliases: [], reviewStatus: 'confirmed', confirmationSource: 'user-confirmed' },
       { source: 'Omi', target: '近江', kind: 'person', aliases: [], reviewStatus: 'candidate' },
     ] },
   );
@@ -454,7 +454,7 @@ test('confirmed character voice name is protected even when LiteraryMemory.entit
   const merged = mergeConfirmedMemoryNameMappings(
     { nameMappings: [] },
     { entities: [], characterVoices: [
-      { canonicalSourceName: 'Yabu', targetName: '薮', aliases: ['Yabu-san'], status: 'confirmed' },
+      { canonicalSourceName: 'Yabu', targetName: '薮', aliases: ['Yabu-san'], status: 'confirmed', confirmationSource: 'user-confirmed' },
       { canonicalSourceName: 'Omi', targetName: '近江', aliases: [], status: 'candidate' },
       { canonicalSourceName: 'Zukimoto', targetName: '柿本', aliases: [], status: 'confirmed', useForTranslation: false },
     ] },
@@ -515,7 +515,7 @@ test('literary Reviewers receive protected canonical names in both source and dr
       source: 'the King',
       target: '国王',
       aliases: ['King'],
-      sourceStatus: 'auto',
+      kind: 'person', sourceStatus: 'auto',
     }],
   };
   const input = [{
