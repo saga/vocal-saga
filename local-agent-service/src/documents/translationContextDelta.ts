@@ -115,6 +115,7 @@ export function validateTranslationContextDelta(
   translations: Map<string, string>,
   idPrefix = '',
   knownEntities: unknown[] = [],
+  targetLang = 'zh',
 ): { delta: ValidatedTranslationContextDelta; diagnostics: ContextDeltaDiagnostics } {
   const delta = emptyTranslationContextDelta();
   const diagnostics: ContextDeltaDiagnostics = {
@@ -199,7 +200,7 @@ export function validateTranslationContextDelta(
         continue;
       }
       const targetQuality = validateCanonicalTarget({
-        source: item.source, target: item.target, targetLang: 'zh', kind,
+        source: item.source, target: item.target, targetLang, kind,
       });
       if (!targetQuality.valid) {
         diagnostics.rejectedEntityCandidates++;
