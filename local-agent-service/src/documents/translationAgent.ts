@@ -390,7 +390,7 @@ export function buildCanonicalTermProtections(
     const explicitlyConfirmed = sourceStatus === 'confirmed' ||
       (sourceStatus === 'confirmed-memory' && mapping.confirmationSource === 'user-confirmed');
     const kind = String(mapping.kind || 'other');
-    if (!explicitlyConfirmed && !isWorthCanonicalEntityMapping({ source: mapping.source, kind })) return false;
+    if (!explicitlyConfirmed && !isWorthCanonicalEntityMapping({ source: mapping.source, kind, explicitBookSpecificMeaning: mapping.explicitBookSpecificMeaning === true })) return false;
     return validateCanonicalTarget({
       source: mapping.source, target: mapping.target, targetLang, kind,
     }).valid;
