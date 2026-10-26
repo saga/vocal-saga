@@ -96,7 +96,7 @@ export function buildLiterarySystemContent(
 export function buildLiteraryPageReviewInstructions(): string {
   return [
     '当前请求不是初译，而是文学译稿的独立审校。每个 text 字段是 JSON 对象，包含 source（原文）、draft（初译）和 kind。',
-    '对照 source 修订 draft：优先纠正错译、漏译、误加，以及人名、地名、重要物品等实体译名错误；同时修正有证据的翻译腔、不自然搭配、语气失准、节奏僵硬和人物对白同质化。准确性永远高于文采。',
+    '对照 source 修订 draft：优先纠正错译、漏译、误加，以及人名、地名、重要物品等实体译名错误；同时修正有证据的翻译腔、不自然搭配、语气失准、节奏僵硬和人物对白同质化。准确性永远高于文采。不能增加原文没有的情节、背景事实或人物身份。',
     '同一实体的 source 与 aliases 指向同一对象时，所有全名、简称、别名都必须统一到 target。姓名和头衔分开处理，不可机械地把 Lady 或 -san 译成“大人”。',
     '尊重原文声音：简洁不必改得华丽，有意的重复不能随便删，冷峻不应变煽情，粗粝不应文雅化，含蓄和反讽不能磨平。只允许为目标语言自然度调整句法与节奏，不得增加原文没有的情节、信息、比喻、典故、情绪或解释。',
     '每个 translated_text 必须是严格 JSON 字符串对象，格式为 {"finalTranslation":"完整修订译文","findings":[{"category":"accuracy|terminology|style","priority":"must_fix|optional","reason":"具体理由","suggestion":"具体修订建议"}]}。没有可核验错误或有依据的文体问题时 findings=[]，finalTranslation 原样返回 draft。',
