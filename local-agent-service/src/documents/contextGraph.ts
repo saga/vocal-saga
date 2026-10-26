@@ -14,6 +14,7 @@ import { getCodeBuddyTaskProfile } from '../agents/taskProfiles.ts';
 import { getDocumentProjectStore } from './projectStore.ts';
 import { planBookSamples, scanBookSegments, scanBookSegmentsConcurrent, type BookScanResult } from './bookScan.ts';
 import { logError, logInfo, logWarn } from '../log.ts';
+import { isWorthCanonicalEntityMapping, normalizeCanonicalEntityKind, splitCompoundCanonicalName, validateCanonicalTarget } from './canonicalEntityPolicy.ts';
 import {
   buildContextGraphWorkflowPrompt,
   buildContextGraphWorkflowSchema,
@@ -1217,9 +1218,15 @@ async function runAnalysis(projectId: string, runId: string): Promise<void> {
           ? 'dropped-no-valid-evidence' : 'dropped-valid-candidate-limit';
         continue;
       }
+      const characterTarget = validateCanonicalTarget({
+        source: name, target: audit.suggestedTranslation || '', targetLang, kind: 'person',
+      });
+      if (!characterTarget.valid) audit.suggestedTranslation = '';
+      else audit.suggestedTranslation = characterTarget.normalizedTarget;
       const aliases = audit.aliases.filter((item) => normalize(item) !== normalize(name));
       const attributes = {
         aliases, suggestedTranslation: audit.suggestedTranslation || '', targetLang,
+        ...(characterTarget.valid ? {} : { suggestedTranslationQuality: characterTarget.reason || 'invalid-target' }),
         role: safeText(raw.role, 360), traits: uniqueStrings(raw.traits, 10, 160),
         voice: uniqueStrings(raw.voice, 10, 180), evidenceCount: evidence.length,
       };
@@ -1228,13 +1235,59 @@ async function runAnalysis(projectId: string, runId: string): Promise<void> {
       audit.nodeId = id;
       persistedNodes.push({ id, name, aliases, kind: 'character' });
     }
+    let droppedLowValueEntityCount = 0;
+    let droppedCompoundEntityCount = 0;
+    let invalidEntityTargetCount = 0;
+    let splitCompoundEntityCount = 0;
+    const saveEntityCandidate = (
+      entityName: string,
+      targetName: string,
+      rawKind: unknown,
+      significance: string,
+      aliasesInput: unknown,
+      evidence: Evidence[],
+      audit: CandidateAudit,
+    ) => {
+      const normalizedKind = normalizeCanonicalEntityKind(rawKind);
+      const occurrences = segments.filter((segment) => sourceNameMatches(segment.text, entityName));
+      const chapterCount = new Set(occurrences.map((segment) => segment.contextPath).filter(Boolean)).size;
+      if (!isWorthCanonicalEntityMapping({
+        source: entityName, kind: normalizedKind,
+        mentions: occurrences.length, chapterCount, significance,
+      })) {
+        droppedLowValueEntityCount++;
+        return false;
+      }
+      const targetCheck = validateCanonicalTarget({
+        source: entityName, target: targetName, targetLang, kind: normalizedKind,
+      });
+      if (!targetCheck.valid) invalidEntityTargetCount++;
+      const aliases = uniqueStrings(aliasesInput, 12, 100)
+        .filter((item) => normalize(item) !== normalize(entityName) && !splitCompoundCanonicalName(item));
+      const attributes = {
+        aliases,
+        entityKind: normalizedKind,
+        significance: safeText(significance, 360),
+        suggestedTranslation: targetCheck.valid ? targetCheck.normalizedTarget : '',
+        ...(targetCheck.valid ? {} : { suggestedTranslationQuality: targetCheck.reason || 'invalid-target' }),
+        targetLang,
+        evidenceCount: evidence.length,
+      };
+      const id = saveNode(db, revisionId, 'entity', entityName, attributes, evidence);
+      audit.disposition = targetCheck.valid ? 'persisted' : 'persisted-target-quality-rejected';
+      audit.nodeId ||= id;
+      persistedNodes.push({ id, name: entityName, aliases, kind: 'entity' });
+      return true;
+    };
+
     for (const raw of (Array.isArray(data.entities) ? data.entities : []).slice(0, 400)) {
       const name = safeText(raw?.name, 120);
+      const target = safeText(raw?.suggestedTranslation, 120);
+      const aliases = uniqueStrings(raw?.aliases, 12, 100);
+      const significance = safeText(raw?.significance, 240);
       const audit: CandidateAudit = {
-        category: 'entity', name,
-        aliases: uniqueStrings(raw?.aliases, 12, 100),
-        suggestedTranslation: safeText(raw?.suggestedTranslation, 120),
-        role: safeText(raw?.significance, 240),
+        category: 'entity', name, aliases, suggestedTranslation: target,
+        role: significance,
         rawEvidenceCount: Array.isArray(raw?.evidence) ? raw.evidence.length : 0,
         acceptedEvidenceCount: 0, invalidEvidenceReasons: {}, disposition: 'not-evaluated',
       };
@@ -1253,17 +1306,43 @@ async function runAnalysis(projectId: string, runId: string): Promise<void> {
           ? 'dropped-no-valid-evidence' : 'dropped-valid-candidate-limit';
         continue;
       }
-      const aliases = audit.aliases.filter((item) => normalize(item) !== normalize(name));
-      const attributes = {
-        aliases, entityKind: safeText(raw.kind, 50) || 'other',
-        significance: safeText(raw.significance, 360),
-        suggestedTranslation: audit.suggestedTranslation || '', targetLang,
-        evidenceCount: evidence.length,
-      };
-      const id = saveNode(db, revisionId, 'entity', name, attributes, evidence);
-      audit.disposition = 'persisted';
-      audit.nodeId = id;
-      persistedNodes.push({ id, name, aliases, kind: 'entity' });
+
+      const sourceParts = splitCompoundCanonicalName(name);
+      const targetParts = splitCompoundCanonicalName(target);
+      if (sourceParts) {
+        if (!targetParts || sourceParts.parts.length !== targetParts.parts.length) {
+          droppedCompoundEntityCount++;
+          audit.disposition = 'dropped-compound-name-unpaired';
+          continue;
+        }
+        const pairs = sourceParts.parts.map((sourcePart, index) => ({
+          source: sourcePart, target: targetParts.parts[index] || '',
+          evidence: evidence.filter((item) => sourceNameMatches(item.quote, sourcePart)),
+        }));
+        if (pairs.some((pair) => !pair.target || !pair.evidence.length)) {
+          droppedCompoundEntityCount++;
+          audit.disposition = 'dropped-compound-name-unverified-part';
+          continue;
+        }
+        splitCompoundEntityCount += pairs.length;
+        let saved = 0;
+        for (const pair of pairs) {
+          if (saveEntityCandidate(
+            pair.source, pair.target, raw.kind, significance, [], pair.evidence, audit,
+          )) saved++;
+        }
+        if (!saved && audit.disposition === 'not-evaluated') audit.disposition = 'dropped-low-value-compound-parts';
+        else if (saved) audit.disposition = 'split-compound-persisted-' + saved;
+        continue;
+      }
+      if (splitCompoundCanonicalName(target)) {
+        invalidEntityTargetCount++;
+        audit.disposition = 'persisted-target-quality-rejected';
+        // Preserve the source evidence for diagnostics, but never store a compound target as a mapping.
+        saveEntityCandidate(name, '', raw.kind, significance, aliases, evidence, audit);
+        continue;
+      }
+      saveEntityCandidate(name, target, raw.kind, significance, aliases, evidence, audit);
     }
 
     const identities = nameMap(persistedNodes);
@@ -1422,6 +1501,7 @@ async function runAnalysis(projectId: string, runId: string): Promise<void> {
         invalidEvidenceByCategory,
         outputAuditVersion: outputAudit.auditVersion,
         modelCandidateCounts: outputAudit.rawCounts,
+        entityPolicy: { droppedLowValueEntityCount, droppedCompoundEntityCount, invalidEntityTargetCount, splitCompoundEntityCount },
         droppedCandidateCounts: {
           characters: outputAudit.persistedCounts.characterCandidatesDroppedForEvidence,
           entities: outputAudit.persistedCounts.entityCandidatesDroppedForEvidence,
