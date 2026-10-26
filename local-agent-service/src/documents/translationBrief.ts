@@ -415,7 +415,8 @@ function buildTemporallyVisibleMemory(
   rawMemory.entities = (Array.isArray(rawMemory.entities) ? rawMemory.entities : []).flatMap((entity: any) => {
     const aliases = Array.isArray(entity?.aliases) ? entity.aliases : [];
     const evidenceRefs = Array.isArray(entity.evidenceRefs) ? entity.evidenceRefs : [];
-    const confirmedPersonMapping = entity?.kind === 'person' && entity?.reviewStatus === 'confirmed';
+    const userConfirmedMapping = entity?.reviewStatus === 'confirmed' && entity?.confirmationSource === 'user-confirmed';
+    const confirmedPersonMapping = entity?.kind === 'person' && userConfirmedMapping;
     // Inferred identities still fail closed when a later-only alias appears. A confirmed person
     // translation, however, is the canonical entry in 人物管理: keep it when its source name is
     // already visible, and omit only aliases first revealed in later chapters.
@@ -424,8 +425,7 @@ function buildTemporallyVisibleMemory(
       exclusionDiagnostics.memoryEntityExcludedFutureAlias++;
       return [];
     }
-    const explicitCanonicalMapping = entity?.reviewStatus === 'confirmed' &&
-      (confirmedPersonMapping || (evidenceRefs.length === 0 && !String(entity?.evidence || '').trim()));
+    const explicitCanonicalMapping = userConfirmedMapping;
     const canonicalSourceVisibleNow = items.some((item) => sourceNameMatches(item.text, entity?.source));
     const visibleInCurrentBatch = canonicalSourceVisibleNow || items.some((item) =>
       aliases.some((alias: unknown) => sourceNameMatches(item.text, alias)));
@@ -573,8 +573,9 @@ function buildTemporallyVisibleMemory(
   // leak a future plot fact through a field labelled "style", "example", or "summary".
   // Free-form whole-book summaries/examples may reveal future plot. A style guide is safe only
   // after the user explicitly confirms it in the workspace; model suggestions stay out of prompts.
-  rawMemory.styleGuide = rawMemory.styleGuideStatus === 'confirmed' ? rawMemory.styleGuide : {};
-  rawMemory.styleGuideStatus = rawMemory.styleGuideStatus === 'confirmed' ? 'confirmed' : 'candidate';
+  const userConfirmedStyleGuide = rawMemory.styleGuideStatus === 'confirmed' && rawMemory.styleGuideConfirmationSource === 'user-confirmed';
+  rawMemory.styleGuide = userConfirmedStyleGuide ? rawMemory.styleGuide : {};
+  rawMemory.styleGuideStatus = userConfirmedStyleGuide ? 'confirmed' : 'candidate';
   rawMemory.chapterSummaries = [];
   rawMemory.recentExamples = retrievedExamples;
   rawMemory.openQuestions = [];
@@ -980,8 +981,8 @@ export function buildTranslationBrief(
     const styleReady = graph.analysisVersion === CONTEXT_GRAPH_ANALYSIS_VERSION &&
       required.every((key) => typeof candidateStyle[key] === 'string' && candidateStyle[key].trim()) &&
       Array.isArray(candidateStyle.rules) && candidateStyle.rules.some((item: unknown) => typeof item === 'string' && item.trim());
-    const userStyle = rawMemory.styleGuideStatus === 'confirmed' && rawMemory.styleGuideConfirmationSource === 'user-confirmed'
-      ? rawMemory.styleGuide : null;
+    const userStyle = temporalMemory.styleGuideStatus === 'confirmed' && temporalMemory.styleGuideConfirmationSource === 'user-confirmed'
+      ? temporalMemory.styleGuide : null;
     graph.styleGuide = userStyle ? { ...userStyle, sourceStatus: 'user-confirmed' } : styleReady ? {
       narrativeStyle: candidateStyle.narrativeStyle, register: candidateStyle.register, rhythm: candidateStyle.rhythm,
       dialogue: candidateStyle.dialogue, diction: candidateStyle.diction, rules: candidateStyle.rules, avoid: candidateStyle.avoid || [],
