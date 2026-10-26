@@ -7,6 +7,7 @@
  */
 import { createHash } from 'node:crypto';
 import { logInfo } from '../log.ts';
+import { hasCompoundCanonicalSyntax, isWorthCanonicalEntityMapping, normalizeCanonicalEntityKind, validateCanonicalTarget } from './canonicalEntityPolicy.ts';
 
 // Persistence safety ceiling, not a prompt budget. Keep enough room for long-book memory.
 const MAX_MEMORY_BYTES = 5 * 1024 * 1024;
@@ -177,24 +178,36 @@ export function sanitizeProjectLiteraryMemory(input: unknown): Record<string, an
       const sourceQuote = text(ref.sourceQuote, 240);
       return segmentId && sourceQuote ? [{ segmentId, sourceQuote }] : [];
     }) : [];
+    const aliases = list(item.aliases, 8, 80);
+    const kind = normalizeCanonicalEntityKind(item.kind);
+    const confirmation = confirmationSource(item.confirmationSource, item.reviewStatus === 'confirmed');
+    const userConfirmed = item.reviewStatus === 'confirmed' && confirmation === 'user-confirmed';
+    const targetEvidenceRefs = Array.isArray(item.targetEvidenceRefs) ? item.targetEvidenceRefs.slice(-8).flatMap((ref: any) => {
+      if (!ref || typeof ref !== 'object' || Array.isArray(ref)) return [];
+      const segmentId = text(ref.segmentId, 160);
+      const sourceQuote = text(ref.sourceQuote, 240);
+      const targetSurface = text(ref.targetSurface, 120);
+      return segmentId && sourceQuote && targetSurface ? [{ segmentId, sourceQuote, targetSurface }] : [];
+    }) : [];
+    const targetConfidence = item.targetConfidence === 'corroborated' &&
+      new Set(targetEvidenceRefs.map((ref: any) => ref.segmentId)).size >= 2 ? 'corroborated' : 'candidate';
+    const targetQuality = validateCanonicalTarget({ source, target, targetLang: 'zh', kind });
+    const canonicalMappingDisposition = hasCompoundCanonicalSyntax(source) ? 'compound-name'
+      : !targetQuality.valid ? 'invalid-target'
+      : !userConfirmed && !isWorthCanonicalEntityMapping({
+          source, kind, mentions: Math.max(evidenceRefs.length, targetEvidenceRefs.length),
+          chapterCount: targetConfidence === 'corroborated' ? 2 : 0,
+          significance: text(item.description || item.evidence, 200),
+        }) ? 'low-value' : 'eligible';
     return [{
-      source, target, kind: text(item.kind, 30) || 'other', aliases: list(item.aliases, 8, 80),
+      source, target, kind, aliases,
       description: text(item.description, 200), evidence: text(item.evidence, 180),
       ...(evidenceRefs.length ? { evidenceRefs } : {}),
-      targetEvidenceRefs: Array.isArray(item.targetEvidenceRefs) ? item.targetEvidenceRefs.slice(-8).flatMap((ref: any) => {
-        if (!ref || typeof ref !== 'object' || Array.isArray(ref)) return [];
-        const segmentId = text(ref.segmentId, 160);
-        const sourceQuote = text(ref.sourceQuote, 240);
-        const targetSurface = text(ref.targetSurface, 120);
-        return segmentId && sourceQuote && targetSurface ? [{ segmentId, sourceQuote, targetSurface }] : [];
-      }) : [],
-      targetConfidence: item.targetConfidence === 'corroborated' &&
-        Array.isArray(item.targetEvidenceRefs) &&
-        new Set(item.targetEvidenceRefs.map((ref: any) => text(ref?.segmentId, 160)).filter(Boolean)).size >= 2
-        ? 'corroborated' : 'candidate',
-      reviewStatus: item.reviewStatus === 'confirmed' ? 'confirmed' : 'suggested',
-      ...(confirmationSource(item.confirmationSource, item.reviewStatus === 'confirmed')
-        ? { confirmationSource: confirmationSource(item.confirmationSource, item.reviewStatus === 'confirmed') } : {}),
+      ...(targetEvidenceRefs.length ? { targetEvidenceRefs } : {}),
+      targetConfidence,
+      canonicalMappingDisposition,
+      reviewStatus: userConfirmed ? 'confirmed' : 'suggested',
+      ...(confirmation ? { confirmationSource: confirmation } : {}),
     }];
   }) : []);
   const relationships = Array.isArray(raw.relationships) ? raw.relationships.slice(0, 160).flatMap((item: any) => {
