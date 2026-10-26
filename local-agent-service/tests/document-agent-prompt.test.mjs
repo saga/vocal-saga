@@ -398,6 +398,15 @@ test('run-canonical preflight mappings protect the first occurrence without conf
   });
   assert.deepEqual(confirmedWins.map((item) => item.target), ['蓑原'],
     'an explicitly confirmed project mapping must override the run-scoped preflight choice');
+
+  const corroboratedWins = buildCanonicalTermProtections([{ id: 'minowara-1', text: source }], {
+    nameMappings: [
+      { source: 'Minowara', target: '米诺原', aliases: [], sourceStatus: 'run-canonical' },
+      { source: 'Minowara', target: '蓑原', aliases: [], sourceStatus: 'auto' },
+    ],
+  });
+  assert.deepEqual(corroboratedWins.map((item) => item.target), ['蓑原'],
+    'a corroborated accepted translation should outrank a fresh run-only suggestion');
 });
 
 test('confirmed project-memory names are protected by Reviewer even when graph mapping is absent', () => {
