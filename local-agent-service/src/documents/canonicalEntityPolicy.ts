@@ -93,18 +93,25 @@ export function isWorthCanonicalEntityMapping(input: EntityWorthInput): boolean 
   if (!source || hasCompoundCanonicalSyntax(input.source)) return false;
   const kind = normalizeCanonicalEntityKind(input.kind);
   const explicitMeaning = input.explicitBookSpecificMeaning === true;
+  const recurring = (input.mentions || 0) >= 3 && (input.chapterCount || 0) >= 2;
+  const hasSignificance = Boolean((input.significance || '').trim());
+  const genericTerm = kind !== 'person' &&
+    (COUNTRY_OR_NATIONALITY.has(source) || GENERIC_NON_PERSON_TERMS.has(source));
+
+  // A standard country name or common word stays out by default. Even a model's claim that it is
+  // book-specific must be supported by recurrence and a concrete significance note.
+  if (genericTerm) return explicitMeaning && recurring && hasSignificance;
   if (explicitMeaning) return true;
 
-  if (kind !== 'person' && (COUNTRY_OR_NATIONALITY.has(source) || GENERIC_NON_PERSON_TERMS.has(source))) return false;
-
-  // Other/unknown is deliberately conservative. Frequent ordinary words should not fill the glossary.
+  // Concepts and unclassified terms require evidence of book-level recurrence; a source quote alone
+  // is not enough to turn every glossary word or language example into a canonical entity.
+  if (kind === 'concept') return recurring && hasSignificance;
   if (kind === 'other' || kind === 'title') {
-    const recurring = (input.mentions || 0) >= 3 && (input.chapterCount || 0) >= 2;
-    return recurring && Boolean((input.significance || '').trim()) &&
+    return recurring && hasSignificance &&
       /^[A-Z][\p{L}\p{M}'’.-]*(?:\s+[A-Z][\p{L}\p{M}'’.-]*){0,5}$/u.test(input.source.trim());
   }
   // A proper person, named organization, work, object, or place can be useful even if infrequent.
-  return ['person', 'place', 'object', 'organization', 'concept', 'work', 'artifact'].includes(kind);
+  return ['person', 'place', 'object', 'organization', 'work', 'artifact'].includes(kind);
 }
 
 export type TargetQualityResult = {
