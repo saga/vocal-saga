@@ -192,15 +192,17 @@ export function sanitizeProjectLiteraryMemory(input: unknown): Record<string, an
     const targetConfidence = item.targetConfidence === 'corroborated' &&
       new Set(targetEvidenceRefs.map((ref: any) => ref.segmentId)).size >= 2 ? 'corroborated' : 'candidate';
     const targetQuality = validateCanonicalTarget({ source, target, targetLang: 'zh', kind });
+    const bookSpecificMeaning = item.bookSpecificMeaning === true;
     const canonicalMappingDisposition = hasCompoundCanonicalSyntax(source) ? 'compound-name'
       : !targetQuality.valid ? 'invalid-target'
       : !userConfirmed && !isWorthCanonicalEntityMapping({
           source, kind, mentions: Math.max(evidenceRefs.length, targetEvidenceRefs.length),
           chapterCount: targetConfidence === 'corroborated' ? 2 : 0,
           significance: text(item.description || item.evidence, 200),
+          explicitBookSpecificMeaning: bookSpecificMeaning,
         }) ? 'low-value' : 'eligible';
     return [{
-      source, target, kind, aliases,
+      source, target, kind, aliases, bookSpecificMeaning,
       description: text(item.description, 200), evidence: text(item.evidence, 180),
       ...(evidenceRefs.length ? { evidenceRefs } : {}),
       ...(targetEvidenceRefs.length ? { targetEvidenceRefs } : {}),
