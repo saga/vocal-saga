@@ -162,6 +162,11 @@ export function validateTranslationContextDelta(
         diagnostics.rejectedCompoundEntityCandidates++;
         continue;
       }
+      if (sourceCompound.parts.length > 12) {
+        diagnostics.rejectedEntityCandidates++;
+        diagnostics.rejectedCompoundEntityCandidates++;
+        continue;
+      }
       const pairs = sourceCompound.parts.map((sourcePart, index) => ({
         source: sourcePart,
         target: targetCompound.parts[index] || '',
@@ -176,7 +181,9 @@ export function validateTranslationContextDelta(
         ...pair,
         localId: (originalLocalId + ':' + String(index + 1)).slice(0, 64),
       }));
-      localIds.set(originalLocalId, expanded[0]!.localId);
+      // The original local ID refers to the whole list and is ambiguous after splitting.
+      // Do not silently bind its entity mentions to the first element; mentions must identify
+      // one split source by canonical name or be rejected by the normal evidence checks.
     } else {
       // A single source name must never carry a multi-target list.
       if (targetCompound) {
@@ -190,6 +197,10 @@ export function validateTranslationContextDelta(
 
     seenLocalIds.add(originalLocalId);
     for (const item of expanded) {
+      if (delta.entityCandidates.length >= 120) {
+        diagnostics.rejectedEntityCandidates++;
+        continue;
+      }
       const targetQuality = validateCanonicalTarget({
         source: item.source, target: item.target, targetLang, kind,
       });
