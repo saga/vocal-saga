@@ -430,6 +430,49 @@ export function buildCanonicalTermProtections(
   return protections;
 }
 
+/**
+ * Context deltas are model-generated metadata, not a second source of truth for canonical names.
+ * When the current batch already used a validated TranslationBrief mapping, normalize matching
+ * entity proposals to that exact target before persisting the delta. This keeps contradictory
+ * "米诺原"/"源氏" proposals from reintroducing a conflict after the translated text was protected.
+ * It does not promote unmapped candidates or create target evidence that the model did not provide.
+ */
+export function normalizeContextDeltaCanonicalTargets(
+  delta: ValidatedTranslationContextDelta,
+  protections: CanonicalTermProtection[],
+): number {
+  const keyOf = (value: unknown): string => normalizeCanonicalTerm(String(value || ''))
+    .replace(/^(?:the|a|an)\\s+/, '')
+    .replace(/(?:['’]s)\\b/g, '')
+    .trim();
+  const targetBySource = new Map<string, string>();
+  const conflicts = new Set<string>();
+  for (const protection of protections) {
+    const key = keyOf(protection.sourceForm);
+    if (!key) continue;
+    const existing = targetBySource.get(key);
+    if (existing && normalizeCanonicalTerm(existing) !== normalizeCanonicalTerm(protection.target)) {
+      conflicts.add(key);
+    } else {
+      targetBySource.set(key, protection.target);
+    }
+  }
+  let normalizedCount = 0;
+  for (const candidate of delta.entityCandidates || []) {
+    const key = keyOf(candidate.canonicalSource);
+    const canonicalTarget = targetBySource.get(key);
+    if (!canonicalTarget || conflicts.has(key) ||
+        normalizeCanonicalTerm(candidate.targetProposal) === normalizeCanonicalTerm(canonicalTarget)) continue;
+    candidate.targetProposal = canonicalTarget;
+    candidate.reason = [
+      candidate.reason,
+      '服务端已按本次 TranslationBrief 的有效规范名称映射统一候选译名。',
+    ].filter(Boolean).join(' ').slice(0, 180);
+    normalizedCount++;
+  }
+  return normalizedCount;
+}
+
 export function maskCanonicalTermText(text: string, protections: CanonicalTermProtection[]): string {
   if (!text || !protections.length) return text;
   const byName = new Map(protections.map((item) => [normalizeCanonicalTerm(item.sourceForm), item]));
@@ -1045,9 +1088,13 @@ async function translateBatch(context: any, items: TranslationItem[], requestId:
       )
     : { delta: emptyTranslationContextDelta(), diagnostics: null };
   const deltaDiagnostics = deltaResult.diagnostics;
+  const canonicalizedContextEntityCandidates = context.run.translationMode === 'literary'
+    ? normalizeContextDeltaCanonicalTargets(deltaResult.delta, termProtections)
+    : 0;
   if (context.run.translationMode === 'literary') {
     store.appendEvent(context.project.projectId, context.run.runId, 'translation.context-delta.parsed', {
       batchIndex, requestId,
+      canonicalizedContextEntityCandidates,
       acceptedEntityCandidates: deltaDiagnostics!.acceptedEntityCandidates,
       rejectedEntityCandidates: deltaDiagnostics!.rejectedEntityCandidates,
       acceptedEntityMentions: deltaDiagnostics!.acceptedEntityMentions,
