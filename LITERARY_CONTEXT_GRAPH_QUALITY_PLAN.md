@@ -1,221 +1,237 @@
-# 文学翻译预处理与实体记忆质量改进计划
+# 文学翻译预处理与实体译名质量改进计划（合并版）
 
-**状态：** 研究与实施计划，尚未修改本计划以外的业务代码。  
-**范围：** `saga/vocal-saga/local-agent-service` 与 `saga/fanyi-extension`。  
-**目标：** 把全书文风补全、实体候选筛选、复合名称拆分、目标译名质量校验和记忆状态升级尽可能自动化；不要求用户逐项确认普通实体，也不让有问题的模型输出变成长期强约束。
+**状态：** 研究结论与实施计划；本文件更新不包含业务代码修改。  
+**适用项目：** \`Shogun\`（项目 ID：\`4fa564de-b0ec-485d-88dc-562ad1bf66d3\`，数据快照见 \`entity-style-quality-plan.md\`）。  
+**涉及仓库：** \`saga/vocal-saga\` 与 \`saga/fanyi-extension\`。  
+**目标原则：** 能由服务端确定性完成的就自动完成；人工操作只保留给真实歧义、用户偏好和不可安全自动决定的冲突。自动化不能将机器推断伪装成人工确认，也不能覆盖用户已接受的译文。
 
-## 1. 结论
+## 1. 合并后的结论
 
-目前不是一个单纯的 Prompt 问题，而是几个层次同时缺少门槛：
+两份分析有不同证据层级，需以项目数据库快照修正此前对文风问题的初步判断。
 
-1. **文风界面可以导入旧的、不完整的预处理结果。** Local Agent 当前的 Context Graph 分析路径已经检查五个核心文风维度，并在缺失时定向补全；补全后仍缺字段会失败而不是标记完成。但扩展的“载入预处理文风建议”只要预处理概览里任一字段非空就可用，既不检查当前来源版本、分析版本，也不检查文风是否完整。导入函数只覆盖非空字段，所以旧概览里的“叙述声音 + 规则”可以进入编辑器，而语域、节奏、对白、措辞仍然为空。
-2. **实体记忆是一个过宽的捕获网。** 服务端检查候选名称、目标译名是否非空，以及引用的原文证据是否真实，但没有充分判断它是不是值得跨章节持久化的专名/术语，也没有检查目标译名本身是否合理。于是普通名称、常见词、词汇例子甚至模型组合出来的多个名称，都可能成为长期记忆条目。
-3. **实体名字段没有“必须是一项”的结构约束。** `translationContextDelta.ts` 和 Context Graph 实体落库逻辑将 `name/canonicalSource` 当作普通字符串保留。像 `Dozo / neh / Ingeles` 这样的清单只要整体被模型包装成一条名称，并且引用能在原文中找到，就可能作为单个实体保存。现在没有可靠的分拆与配对规则。
-4. **名称目标缺少语言形态质量检查。** `Achiko → achi子` 这类混合拉丁字母与中文字符的目标译名不会仅因格式异常而被拒绝。只要目标非空、证据引用合法，候选便可能进入记忆；主服务与扩展侧旧分析路径的自动激活条件也不一致。
-5. **“证据可验证”和“译名可信”混用。** 记忆模型有 `evidence-verified`、`user-confirmed`、`legacy-unknown` 的来源字段，但运行时的 `reviewStatus=confirmed` 本身仍可能使旧的 `legacy-unknown` 项获得强映射。扩展旧分析路径的 `autoConfirmLiteraryMemory()` 主要验证引用的 segment ID 与原文 quote，不等于验证 target 翻译正确。原文确实出现“Achiko”，并不能证明“achi子”就是正确译名。
-
-## 2. 代码证据和职责边界
-
-### 2.1 全书文风
-
-- [Local Agent：Context Graph 分析与文风补全](https://github.com/saga/vocal-saga/blob/main/local-agent-service/src/documents/contextGraph.ts)。当前代码有 `findMissingStyleFields()`、`styleRepairUsed` 和 `styleFieldCoverage`；核心维度包括 `narrativeStyle`、`styleRegister`、`styleRhythm`、`styleDialogue`、`styleDiction`，以及非空的 `styleRules`。`styleAvoid` 可以为空，这是合理的，不应为了填满表单臆造风格缺点。
-- [Extension：全书文风编辑面板](https://github.com/saga/fanyi-extension/blob/main/src/entrypoints/document/App.vue#L467-L517)。导入按钮只检查概览是否“全部为空”，没有检查当前图谱版本与完整性。
-- [Extension：导入文风候选](https://github.com/saga/fanyi-extension/blob/main/src/entrypoints/document/useLiteraryMemoryEditor.ts#L513-L565)。`importContextGraphStyleGuide()` 对空字段采取“不覆盖”的策略，但也因此不会修复缺失字段；它仍会将状态设为 `candidate`。
-
-截图里“候选·尚未注入”本身表示当前记忆文风尚未进入翻译上下文，不一定是错误；真正需要修复的是：不完整/陈旧的预处理概览仍能被导入，以及正常翻译过度依赖人工点击导入、确认才能用上可验证的文风信息。
-
-### 2.2 实体和名称候选
-
-- [Local Agent：全书实体候选落库](https://github.com/saga/vocal-saga/blob/main/local-agent-service/src/documents/contextGraph.ts)。`data.entities` 当前主要经过字段清理、证据验证和候选条数限制后保存。引文需要出现在对应样本中，但名称是否是复合清单、普通词或高价值书籍专名，并未在落库前得到确定性判定。
-- [Local Agent：动态上下文增量](https://github.com/saga/vocal-saga/blob/main/local-agent-service/src/documents/translationContextDelta.ts)。`validateTranslationContextDelta()` 会验证 `canonicalSource` 在证据引用中出现，并验证实体提及与实际译文有关，但没有将斜杠清单拆成多项，也没有目标语言形态质量校验。
-- [Extension：文学记忆类型和清理](https://github.com/saga/fanyi-extension/blob/main/src/entrypoints/utils/document/literary.ts)。`sanitizeLiteraryMemory()` 保留名称与目标字符串，不做复合名称拆分、标准实体降噪或目标译名形态验证。
-- [Extension：旧文学分析路径](https://github.com/saga/fanyi-extension/blob/main/src/entrypoints/document/useDocumentTranslation.ts)。此路径对返回的记忆调用 `autoConfirmLiteraryMemory()`。该函数能验证证据引用是否对应本批原文，但引用真实不能证明目标译名语义正确。
-- 扩展的 Local Agent 文档约束明确规定：长文翻译的 Context Graph、证据、动态增量合并和规范记忆应以 Local Agent Service 为权威；扩展不应维护第二套候选提取/合并算法。因此修复应以服务端确定性规范化和质量策略为主，扩展只负责呈现机器状态、编辑用户设置和发起明确的重分析动作。
-
-## 3. 设计原则
-
-### 3.1 把“普通翻译”与“需要持久化的规范项”分开
-
-普通词和常见国家名称应该由正常翻译处理，不必占据每本书的“实体译名表”。该表应优先保存那些确实会导致持续漂移或需要作品内约定的项目，例如虚构氏族 `Minowara`、虚构人物、别名、特殊称谓、书内专有组织、带历史变体的地点或反复出现且有专门含义的术语。
-
-- `Japan → 日本`、`England → 英格兰` 这类有标准常见译法的地名，默认不作为书籍专属规范条目；如果原文存在 `Yedo/Edo` 等需要作品内区别或特殊约定的变体，则应保留。
-- `God → 上帝` 默认属于普通宗教词汇处理，不应该仅因为大写或单次出现就成为强规范实体。若书中确实围绕特定神祇、信仰或术语区别反复使用，并且普通翻译可能造成概念合并，再允许登记为概念型记忆。
-- 不要用只维护几个例子的硬编码黑名单解决问题。使用版本化的标准地名/实体词典、实体类型、全书出现分布、上下文重要性和是否存在目标译名歧义组成确定性筛选策略。词典只负责判断是否需要“项目专属映射”，不替代实际翻译。
-
-### 3.2 规范候选分层，不将“来源有效”当作“译名正确”
-
-建议统一采用以下语义：
-
-| 状态/来源 | 含义 | 能否强制覆盖模型 |
+| 问题 | 合并后的根因判断 | 优先级 |
 |---|---|---|
-| `user-confirmed` | 用户明确确认或编辑该规范映射 | 可以，优先级最高 |
-| `translation-corroborated` | 不同原文片段中多个已接受译文稳定使用同一目标译名，且通过形态/冲突检查 | 可以，作为自动规范 |
-| `evidence-verified` | 原文 quote 与 segment ID 真实对应，但译名尚未充分佐证 | 不应单独强制 |
-| `run-canonical` | 本次全书预处理为本次 Run 选定的临时目标名，避免同波次/跨批次漂移 | 仅本 Run 内强制；不能升级为永久确认 |
-| `candidate` | 原文证据与候选已保存，译名仍待佐证 | 只作软提示 |
-| `legacy-unknown` | 历史记录没有可靠的确认来源 | 不应因 `reviewStatus=confirmed` 就自动获得最高权威 |
+| 全书文风表只显示“叙述声音”和“规则” | 该 Shogun 项目的 Context Graph 元数据实际已有全部五个维度；截图中的 LiteraryMemory 是较早的一份部分导入结果。问题核心是一次性手动复制、空值固化、字符上限不一致、没有版本/差异提示，而不是当前图谱必然缺字段。 | P0 |
+| 文风修改后已有译文未变旧 | \`projectStore.ts\` 的 Context Graph fingerprint 目前只把 \`narrativeStyle\` 和 \`styleRules\` 两个元数据字段纳入哈希，另外四个维度和 \`styleAvoid\` 的变化可能未触发 stale。 | P0 |
+| \`God→上帝\`、\`Japan→日本\`、\`England→英格兰\` 等普通项进入实体表 | 没有“是否值得成为书籍专属映射”的入库闸门。有效原文引文不等于需要长期保存的专名，也不等于目标译名正确。 | P0 |
+| 多个名称合成一条实体 | Context Graph 与动态 \`context_delta\` 验证记录主要检查字符串和证据，没有强制“一条记录只对应一个来源名称和一个目标”。复合清单可能变成强制规范映射。 | P0 |
+| \`Achiko→achi子\` | 目标译名缺少目标语言形态质量检查；已有旧记忆即使是机器生成/来源不明，也可能因 \`reviewStatus=confirmed\` 而压过后来更合理的新建议。 | P0 |
+| 扩展与本机服务规则不一致 | 扩展的旧文学分析路径会仅凭 \`segmentId + quote\` 可验证就自动确认实体；主服务的 Project/Run 路径则有不同的证据、时间边界和映射权威规则。 | P1 |
 
-这不是增加人工审批关卡，而是让服务端按证据自动决定约束强度。对来源不明的历史项目，保留记录和历史译文，但降低其运行时权威；只在新的译文得到独立佐证后自动升级。用户明确确认的记录不被重写或降级。
+\`entity-style-quality-plan.md\` 报告的数据库快照显示：Context Graph 的五个文风字段均有数据；\`literary_memory_revisions\` 的当前文风记忆仍是较早的另一份数据，\`register/rhythm/dialogue/diction/avoid\` 为空。图谱长度分别约为 626、618、615、1000、733 字，规则 8 条、avoid 6 条，而扩展的 \`sanitizeLiteraryMemory()\` 和服务端 \`voiceContext.ts\` 都把五个描述字段限制在 500 字。因此即使重新导入，内容仍可能被截断。该报告还称当前 \`translation_results\` 中未找到 \`achi子\`、全角斜杠和“英吉利人”等污染样本，意味着脏元数据已存在，但这份快照中尚未观察到这些模式污染已接受译文；应优先清理元数据，避免后续污染。
 
-### 3.3 实体名称必须是一项；清单要拆开或拒绝保存
+这些具体数据库数据来自另一份分析报告。本计划把它们作为该项目快照的证据，不将它们泛化为所有项目必然相同的状态。
 
-在模型输出落库前增加共享的名称字段规范化器，并应用于 Context Graph、`translation_context_delta` 和旧式文学分析接口：
+## 2. 架构原则：一个事实来源，分开证据、质量和权威
 
-1. 识别 ` / `、`／`、` | ` 等清单分隔符，但不能见到任何斜杠就机械拆分，避免破坏 `AC/DC`、`OS/2` 以及作品中的真实组合名。
-2. 对源名称与目标译名都能拆出相同数量的非空项，且每个源名称都能在证据原文中独立定位时，才按位置配对拆成多条候选。例如五个国家名称与五个译名可以先拆成五项。
-3. 如果数量不相等、目标译名含义无法配对，或者源项在证据中不能独立定位，则不保存成一个“复合实体”；执行一次定向结构化修复或记录非阻塞诊断，并继续其他翻译。
-4. 拆分后，每一项仍要经过标准实体/低价值词过滤。拆开不等于一定进入记忆；`England/Netherlands/Spain/Portugal/France` 很可能会全部被归类为标准地名，而不是五个书籍专属映射。
-5. `Dozo / neh / Ingeles` 这一类词汇清单不能因为一段引用里同时出现，就当作一个实体。应先拆项，再根据词汇是否重复、是否具有作品专属含义、目标译名是否稳定决定是否持久化。
+### 2.1 Local Agent Service 是唯一业务规则所有者
 
-### 3.4 目标译名的自动质量检查
+实体筛选、复合名称规范化、目标译名检查、目标置信升级、Context Graph 版本与动态上下文合并，都应以 \`vocal-saga/local-agent-service\` 为权威。扩展负责展示、编辑用户偏好、呈现诊断和同步状态，不能另写一套不同的实体分类与自动升级算法。
 
-新增服务端 `canonicalTargetQuality` 校验器，至少支持本次主要目标方向 English/Romanized Japanese → Chinese，并留下语言扩展接口。
+扩展仍可做格式防御和 UI 校验，但不应仅凭一段原文引用就自行将服务端候选提升为强制映射。旧的 \`/api/translate/document/literary/analyze\` 路径必须复用服务端规范策略，或者在确认已无合法调用方后移除/限制；不能让它继续绕开 Project/Run 的实体质量规则。
 
-- 对中文目标中的人物名，像 `achi子` 这种拉丁字母与汉字混杂的无解释形式应判为可疑，不允许直接升为强映射；对模型生成的全拉丁原名未变化、源文片段残留、明显的源词拆字、分隔符清单和异常大小写也应给出风险标记。
-- 规则只针对名字/实体规范译名，不应用于普通译文或合法保留拉丁字母的品牌、型号、缩写。判定时需结合实体类型、目标语言、原文字符系统和可靠词典；不能看到任何拉丁字符就一概拒绝。
-- 对可修复的可疑姓名，自动触发一次**针对名称的定向修复**：输入当前可见原文、全书已选规范名称、可见别名与目标语言约束，要求返回一个单一的中文译名，不重译整段/整章。修复后再次验证；若仍然异常，则不强制写入规范表，保留原文可译性并记录非阻塞诊断。
-- 不根据模型自述或仅一次真实引文自动断言名字“正确”。至少要分开记录原文证据有效性、目标字符串形态是否合格、目标译名是否有独立译文佐证。
+### 2.2 不能混用的三个判断
 
-## 4. 分阶段修改计划
+1. **Source evidence verified：** 原文引文与稳定 segment ID 相符，只能证明这条名称/观察在原文中出现。
+2. **Target quality accepted / translation corroborated：** 目标译名形态合格，且在独立的已接受译文或有明确规范依据的目标语言规则中获得支持。
+3. **User confirmed：** 用户明确确认或手工编辑。只有这类记录才能显示为“用户已确认”。
 
-### P0 — 修复预处理文风的陈旧/不完整导入
+建议运行时权威顺序如下：
 
-**修改范围**
+| 来源/状态 | 使用方式 |
+|---|---|
+| \`user-confirmed\` | 最高优先级。除非用户主动编辑/撤销，不自动覆盖。 |
+| \`translation-corroborated\` | 经目标质量检查，并由不同原文片段中的已接受译文独立佐证，可作为自动规范映射。 |
+| \`run-canonical\` | 本次全书预处理选定的临时规范名，防止并行批次和后续批次各自命名；只限本次 Run，不伪装为永久确认。 |
+| \`evidence-verified\` | 引文有效，但目标译名正确性尚未建立；不应单独成为强制映射。 |
+| \`candidate\` | 仅供参考。 |
+| \`legacy-unknown\` | 旧数据来源不明，不能仅凭旧 \`reviewStatus=confirmed\` 自动获得最高权威。 |
 
-- `vocal-saga/local-agent-service/src/documents/contextGraph.ts`
-- `fanyi-extension/src/entrypoints/document/useContextGraph.ts`
-- `fanyi-extension/src/entrypoints/document/useLiteraryMemoryEditor.ts`
-- `fanyi-extension/src/entrypoints/document/App.vue`
+不要直接复用现有 \`candidate/confirmed\` 二态来表示所有机器和用户状态。如果短期兼容需要保留 \`reviewStatus\`，则用独立的 \`activationSource/targetQualityStatus\` 字段表达机器状态；UI 按真实来源显示，不把自动激活说成用户确认。
 
-**实施内容**
+### 2.3 不按“目标译名相同”机械合并实体
 
-1. 服务端的 Context Graph status DTO 显式提供当前 `analysisVersion`、源版本、`styleFieldCoverage`、`styleGuideReady` 和缺失字段集合；扩展不得从“至少有一个字段非空”推断预处理可用。
-2. 完整性的最低门槛为五个核心描述字段非空、至少一条规则；`avoid` 允许为空。必须与当前 `sourceRevisionId`、目标语言和服务端分析版本匹配。
-3. 当用户打开编辑面板或点击“载入预处理文风建议”而发现概览不匹配/不完整时，正常路径自动请求服务端重分析并轮询实际状态；分析失败时显示具体原因，不导入旧字段、不把旧数据冒充为当前建议。服务端仍是唯一预处理执行者。
-4. 取消“先载入，再手动确认才能正常用”的必经步骤：完整且通过证据检查的机器文风基准可自动进入后续 TranslationBrief，标识为机器生效状态；UI 保留编辑、禁用和撤销入口。机器生效绝不显示成“用户已确认”。
-5. 对已确认的用户自定义风格规则保留高优先级。新预处理结果不得静默覆盖用户编辑；应合并为候选，或在用户主动选择“使用最新分析”时替换。
-6. 对风格内容只补齐缺失维度，不为了形式完整而凭空编造 `avoid` 或没有证据支持的事实。已有的服务端定向补全保留；增加有效样本证据覆盖诊断。
+\`England\`、\`English\` 和 \`English / England\` 不应仅因模型给了相同目标字符串就合成同一实体；它们可能分别指国家、语言、民族/国民形容词。相同目标可以是错误译名或模型合并造成的假象。
 
-**验收**
+只在来源名称/别名、实体类型和原文共指证据都兼容时合并；对复数、拼写变体等情况先做受限标准化，并验证共指。不能用目标字符串相同、子串包含或宽泛语义相似度单独合并，以免把不同概念误合并。
 
-- 点击导入不可能把旧版、旧来源或缺字段结果带入当前文风。
-- 五个核心维度有内容才标记可用；`avoid=[]` 仍能正常通过。
-- 正常开始翻译无需用户先点击“载入建议”和“确认并注入”两次。
-- 用户可撤销机器风格基准或恢复之前的自定义版本，且来源/版本可追溯。
+## 3. P0：文风基准采用版本化自动同步，而不是一次性手动导入
 
-### P1 — 建立单一的实体注册策略与 slash 清单规范化
+### 3.1 代码问题
 
-**修改范围**
+- \`local-agent-service/src/documents/contextGraph.ts\` 已有五维文风缺失检查和定向补全；不要在没有新证据时再复制一套模型分析。
+- \`local-agent-service/src/documents/voiceContext.ts\` 将五维文风字段统一截断至 500 字，并将缺失字段序列化为空字符串。
+- \`fanyi-extension/src/entrypoints/utils/document/literary.ts\` 对同样的五个字段也用 500 字限制；图谱实际允许的上限为 1000。规则长度是 240，但 avoid 在扩展侧只有 100。
+- \`fanyi-extension/src/entrypoints/document/useLiteraryMemoryEditor.ts\` 中的 \`importContextGraphStyleGuide()\` 是一次性复制，只覆盖非空字段，然后把整份记忆变成 candidate。没有记录其来源图谱 revision/analysisVersion，也没有后续变化检测。
+- \`fanyi-extension/src/entrypoints/document/App.vue\` 显示“候选·尚未注入”，并要求先导入再点击确认；完整且可验证的机器文风因此仍依赖手工的两步操作。
+- \`local-agent-service/src/documents/projectStore.ts\` 的 \`contextGraphFingerprint()\` 目前仅对 \`narrativeStyle\`、\`styleRules\` 两个 meta 字段取值；其他文风字段改变未必导致已有译文变 stale。
 
-- `vocal-saga/local-agent-service/src/documents/translationContextDelta.ts`
-- `vocal-saga/local-agent-service/src/documents/translationAgent.ts`
-- `vocal-saga/local-agent-service/src/documents/contextGraph.ts`
-- 需要时更新 `vocal-saga/local-agent-service/src/documents/contextGraphWorkflow.ts`
-- `fanyi-extension/src/entrypoints/utils/document/literary.ts`（仅为兼容/展示，不复制服务端筛选算法）
+### 3.2 建议实现
 
-**实施内容**
+1. 把图谱文风视为机器生成的版本化基准，而不是一次性拷贝。记录源 revision、analysis version、内容 fingerprint 和生成时间。服务端在构建 TranslationBrief 时直接读取当前有效的图谱文风，确保初译及两类 Reviewer 使用相同快照。
+2. 对用户编辑的风格覆盖与机器基准保留来源信息。可以采用“机器基准 + 用户覆盖”的合并视图；若为控制迁移范围继续使用一个 \`styleGuide\` 对象，也必须增加来源/版本字段和可区分的系统应用状态。刷新图谱时不得默默覆盖明确的用户编辑。
+3. 完整且通过服务端校验的机器文风默认自动应用，不要求用户先点击“载入建议”再“确认并注入”。用户仍可编辑、停用、撤销或恢复上一个基准。UI 应区分“自动应用”和“用户确认”，不能把自动应用显示为“已确认”。
+4. 旧记忆若缺少来源元数据，先把非空字段作为 legacy 值保留，自动用当前图谱补齐空白字段，并记录差异；不要因为缺字段就把整份记忆归零。对图谱中有更新且与旧值冲突的字段，按来源和用户编辑状态决定保留哪一项，并在 UI 提供可回滚差异，而不是要求逐字段手工确认。
+5. 空字段不要在持久化/TranslationBrief 中固化为无意义的 \`''\`。序列化时省略无值字段，或使用明确的 null/empty 语义；“avoid 为空”属于合法情况，不触发无根据的补写。
+6. 统一长度限制：五个描述字段至少允许与 Context Graph 一致的 1000 字；rules/avoid 使用一致的单项长度与条数限制。不要让扩展层或 voiceContext 再把已完整的字段悄悄截断。
+7. 修改 \`contextGraphFingerprint()\`，把五个描述字段、rules、avoid、分析版本和相关来源版本完整纳入 hash；对会影响 TranslationBrief 的其他图谱元数据也检查 fingerprint 覆盖。版本变化可以将相关译文标记为 stale，但绝不能自动覆盖用户已接受的译文。
 
-1. 把“某个名称在原文出现”与“值得进入规范实体表”分开。保存前计算类别、全书出现次数/章节数、当前证据、标准翻译可用性及其是否具有书内专属含义。
-2. 以版本化标准地名词典和常见实体规范表过滤低价值映射。命中标准译法且无特殊歧义的项默认不写入持久实体表；翻译仍照常发生。
-3. 为复合清单建立共享规范化器。只有源项、目标项数量一致且每个源项都能被原文证据验证时自动拆分；不一致时做一次小范围修复，失败则拒绝持久化组合项，但不阻断译文保存。
-4. 在 Context Graph 的实体阶段明确要求“一条记录只有一个 canonical name”，并限制将普通词/标准地名作为重要实体；不因证据合法就跳过重要性判断。
-5. 在记忆合并时对新候选执行同一服务端策略，避免全书预处理过滤过的低价值实体随后从动态 `context_delta` 再次进入记忆。
+### 3.3 验收
 
-**验收**
+- 对当前 Shogun 快照，刷新后机器基准能补齐旧记忆里缺失的语域、节奏、对白、措辞和 avoid；已有非空内容及用户编辑都有来源记录和回滚能力。
+- 1000 字的对白描述、733 字的措辞描述不会在服务端或扩展端被截断。
+- 五维描述及 rules/avoid 任一变化都会改变相关 fingerprint；stale 译文只提示/排入重译范围，不静默覆盖人工接受内容。
+- 正常翻译路径无需用户先导入再确认，机器状态也不会显示为人工确认。
+- 无有效文风图谱或分析失败时，明确记录缺失原因；不伪造完整，也不因可选的 avoid 为空而阻断翻译。
 
-- `England / Netherlands / Spain / Portugal / France` 不再作为一个合并名称出现；拆分后，标准国家名一般不会进入书籍专属实体表。
-- `Dozo / neh / Ingeles` 不再作为一个实体；无重复、无书中特殊意义的单词不自动成为长期映射。
-- 真实的斜杠专名（例如 `AC/DC`、`OS/2`）不会被错误拆开。
-- `Minowara` 等虚构氏族、专有组织、人物仍然能够以独立规范名保留，不会因标准实体过滤而漏掉。
+## 4. P0：实体译名表必须只保留对全书一致性有价值的条目
 
-### P1 — 名称目标质量检查和自动定向修复
+### 4.1 入库策略
 
-**修改范围**
+在 \`vocal-saga/local-agent-service\` 新增一个版本化的纯函数策略模块，例如 \`canonicalEntityPolicy.ts\`。它统一负责实体类别归一、是否值得持久化为书籍专属规范项、目标译名形态检查与候选 disposition。Context Graph、\`translationContextDelta\`、记忆合并及旧文学分析端点都调用同一策略。
 
-- `vocal-saga/local-agent-service/src/documents/translationContextDelta.ts`
-- `vocal-saga/local-agent-service/src/documents/contextGraph.ts`
-- `vocal-saga/local-agent-service/src/documents/translationAgent.ts`
-- `vocal-saga/local-agent-service/tests/document-agent-prompt.test.mjs`
-- `vocal-saga/local-agent-service/tests/translation-context-delta.test.mjs`
-- `vocal-saga/local-agent-service/tests/document-context-graph.test.mjs`
+不得把“原文出现了这个词”或“模型输出了 target”当成实体入库的充分条件。筛选应组合以下证据：
 
-**实施内容**
+- **实体类型**：使用服务端规范枚举，不直接保存模型任意 \`kind\` 字符串。将 \`country/place\` 归一到 place，将 \`clan/dynasty/faction/group/organization\` 归一到 organization，将 \`work/artifact\` 保留为明确类型，将 \`language/term/deity\` 等根据定义归一到 concept 或 other。扩展端现有类型也需兼容这些分类。
+- **标准翻译可得性**：标准地名、普通词汇、语言名、民族/国民称谓、度量单位、普通头衔通常不需要书籍专属映射。用版本化词典与确定性词法规则组合，而不是只写几个名字的黑名单。
+- **全书重要性**：考虑名称出现次数、跨章节分布、专名形式和上下文重要性。频次不能是唯一标准：只出现一次但确有独特意义的虚构氏族/人物仍可能需要保留。
+- **译名歧义与书内约定**：只有可能发生翻译漂移、名称变体需要统一、或作品明确赋予特殊概念含义的项目才应该进入长期规范表。
+- **可验证来源**：每一项仍需验证 source evidence。目标译名质量是另一个独立门槛。
 
-1. 对 `person/character` 类规范译名做目标语言形态检查。中文译名不应无解释地出现 `achi子` 这样的中英混合残片。
-2. 发现低风险可修复问题时，自动执行一次只针对名称的修复调用；不需要用户打开人物管理，也不重跑整本书。
-3. 如果目标仍然不合格，不将它升级成 `auto` 或 `confirmed`，而是保留候选/源文回退和诊断事件。该异常不应令整本 Run 失败。
-4. 将名称源、目标、目标字符形态、目标出现次数、来源证据 ID、修复次数与最终 disposition 写入结构化诊断；默认 UI 不展示大量日志，只在问题面板可查看。
+示例处理：
 
-**验收**
+| 候选 | 默认处理 | 例外 |
+|---|---|---|
+| \`Japan → 日本\`、\`England → 英格兰\` | 由普通翻译处理，不进入书籍专属表 | 作品存在特定异名/特殊约定或语义冲突时保留 |
+| \`God → 上帝\` | 普通宗教通名不自动进表 | 特定神祇或有助于避免书中概念混同，且有跨章节证据时保留 |
+| \`the Queen\`、\`Heir\`、\`the Emperor\` | 普通角色称谓不作为独立通用实体 | 原文证据证明它稳定指向同一角色时，可作为该角色的可见称谓/别名 |
+| \`longitude\`、\`pigeon\` 等普通词 | 不进规范实体表 | 成为作品专属术语或关键对象时另行判断 |
+| \`Minowara\`、专有氏族/组织/人物 | 保留并建立单一规范名 | 不得因现实历史原型而替换原文专名 |
+| \`the Black Ships\` 等历史/作品内专名 | 候选保留，使用证据与重要性判断 | 不因为可直译就自动过滤 |
 
-- `Achiko → achi子` 被质量检查拦截，并尝试自动生成一个合法中文专名目标；没有合格结果时不形成强规范映射。
-- 不误伤一般译文中的拉丁字母、品牌、产品型号或用户明确要求保留的源文名称。
-- 正确性校验仅影响记忆/规范表的入库强度，不会丢失初译结果。
+不能简单要求“非人物 kind 必须是 place/organization 才保留”。这会误杀作品、器物和具有专有含义的概念。反过来，也不能让模型填写任意的 \`kind\` 就绕开筛选。
 
-### P2 — 统一记忆权威与历史记录升级规则
+### 4.2 一条记录必须对应一个名称
 
-**修改范围**
+当前 \`contextGraph.ts\` 的实体保存和 \`translationContextDelta.ts\` 的 \`canonicalSource\` 验证没有充分防止复合清单。新增共用的 compound-name validator：
 
-- `vocal-saga/local-agent-service/src/documents/translationContextDelta.ts`
-- `vocal-saga/local-agent-service/src/documents/translationBrief.ts`
-- `vocal-saga/local-agent-service/src/documents/projectStore.ts`（如需增加显式权威字段）
-- `fanyi-extension/src/entrypoints/utils/document/literary.ts`
-- `fanyi-extension/src/entrypoints/document/useDocumentTranslation.ts`（仅限其仍需支持的旧路径）
+1. 优先识别具有清单语义的分隔符模式，例如带空格的 \` / \`、全角 \`／\`、\` | \`；不要拆分 \`AC/DC\`、\`OS/2\` 这类真实组合名。逗号需有明确清单形态才可拆，避免把姓/名格式误拆。
+2. 源名称被拆成多个部分时，每个部分都必须能在所引用的原文证据中单独定位。目标串包含多项时，只有源/目标数量一致、配对顺序可验证时才允许自动分拆成独立映射。
+3. 若分隔符仅出现在目标侧（例如 \`Sire → 船长（敬称）／大人\`），该目标不能作为一个规范译名。尝试一次局部结构化修复；失败时拒绝该映射而不是整段译文。
+4. 如果源/目标项数不一致、某项没有独立证据或含义无法可靠配对，不允许把整串保存在实体表。记录 \`compound-name-rejected\` 诊断，让本批其他翻译继续。
+5. 拆分后逐项通过 entityWorthMapping 与 target quality 策略。拆开不意味着自动保存。例如 \`England / Netherlands / Spain / Portugal / France\` 拆成五项后，标准国名默认仍不进入书籍专属表。
+6. Prompt 明确规定“一条 entity 只能包含一个 canonical source name 和一个 target translation；多个术语必须分别列项”。Prompt 是减少脏输出的第一道防线，服务端验证才是最终保障。
 
-**实施内容**
+### 4.3 目标译名质量检查
 
-1. 把“证据引用验证通过”记录为来源事实，不自动等同于“目标译名正确”或“用户已确认”。
-2. 将运行权威与确认来源拆开：用户确认最高；机器候选需要目标形态验证和不同片段的已接受译文佐证才能自动升为可强制映射；只验证到原文 quote 的项目保持弱约束。
-3. `legacy-unknown` 既不自动删除，也不自动覆盖为用户确认。读取旧数据时以较低运行权威参与翻译，保留历史目标和可回滚记录；只有新证据足够时才自动升级。
-4. 主服务负责规范化、分拆、过滤及自动升格；扩展不重复实现这些规则。旧分析端点必须复用相同的服务端规则，或在主路径明确不再使用时被限制到其既定非 Project/Run 场景，避免两套语义。
-5. 不让普通 `candidate` 覆盖强映射；同一来源名称出现多个强目标时，不按数组顺序选择，而是记录冲突、沿用已确认项或在无法判定时退回弱约束。
+新增服务端 \`isValidCanonicalTarget()\` / \`canonicalTargetQuality()\`，先支持当前主要方向 English/Romanized Japanese → Chinese，按类型和目标语言判断，而不是粗暴禁止全部拉丁字母。
 
-**验收**
+- 对中文人名，\`achi子\` 这类未经规则支持的中英混合形式属于可疑目标；不允许它只凭引文有效就成为强映射。
+- 对目标侧存在分隔符清单、明显解释性括注、源文残留、无意义混合脚本或空/纯符号/纯数字的情况，拒绝强规范化。书名引号等合法包装可做安全规范化，而不是把所有引号一概判错。
+- 品牌、产品型号、缩写，以及用户明确要求保留原文写法的名字可以通过类型/白名单策略合法保留；不使用“只要目标有拉丁字母就拒绝”的规则。
+- 对可修复异常自动进行一次名称级定向修复，不重译整章；修复后仍不合格则保持 candidate/不启用强映射，记录诊断并继续翻译。
+- 目标形式合格不等于语义正确；强映射仍需用户确认或独立已接受译文佐证。对 \`Achiko\`，报告所述新图谱建议 \`阿千\` 可作为重新评估候选，但不能仅凭一个新模型结果就宣称绝对正确。
 
-- `legacy-unknown` 不会仅因旧 `reviewStatus=confirmed` 而在每批次强制覆盖译文。
-- `evidence-verified`、`translation-corroborated` 和 `user-confirmed` 的 UI 标签、持久化值与运行时优先级一致。
-- 用户明确确认的译名和人工编辑从不被自动重写。
-- 同一本书的初译、两类 Reviewer 与后续批次使用同一份服务端规范映射。
+### 4.4 类型和重复项规范化
 
-### P3 — 回归集、审计与旧记忆清理
+把模型自由填写的 \`kind\` 归一成固定枚举，并在落库/记忆合并前执行相同的 policy。增加重复项处理，但不要按“target 相同”直接合并：
 
-新增跨两个仓库的稳定回归夹具，不依赖一次线上模型调用的偶然结果：
+- 只有 source/alias 的关系、类型和证据均支持共指时才折叠重复项。
+- \`England\` 与 \`English\` 不能因为目标字符串一样就合并；相同 target 可能是错误映射的症状。
+- \`Council\` 与 \`the Council of Regents\` 也不能只因子串关系而自动合并；需有证据证明是同一组织的变体/别名。
+- 合并前若发现同一 source 有不同 target，按权威状态处理，不依据数组顺序任意选一个。
+
+## 5. P0/P1：修复旧记忆权威与新图谱更新
+
+这一步针对 \`Achiko→achi子\` 等已经保存的脏映射。
+
+1. 对当前 source revision 重新分析时，不能只新增/更新模型本次重新产生的节点；要对旧 Context Graph 节点做版本化 reconcile。未再出现、已失效或质量检查拒绝的旧节点应标为 inactive/superseded，或在重建快照中排除，不能继续作为运行时强映射。
+2. 对旧 LiteraryMemory 做非破坏性迁移：保留原始记录、创建可回滚的规范化版本；不静默删除历史记录，不修改已接受译文。
+3. 如果实体是明确的 \`user-confirmed\`，尊重用户固定译名。若是 \`legacy-unknown\`、\`evidence-verified\` 或其他机器来源，则重新经过目标质量和当前图谱证据检查。像 \`achi子\` 这种不合格的机器旧目标自动降级/停用，不再强制注入。
+4. 当前图谱如果有新的目标建议（例如 \`Achiko → 阿千\`），把它当作新候选；通过质量检查后可作为 run-canonical 使用，待多段接受译文佐证后再升级为 translation-corroborated。若证据充足且已有目标质量通过的独立佐证，则自动更新机器映射；用户确认的旧目标不被静默替换。
+5. 对旧版 Context Graph 分析版本升级，不只是提升 version 常量。需要确定旧 node/edge/meta 的重建或过期策略，否则旧脏节点可能残留并继续参与检索。
+6. 对 \`context_delta\` 自动规范化：若当前 TranslationBrief 已将源名称保护为规范项，后续保存的候选 metadata 不得又写入冲突目标；必须由服务端统一归一或将冲突 candidate 标为 suppressed。
+
+## 6. 跨仓库具体落点
+
+### \`vocal-saga/local-agent-service\`（权威逻辑）
+
+- \`src/documents/contextGraph.ts\`：标准化实体 kind、入库 worth gate、单项名称/目标检查、目标质量、旧节点 reconcile；增加各类 drop/suppress 诊断。
+- \`src/documents/contextGraphWorkflow.ts\`：明确排除常见通名/标准地名，强调虚构专名和单项 entity 契约；确保五维文风结果结构稳定。
+- 新模块 \`src/documents/canonicalEntityPolicy.ts\`（建议名）：实体类型归一、低价值实体识别、复合清单拆分/合法性、目标译名形态质量及自动 disposition。让 Context Graph、动态 context delta、brief 和记忆更新调用同一实现。
+- \`src/documents/translationContextDelta.ts\`：动态候选应用相同的实体价值、compound-name 和 target-quality 门槛。
+- \`src/documents/translationAgent.ts\`：\`buildCanonicalTermProtections()\` 不为非法/复合目标建立 marker；context delta 的目标与本次有效映射保持一致。
+- \`src/documents/translationBrief.ts\`：区分用户确认、机器佐证、run-canonical 与 candidate；只检索当前可见、有效且非低价值的映射。
+- \`src/documents/voiceContext.ts\`：文风字段长度和空值序列化修正。
+- \`src/documents/projectStore.ts\`：fingerprint 覆盖全部五维文风、rules、avoid 和相关分析/来源版本。
+- 测试：\`tests/document-context-graph.test.mjs\`、\`tests/translation-context-delta.test.mjs\`、\`tests/document-agent-prompt.test.mjs\`、\`tests/translation-brief.test.mjs\`，并增加跨批次/运行级集成测试。
+
+### \`fanyi-extension\`（状态与编辑 UI）
+
+- \`src/entrypoints/utils/document/literary.ts\`：将文风长度上限从 500 调整到与服务端一致的 1000；将 avoid 的上限与服务端对齐；兼容新的机器状态与来源元数据。
+- \`src/entrypoints/document/useLiteraryMemoryEditor.ts\`：从一次性导入改成版本可见的差异同步；不重复实现服务端实体筛选策略；保留手动编辑/撤销及差异回滚。
+- \`src/entrypoints/document/useContextGraph.ts\`、\`src/entrypoints/document/App.vue\`：显示图谱文风版本/更新状态、机器自动应用与用户确认的区别；低价值条目折叠，展示被过滤的计数和可展开诊断，而不是把普通名词表铺满 UI。
+- \`src/entrypoints/document/useDocumentTranslation.ts\`：检查旧文学分析路径。它不得在本地服务已判定目标无效/候选状态时，仅凭 quote 验证就把实体提升成强映射；应消费服务端返回的 activation/disposition，或收敛到统一 Project/Run API。
+- 测试：\`src/__tests__/literaryMemory.test.ts\`、\`src/__tests__/document.test.ts\` 与文风导入/Context Graph UI 的测试。
+
+## 7. 存量数据和 stale 策略
+
+- 对 Shogun 项目当前数据，先只读 dry-run 输出：低价值实体、复合 source、复合 target、目标形态可疑、旧版本节点和不同权威等级的数量。dry-run 不改数据库。
+- 通过版本化迁移/重分析重建当前可用的规范候选。机器生成且不合格的旧 mapping 可以自动降级或从运行时视图排除，但保留审计及恢复信息；用户确认的项不由自动迁移修改。
+- 对已经接受的译文不做批量原地改写。指纹变化只使相关段落 stale，让统一 Run 在用户启动/继续时重新生成候选；已有结果与人工修订继续保留。
+- 报告中的当前快照称 \`translation_results\` 未发现这些异常目标，因此应把本次改动视为污染预防与元数据修复，不必假设已经需要整本重译。不过，执行迁移前仍需对实际数据库重新做一次只读检查，不能将旧报告的零命中当作永久事实。
+- 标准实体过滤与低价值旧项不应依赖固定项目 ID；对所有项目按 source revision、目标语言、policy version 执行同样的兼容逻辑。
+
+## 8. 推荐实施顺序
+
+### 第 1 阶段：文风自动同步和 fingerprint（P0）
+
+修复空值固化和长度限制；加完整的 style metadata fingerprint；把机器基准与用户覆盖的来源区分开；增加扩展中的旧版本/更新提示；机器基准完整时默认自动应用，不再依赖手工导入与确认。
+
+### 第 2 阶段：服务端实体策略（P0）
+
+实现单一的 \`canonicalEntityPolicy\`，统一 kind 归一、低价值实体过滤、单项名称校验、目标形态检查。先接入 Context Graph，再接入动态 \`context_delta\` 与 TranslationBrief。Prompt 规则同步修改，但 Prompt 不能代替服务端门槛。
+
+### 第 3 阶段：旧记忆与图谱 reconcile（P0/P1）
+
+加入 dry-run 与可回滚迁移。对 \`Achiko → achi子\` 这类机器来源且格式不合格的映射自动降级；允许新图谱的合格候选在本 Run 中使用，但不自动覆盖 user-confirmed 项。
+
+### 第 4 阶段：动态元数据和扩展统一（P1）
+
+确保 context delta 不重新引入已过滤实体或冲突目标；扩展 UI 只显示服务端 disposition 与机器状态，移除/限制仅凭 quote 就确认目标译名的第二套逻辑。
+
+### 第 5 阶段：质量回归集与验收（P1）
+
+增加确定性测试、跨批次集成测试和实际数据 dry-run。测试不依赖某一次模型输出恰巧正确；对“需要局部修复”的情况检查重试有界，并确保元数据验证失败不会丢失翻译结果。
+
+## 9. 回归测试与验收矩阵
 
 | 场景 | 预期 |
 |---|---|
-| 核心文风字段缺失，服务端重分析 | 定向修复后完整才可用；失败明确暴露，不能标记完成 |
-| 扩展缓存包含旧版本或只有两个字段的文风概览 | 自动重分析/补全；不得导入陈旧概览 |
-| `God/Japan/England` 标准含义单次出现 | 正常翻译，但默认不生成书籍专属实体映射 |
-| `God` 在作品中作为重要宗教概念反复出现 | 可根据显著性与歧义规则保留为概念候选，而不是一律黑名单 |
-| 带空格的 slash 清单，源/目标项数量一致 | 拆成配对项，再逐项执行标准实体过滤 |
-| slash 清单数量不一致 | 不保存组合项，执行一次局部修复并记录诊断 |
-| `AC/DC`、`OS/2` 等真实组合名 | 不拆分 |
-| `Achiko → achi子` | 目标质量检查拒绝自动升格并触发名称级修复 |
-| 单条有效原文引用、错误目标译名 | 只能证明原文证据有效，不得仅凭此将错误目标设为强规范 |
-| 两条不同原文段落持续采用相同合格目标译名 | 满足其余规则后自动升为 `translation-corroborated` |
-| 用户确认译名与自动候选冲突 | 用户确认优先，候选被记录而不替换 |
-| 旧记录的来源为 `legacy-unknown` | 读入时弱约束，保留可回滚历史，不冒充用户确认 |
+| 当前图谱文风完整、LiteraryMemory 只有叙述声音和 rules | 自动补齐缺失字段，显示图谱版本和差异，不要求用户手动两步导入 |
+| 文风字段大于 500 字 | voiceContext、扩展 sanitize 与 UI 都不截断已允许的内容 |
+| 修改 rhythm/dialogue/diction/avoid | fingerprint 改变，相关结果按 stale 规则处理 |
+| \`God/Japan/England\` 以普通通名/常见国家含义出现 | 不作为书籍专属实体映射强制注入 |
+| 特定神祇/作品内专有名、\`Minowara\` 等虚构氏族 | 通过类型/重要性/证据检查后仍能保留 |
+| \`the Queen\`、\`Heir\` 作为一般称谓 | 不独立成为强映射；若证据证明是某人物的稳定称谓，作为该人物的可见别名处理 |
+| \`Dozo / neh / Ingeles\` | 不再作为一条实体保存；逐项验证后仅保留值得跨章节统一的术语 |
+| 五个国名的 slash 清单 | 源/目标数量一致时先拆项，再过滤标准地名；不得保存为复合名称 |
+| \`Sire → 船长（敬称）／大人\` | 目标质量检查拒绝复合目标，尝试一次局部修复，失败则不激活 mapping |
+| \`AC/DC\`、\`OS/2\` | 不因包含斜杠被误拆 |
+| \`Achiko → achi子\` | 机器候选被目标质量检查拦截，不升级成强映射；自动尝试一次名称级修复 |
+| \`Achiko → 阿千\` | 字符形态检查可通过，但语义权威仍需当前运行证据/独立接受译文佐证 |
+| 新图谱与旧 \`legacy-unknown\` 冲突 | 新的合格候选可在本 Run 使用；旧目标降级/保留审计，不冒充用户确认 |
+| 新图谱与 \`user-confirmed\` 冲突 | 用户固定目标优先，系统提示差异但不覆盖 |
+| 两个实体目标相同但源名只是语义相关（如 England/English） | 不按目标相同自动合并 |
+| Context Graph 重分析未再产出旧脏节点 | 旧节点被标为过期/停用，不再参与运行时检索 |
+| 实体 metadata 修复失败 | 记录诊断并继续保存可用翻译，不能使整本 Run 失败 |
 
-同时在 Context Graph 输出审计、TranslationBrief diagnostics 和 `translation.context-delta.parsed` 事件中记录简明计数：过滤的标准实体数、拒绝的复合名称数、目标质量可疑数、修复成功/失败数、机器升级数和因权威冲突未启用的映射数。UI 显示汇总和可展开例子，不把完整原文/译文无差别写入日志。
+## 10. 完成标准
 
-## 5. 实施顺序与验收门槛
+1. 服务端为实体规范化与质量分级提供唯一实现；Context Graph、context delta、TranslationBrief 和旧端点使用相同策略。
+2. 文风基准能自动同步到当前源版本并进入翻译上下文，长度与 fingerprint 一致，系统自动应用不冒充用户确认。
+3. 实体表主要保留真正需要跨章节统一的专名/术语；通用词、标准地名、合并清单和低质量混合脚本目标不会成为强映射。
+4. 机器生成的错误历史映射自动降级并可回滚，已确认的用户选择与已接受译文不被静默覆盖。
+5. 两个仓库的相关单测、Local Agent Service 测试/typecheck/route manifest/book-scan 基准和扩展 Vitest/生产 build 按可运行范围实际执行；报告所有通过与失败，不将未执行检查写成通过。
 
-推荐先完成 **P0 文风状态正确性**，再完成 **实体分拆与质量门槛**，最后统一历史数据的权威语义。理由是 P0 能立即修复截图里最直接的错误；P1 会改变进入长期记忆的候选，需要服务端和扩展的测试一起更新；P2 涉及旧数据的运行权威，必须保留兼容性和回滚路径。
-
-每一阶段均须遵守以下约束：
-
-- Local Agent Service 是本地 Project/Run 管线的唯一事实来源；不要在扩展端复制实体筛选、名称规范化或记忆自动升级算法。
-- 译文生成成功与实体元数据失败隔离。元数据修复/质量检查不能导致已完成的译文丢失。
-- 不自动覆盖用户已接受/人工修改的译文；不静默删除历史实体记录。低价值旧项可从运行时强规范表中降级/隐藏，保留原始记录和审计。
-- 自动修复有界：实体列表/名称修复失败不能无限循环或停止整本翻译；只有来源版本错配、存储完整性故障或真正无法消解的用户固定规范冲突才需要暴露人工问题。
-- 每项关键规则都要有服务端单元测试和跨批次集成测试；扩展侧测试按钮状态、陈旧概览、记忆展示与状态标签。最后执行 Local Agent Service 的测试、类型检查、路由清单检查和确定性扫描基准，并执行扩展相关 Vitest 测试。必须报告实际测试结果，不将未运行的检查写成通过。
-
-## 6. 最终产品行为
-
-目标不是把更多表格填满，而是让表格更小、更可靠：
-
-- 完整的机器文风基准自动生效，用户可以撤销或调整；不再通过手动“载入 + 确认”才能进入正常翻译。
-- 通用常见名称由正常翻译处理，不占用全书专属实体映射；只有有助于跨章一致性的条目才长期保留。
-- 一个实体一条规范记录；清单自动拆分，有歧义的清单自动修复或安全忽略，不把组合字符串当成一个名字。
-- 自动生成的中文人名不允许出现明显混合脚本残片；可修复问题自动重试，不可修复的候选不获得强制权威。
-- 机器证据、目标译名质量和用户确认是不同维度。可靠候选自动升级，来源不明旧数据不会再被误当作权威，用户确认始终优先。
+**关键取舍：** 不要为追求实体表“整洁”而把所有疑似项交给用户逐条确认；也不要为追求自动化而把所有有引文的字符串都变成强规范。正确路径是服务端自动过滤低价值项、自动修复结构格式错误、自动提升真正经过独立验证的映射，对无法确定的机器候选降级并继续翻译。
