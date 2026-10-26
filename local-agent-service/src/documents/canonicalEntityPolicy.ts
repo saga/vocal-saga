@@ -156,7 +156,7 @@ export function validateCanonicalTarget(input: {
     const hasCjk = /[\u3400-\u9fff\u3040-\u30ff]/u.test(target);
     const kind = normalizeCanonicalEntityKind(input.kind);
     const onlyApprovedAcronyms = latinRuns.every((run) =>
-      LATIN_ACRONYM_ALLOWLIST.has(run.toUpperCase()) ||
+      LATIN_ACRONYM_ALLOWLIST.has(String(run).toUpperCase()) ||
       (kind !== 'person' && /^[A-Z][a-z][A-Za-z0-9]+$/.test(run)));
     if (hasCjk && latinRuns.length && !onlyApprovedAcronyms) {
       return { valid: false, normalizedTarget: target, reason: 'mixed-script-residue' };
