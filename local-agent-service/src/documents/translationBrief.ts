@@ -855,7 +855,7 @@ export function buildTranslationBrief(
         source, target, aliases,
         kind: String(entity.kind || 'other'),
         evidenceBacked: true,
-        targetConfidence: entity.reviewStatus === 'confirmed' ? 'confirmed' :
+        targetConfidence: userConfirmedMapping ? 'confirmed' :
           corroboratedTarget ? 'corroborated' : 'candidate',
         sourceStatus: userConfirmedMapping ? 'confirmed-memory' : corroboratedTarget ? 'auto' : 'candidate',
         confirmationSource: entity.confirmationSource || 'legacy-unknown',
@@ -864,7 +864,7 @@ export function buildTranslationBrief(
       const index = graph.nameMappings.findIndex((mapping: any) =>
         [mapping.source, ...(Array.isArray(mapping.aliases) ? mapping.aliases : [])]
           .some((name: unknown) => names.has(normalizedSourceText(name))));
-      if (entity.reviewStatus === 'confirmed') {
+      if (userConfirmedMapping) {
         if (index >= 0) graph.nameMappings[index] = { ...graph.nameMappings[index], ...incoming };
         else graph.nameMappings.unshift(incoming);
       } else if (index < 0) {
