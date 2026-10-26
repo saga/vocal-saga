@@ -216,11 +216,15 @@ export function sanitizeProjectLiteraryMemory(input: unknown): Record<string, an
     }];
   }) : [];
   const style = raw.styleGuide && typeof raw.styleGuide === 'object' && !Array.isArray(raw.styleGuide) ? raw.styleGuide : {};
+  // 不把缺失维度固化成空串；允许值与 Context Graph 一致的 1000 字上限。
   const styleGuide = {
-    narrativeVoice: text(style.narrativeVoice, 500), register: text(style.register, 500),
-    rhythm: text(style.rhythm, 500), dialogue: text(style.dialogue, 500), diction: text(style.diction, 500),
-    rules: list(style.rules, 16, 240),
-    avoid: list(style.avoid, 12, 100),
+    ...(text(style.narrativeVoice, 1000) ? { narrativeVoice: text(style.narrativeVoice, 1000) } : {}),
+    ...(text(style.register, 1000) ? { register: text(style.register, 1000) } : {}),
+    ...(text(style.rhythm, 1000) ? { rhythm: text(style.rhythm, 1000) } : {}),
+    ...(text(style.dialogue, 1000) ? { dialogue: text(style.dialogue, 1000) } : {}),
+    ...(text(style.diction, 1000) ? { diction: text(style.diction, 1000) } : {}),
+    ...(list(style.rules, 24, 240).length ? { rules: list(style.rules, 24, 240) } : {}),
+    ...(list(style.avoid, 16, 240).length ? { avoid: list(style.avoid, 16, 240) } : {}),
   };
   const styleGuideStatus = raw.styleGuideStatus === 'confirmed' ? 'confirmed' : 'candidate';
   const styleGuideConfirmationSource = confirmationSource(raw.styleGuideConfirmationSource, styleGuideStatus === 'confirmed');
