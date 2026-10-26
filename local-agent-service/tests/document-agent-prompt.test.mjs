@@ -612,7 +612,7 @@ test('standalone re-review receives explicit canonical mappings without future-o
 test('canonical term output validation checks repeated occurrences, not just marker presence', () => {
   const protections = buildCanonicalTermProtections(
     [{ id: 'p1', text: 'The King spoke to the King before King arrived.' }],
-    { nameMappings: [{ source: 'the King', target: '国王', aliases: ['King'], sourceStatus: 'auto' }] },
+    { nameMappings: [{ source: 'the King', target: '国王', aliases: ['King'], kind: 'person', sourceStatus: 'auto' }] },
   );
   const maskedSource = maskCanonicalTermText('The King spoke to the King before King arrived.', protections);
   const marker = protections.find((item) => item.sourceForm.toLowerCase() === 'the king')?.marker;
@@ -636,7 +636,7 @@ test('canonical term output validation checks repeated occurrences, not just mar
 test('Reviewer restoration keeps source excerpts in source language and drafts in target language', () => {
   const protections = buildCanonicalTermProtections(
     [{ id: 'p1', text: 'The King entered the hall.' }],
-    { nameMappings: [{ source: 'the King', target: '国王', aliases: [], sourceStatus: 'confirmed-memory' }] },
+    { nameMappings: [{ source: 'the King', target: '国王', aliases: [], kind: 'person', sourceStatus: 'confirmed-memory', confirmationSource: 'user-confirmed' }] },
   );
   const marker = protections[0]?.marker;
   assert.ok(marker);
