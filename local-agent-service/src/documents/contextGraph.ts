@@ -9,7 +9,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { parseAgentModel } from '../json.ts';
 import { ANALYSIS_TIMEOUT_MS } from '../config.ts';
 import { runAgentStructured } from '../agents/runner.ts';
-import { formatTurnUsageLog } from '../agents/usage.ts';
+import { formatTurnUsageLog, summarizeTurnUsage } from '../agents/usage.ts';
 import { getCodeBuddyTaskProfile } from '../agents/taskProfiles.ts';
 import { getDocumentProjectStore } from './projectStore.ts';
 import { planBookSamples, scanBookSegments, scanBookSegmentsConcurrent, type BookScanResult } from './bookScan.ts';
@@ -1021,7 +1021,23 @@ async function runAnalysis(projectId: string, runId: string): Promise<void> {
           } : {}),
         },
       );
-      if (stageRun.usage) logInfo('context-graph', 'B 阶段 ' + stage.id + ' · ' + formatTurnUsageLog(stageRun.usage));
+      if (stageRun.usage) {
+        logInfo('context-graph', 'B 阶段 ' + stage.id + ' · ' + formatTurnUsageLog(stageRun.usage));
+        const resolvedModels = Array.isArray(stageRun.resolvedModels) ? stageRun.resolvedModels : [];
+        const resolvedModel = resolvedModels.length === 1 ? resolvedModels[0] : null;
+        store.appendEvent(projectId, runId, 'model.usage', {
+          stage: 'context-graph',
+          substage: stage.id,
+          requestId: runId + ':' + stage.id,
+          provider: stageRun.provider || agent.provider,
+          model: resolvedModel || stageRun.effectiveModel || agent.model || '<runtime-default>',
+          requestedModel: stageRun.requestedModel || agent.model || '<runtime-default>',
+          effectiveModel: stageRun.effectiveModel || agent.model || '<runtime-default>',
+          ...(resolvedModel ? { resolvedModel } : {}),
+          ...(resolvedModels.length ? { resolvedModels } : {}),
+          ...summarizeTurnUsage(stageRun.usage),
+        });
+      }
       if (!stageRun.result || Array.isArray(stageRun.result)) {
         throw new Error('Context Graph 工作流阶段 ' + stage.id + ' 返回了非对象结果。');
       }
