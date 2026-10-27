@@ -371,7 +371,13 @@ print('\n'.join(l for l in raw.split(chr(92)+'n') if 'canonical-terms' in l))"
 
 - **文学记忆 revision 的 version = 2 不是已证实的缺陷。** 该字段与 revision UUID、fingerprint 和 created_at 分开存储；同一代码中的分析上下文也使用 version: 2。现有证据更符合数据结构/schema 版本，而不是递增的历史修订编号，所以没有改成猜测性的递增值。
 - **不能通过自动把 Style Guide / Context Graph 候选升级为 confirmed 来“修复未生效”。** 服务端明确要求模型提出的记忆先是 candidate；候选与已确认规则具有不同的翻译约束权重。Graph 中的建议映射和 LiteraryMemory 中的用户确认映射也不是同一种信任状态。报告指出两套数据的审计覆盖存在缺口，值得后续单独设计“候选映射的复核提示”，但不能直接写入已确认记忆或让候选静默成为强制规范。
-- **Token 计数口径仍需结合当前 WorkBuddy SDK/网关实际 usage 契约验证。** 观测到的若干样本中字段存在数值重合，但单个运行样本不足以证明 input_tokens 已包含 cache read/write；本次没有凭猜测更改费用公式。审校和 Context Graph 的 token usage 事件也应单独核对其完整性及 Run 汇总定义。
-- **Context Graph 实体未进入 LiteraryMemory 的问题不宜通过直接合并状态来解决。** 审计目前的 canonical-name 漂移主要依据已确认实体/人物画像；Graph 的候选建议不应被当成已确认规范名。下一步若要提升覆盖率，应新增显式标记为候选、只产生 review 级 finding 的审计路径，并验证语言、来源证据和别名可见性，而不是改变确认规则。
+- **Token 计数双重累加问题已修复，缓存字段口径仍需随 SDK 升级验证。** 报告提供的五次调用样本中，`input_tokens` 都等于 `cache_read_input_tokens + cache_creation_input_tokens`，且当前服务对总输入又将这三者相加，因此观测值会使 `totalInputTokens` 翻倍。现按 CodeBuddy 当前返回口径把 `input_tokens` 当作总输入，只将 cache read/write 作为其组成拆分，并用 `max(0, input - read - write)` 得到未缓存输入的诊断值。初译、文学审校（含缺失 ID 的补审）和 Context Graph 工作流阶段现在都会写入独立的 `model.usage` 事件，便于按阶段对账；这些事件的汇总不等于某一个 `run.finished.usage` 字段，UI/报表应显式区分初译 Run 总量与整条流水线总量。若未来 SDK 改成 cache 与 uncached input 互斥相加的 Anthropic 原生口径，应依据 SDK 契约及回归样本更新 parser，而不是直接套用通用字段名猜测。
+- **模型记录的歧义已部分修正，但不能把请求模型名直接改写成单一实跑模型。** WorkBuddy 的 assistant message 会报告实际 `model`，并可在 `modelUsage` 中报告本次调用涉及的模型；当前初译、审校和 Context Graph 的 `model.usage` 事件因此记录 `requestedModel`、`effectiveModel` 和可用的 `resolvedModels`，单一实跑模型明确时再记录 `resolvedModel`。没有可靠的模型回报时仍保留配置/运行时默认信息，而不是推测。`translation_runs.model` 不被强制覆盖，因为一个 Run 可能使用 fallback 或多个模型。\n- **Context Graph 实体未进入 LiteraryMemory 的问题不宜通过直接合并状态来解决。** 审计目前的 canonical-name 漂移主要依据已确认实体/人物画像；Graph 的候选建议不应被当成已确认规范名。下一步若要提升覆盖率，应新增显式标记为候选、只产生 review 级 finding 的审计路径，并验证语言、来源证据和别名可见性，而不是改变确认规则。
 
 上述结论区分了可由代码路径直接证明的问题和仍需要更多运行证据/独立设计的假设。已新增回归测试覆盖本次确认的行为边界。
+
+### 本次变更验证记录
+
+- `fanyi-extension` 文档工作区 UI 变更通过其 CI；准确性/术语修订不再显示文风专用的采纳/忽略按钮。
+- `local-agent-service` 最新 CI 需包含本次新增的用量测试、模型信息传播和审校/预处理 usage 事件后再确认。此前专用测试在修正一条测试预期后通过；这不替代最新提交的验证。
+- `vocal-saga` 根 CI 的 5 个扩展端失败在 `main` 基线提交上也可复现：page cache key 版本断言、两个路由的 source 默认值、旧 `/api/translate/url` 路由断言和翻译历史 source language 断言。它们与本次 `local-agent-service` 改动无直接关系，但仍应另行修正以恢复总 CI。
