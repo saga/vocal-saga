@@ -761,13 +761,13 @@ test('parseTurnUsage 解析 SDK result 的 usage 并拒绝无效计量', async (
   const { parseTurnUsage } = await import('../src/agents/usage.ts');
   const usage = parseTurnUsage({
     subtype: 'success',
-    usage: { input_tokens: 120, output_tokens: 45, cache_read_input_tokens: 3000, cache_creation_input_tokens: 500 },
+    usage: { input_tokens: 3500, output_tokens: 45, cache_read_input_tokens: 3000, cache_creation_input_tokens: 500 },
     total_cost_usd: 0,
     duration_ms: 3658,
     num_turns: 3,
   });
   assert.deepEqual(usage, {
-    inputTokens: 120, outputTokens: 45, cacheReadTokens: 3000, cacheCreationTokens: 500,
+    inputTokens: 3500, outputTokens: 45, cacheReadTokens: 3000, cacheCreationTokens: 500,
     totalCostUsd: null, durationMs: 3658, numTurns: 3,
   });
   // CodeBuddy 订阅 cost=0 → 不透出美元字段
@@ -913,13 +913,13 @@ test('parseTurnUsage 解析 SDK result 的 usage 并拒绝无效计量', async (
   const { parseTurnUsage } = await import('../src/agents/usage.ts');
   const usage = parseTurnUsage({
     subtype: 'success',
-    usage: { input_tokens: 120, output_tokens: 45, cache_read_input_tokens: 3000, cache_creation_input_tokens: 500 },
+    usage: { input_tokens: 3500, output_tokens: 45, cache_read_input_tokens: 3000, cache_creation_input_tokens: 500 },
     total_cost_usd: 0,
     duration_ms: 3658,
     num_turns: 3,
   });
   assert.deepEqual(usage, {
-    inputTokens: 120, outputTokens: 45, cacheReadTokens: 3000, cacheCreationTokens: 500,
+    inputTokens: 3500, outputTokens: 45, cacheReadTokens: 3000, cacheCreationTokens: 500,
     totalCostUsd: null, durationMs: 3658, numTurns: 3,
   });
   // CodeBuddy 订阅 cost=0 → 不透出美元字段
