@@ -1,15 +1,16 @@
 /**
  * WorkBuddy 每轮调用的 token 消耗（费用口径）。
  *
- * 来源：Agent SDK `result` 消息（实测 SDK 0.3.276 + CodeBuddy 网关）：
+ * 来源：Agent SDK `result` 消息（SDK 0.3.276 + CodeBuddy 网关）：
  *   usage: { input_tokens, output_tokens, cache_read_input_tokens?, cache_creation_input_tokens? }
+ * CodeBuddy 的 input_tokens 是本次输入总量，cache read/write 是该总量的拆分字段，不能再次加到总输入上。
  *   total_cost_usd / duration_ms / num_turns
  * CodeBuddy 订阅不计按 token 的美元费用（实测 total_cost_usd=0），
  * 因此对外展示以 token 数为准，cost 仅在 >0 时透出。
  */
 
 export interface TurnUsage {
-  /** 本次请求的输入 token（不含缓存命中部分） */
+  /** CodeBuddy 报告的总输入 token（包含缓存命中/写入）；缓存字段是拆分，不应重复相加。 */
   inputTokens: number;
   /** 输出 token */
   outputTokens: number;
@@ -74,12 +75,14 @@ export function addTurnUsage(a: TurnUsage | null, b: TurnUsage | null): TurnUsag
   };
 }
 
-/** 面向日志/事件的可读摘要：输入(含缓存)/输出 token 与费用。 */
+/** 面向日志/事件的可读摘要；inputTokens 已是总输入，缓存字段只描述其中的组成。 */
 export function summarizeTurnUsage(usage: TurnUsage | null): Record<string, unknown> | null {
   if (!usage) return null;
-  const totalInputTokens = usage.inputTokens + usage.cacheReadTokens + usage.cacheCreationTokens;
+  const totalInputTokens = usage.inputTokens;
+  const cachedInputTokens = usage.cacheReadTokens + usage.cacheCreationTokens;
   const summary: Record<string, unknown> = {
     inputTokens: usage.inputTokens,
+    uncachedInputTokens: Math.max(0, totalInputTokens - cachedInputTokens),
     outputTokens: usage.outputTokens,
     cacheReadTokens: usage.cacheReadTokens,
     cacheCreationTokens: usage.cacheCreationTokens,
@@ -92,13 +95,16 @@ export function summarizeTurnUsage(usage: TurnUsage | null): Record<string, unkn
   return summary;
 }
 
-/** 终端日志用的一行摘要。 */
+/** 终端日志用的一行摘要。缓存统计作为总输入的组成部分单独展示，不作为额外增量。 */
 export function formatTurnUsageLog(usage: TurnUsage | null): string {
   if (!usage) return 'token=未计量';
   const cached = usage.cacheReadTokens + usage.cacheCreationTokens;
+  const uncached = Math.max(0, usage.inputTokens - cached);
   const parts = [
     'in=' + usage.inputTokens.toLocaleString(),
-    cached > 0 ? 'cache=' + cached.toLocaleString() : '',
+    'uncached=' + uncached.toLocaleString(),
+    usage.cacheReadTokens > 0 ? 'cache-read=' + usage.cacheReadTokens.toLocaleString() : '',
+    usage.cacheCreationTokens > 0 ? 'cache-write=' + usage.cacheCreationTokens.toLocaleString() : '',
     'out=' + usage.outputTokens.toLocaleString(),
     usage.totalCostUsd != null ? 'cost=$' + usage.totalCostUsd.toFixed(4) : '',
   ].filter(Boolean);
