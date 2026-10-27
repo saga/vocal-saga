@@ -71,6 +71,13 @@ function logModelFailure(
 export interface AgentRunResult<T> {
   result: T;
   usage: TurnUsage | null;
+  /** User/provider configuration before per-task model overrides. */
+  requestedModel?: string;
+  /** Model passed to the underlying provider after task-profile resolution. */
+  effectiveModel?: string;
+  /** Models actually reported by the provider, including fallbacks if any. */
+  resolvedModels?: string[];
+  provider?: string;
   /** Present for persistent CodeBuddy query() sessions used by resumable workflows. */
   sessionId?: string;
 }
@@ -93,17 +100,26 @@ export async function runAgent(
   try {
     let output: string;
     let usage: TurnUsage | null = null;
+    let resolvedModels: string[] = [];
     if (effectiveAgent.provider === 'workbuddy') {
       const r = await runWorkbuddy(effectiveAgent, effective.prompt, effective.systemPrompt, requestId, sessionScope, taskProfile);
       output = r.text;
       usage = r.usage;
+      resolvedModels = r.resolvedModels || [];
     } else if (effectiveAgent.provider === 'opencode') {
       output = await runOpenCode(effectiveAgent, effective.prompt, effective.systemPrompt);
     } else {
       throw new Error('不支持的本机 Agent：' + effectiveAgent.provider);
     }
     logModelSuccess(effectiveAgent, output, requestId, sessionScope, startedAt, '文本', usage);
-    return { result: output, usage };
+    return {
+      result: output,
+      usage,
+      provider: effectiveAgent.provider,
+      requestedModel: agent.model || '<runtime-default>',
+      effectiveModel: effectiveAgent.model || '<runtime-default>',
+      resolvedModels,
+    };
   } catch (error) {
     logModelFailure(effectiveAgent, error, requestId, sessionScope, startedAt, '文本');
     throw error;
@@ -128,10 +144,12 @@ export async function runAgentJson(
   try {
     let parsed: Record<string, any>;
     let usage: TurnUsage | null = null;
+    let resolvedModels: string[] = [];
     if (effectiveAgent.provider === 'workbuddy') {
       const r = await runWorkbuddyJson(effectiveAgent, effective.prompt, effective.systemPrompt, schema, requestId, sessionScope, taskProfile);
       parsed = r.parsed;
       usage = r.usage;
+      resolvedModels = r.resolvedModels || [];
     } else if (effectiveAgent.provider === 'opencode') {
       const output = await runOpenCode(effectiveAgent, effective.prompt, effective.systemPrompt);
       const value = parseJsonValue(output);
@@ -141,7 +159,14 @@ export async function runAgentJson(
       throw new Error('不支持的本机 Agent：' + effectiveAgent.provider);
     }
     logModelSuccess(effectiveAgent, parsed, requestId, sessionScope, startedAt, 'JSON 对象', usage);
-    return { result: parsed, usage };
+    return {
+      result: parsed,
+      usage,
+      provider: effectiveAgent.provider,
+      requestedModel: agent.model || '<runtime-default>',
+      effectiveModel: effectiveAgent.model || '<runtime-default>',
+      resolvedModels,
+    };
   } catch (error) {
     logModelFailure(effectiveAgent, error, requestId, sessionScope, startedAt, 'JSON 对象');
     throw error;
@@ -173,11 +198,13 @@ export async function runAgentStructured(
     let result: Record<string, any> | any[];
     let usage: TurnUsage | null = null;
     let sessionId: string | undefined;
+    let resolvedModels: string[] = [];
     if (effectiveAgent.provider === 'workbuddy') {
       const r = await runWorkbuddyStructured(effectiveAgent, effective.prompt, effective.systemPrompt, schema, requestId, sessionScope, taskProfile, options);
       result = r.parsed;
       usage = r.usage;
       sessionId = r.sessionId;
+      resolvedModels = r.resolvedModels || [];
     } else if (effectiveAgent.provider === 'opencode') {
       const output = await runOpenCode(effectiveAgent, effective.prompt, effective.systemPrompt);
       const value = parseJsonValue(output);
@@ -187,7 +214,15 @@ export async function runAgentStructured(
       throw new Error('不支持的本机 Agent：' + effectiveAgent.provider);
     }
     logModelSuccess(effectiveAgent, result, requestId, sessionScope, startedAt, '结构化 JSON', usage);
-    return { result, usage, ...(sessionId ? { sessionId } : {}) };
+    return {
+      result,
+      usage,
+      provider: effectiveAgent.provider,
+      requestedModel: agent.model || '<runtime-default>',
+      effectiveModel: effectiveAgent.model || '<runtime-default>',
+      resolvedModels,
+      ...(sessionId ? { sessionId } : {}),
+    };
   } catch (error) {
     logModelFailure(effectiveAgent, error, requestId, sessionScope, startedAt, '结构化 JSON');
     throw error;
