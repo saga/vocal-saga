@@ -232,14 +232,14 @@ function numericQuantityUnits(value: unknown): string[] {
  */
 function chapterOrdinal(value: unknown): number | null {
   const source = String(value ?? '').normalize('NFKC').trim();
-  const english = source.match(/^(?:chapter|chap\\.?)\\s+(\\d+)\\s*(?:[:：.、-].*)?$/iu);
+  const english = source.match(/^(?:chapter|chap\.?)\s+(\d+)\s*(?:[:：.、-].*)?$/iu);
   if (english) {
     const parsed = Number(english[1]);
     return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
   }
-  const chinese = source.match(/^第\\s*(\\d+|[零〇一二两三四五六七八九十百千万亿]+)\\s*章(?:\\s*[:：.、-].*)?$/u);
+  const chinese = source.match(/^第\s*(\d+|[零〇一二两三四五六七八九十百千万亿]+)\s*章(?:\s*[:：.、-].*)?$/u);
   if (!chinese) return null;
-  const parsed = /^\\d+$/u.test(chinese[1]!) ? Number(chinese[1]) : parseChineseNumber(chinese[1]!);
+  const parsed = /^\d+$/u.test(chinese[1]!) ? Number(chinese[1]) : parseChineseNumber(chinese[1]!);
   return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
 }
 
