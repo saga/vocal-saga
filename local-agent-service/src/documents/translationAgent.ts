@@ -16,7 +16,7 @@ import { runLiteraryReview } from '../literary.ts';
 import { getDocumentProjectStore, normalizeDocumentTranslationStrategy, type DocumentTranslationStrategy } from './projectStore.ts';
 import { buildProjectVoiceContext, sanitizeProjectLiteraryMemory } from './voiceContext.ts';
 import { buildTranslationBrief, summarizeTranslationBrief, type TranslationBrief } from './translationBrief.ts';
-import { runProjectQualityAudit, createQualityRepairRun } from './qualityAudit.ts';
+import { runProjectQualityAudit, createQualityRepairRun, selectAutomaticMissingTranslationFindings } from './qualityAudit.ts';
 import { CONTEXT_GRAPH_ANALYSIS_VERSION, getContextGraphStatus, startContextGraphAnalysis } from './contextGraph.ts';
 import { logError, logInfo, logWarn } from '../log.ts';
 import { isWorthCanonicalEntityMapping, validateCanonicalTarget } from './canonicalEntityPolicy.ts';
@@ -2137,11 +2137,20 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
           ? (context.run.scope as Record<string, any>).automation : undefined;
         const isAutomaticRepairPass = automationScope?.kind === 'quality-audit-repair' &&
           Number(automationScope.pass) >= 1;
+        // 全书审计负责报告全书覆盖率；自动返工只能处理本 Run 实际包含的片段，
+        // 否则局部 Run 会把其它章节尚未翻译误当作本次失败并擅自扩展范围。
+        const runSegmentIds = new Set<string>(
+          (store.getRun(projectId, runId).segments || []).map((item: any) => String(item.id)),
+        );
+        const auditFindings = Array.isArray(audit.findings) ? audit.findings : [];
+        const belongsToRunScope = (finding: any) =>
+          Array.isArray(finding.segmentIds) &&
+          finding.segmentIds.some((id: unknown) => runSegmentIds.has(String(id)));
         const missingFindings = !isAutomaticRepairPass
-          ? (Array.isArray(audit.findings) ? audit.findings : [])
-              .filter((finding: any) => finding.type === 'missing-translation' && finding.repairable === true)
-              .slice(0, 100)
+          ? selectAutomaticMissingTranslationFindings(auditFindings, runSegmentIds)
           : [];
+        const remainingBlockingFindingCount = auditFindings.filter((finding: any) =>
+          finding.severity === 'must-fix' && belongsToRunScope(finding)).length;
         if (missingFindings.length) {
           const repair = createQualityRepairRun(
             projectId,
@@ -2161,9 +2170,10 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
         } else {
           store.appendEvent(projectId, runId, 'quality-audit.auto-disposition', {
             auditId: audit.auditId,
-            findingCount: Array.isArray(audit.findings) ? audit.findings.length : 0,
-            automaticRepairSkipped: isAutomaticRepairPass ? 'automatic-repair-pass-limit' : 'no-deterministic-missing-translation',
-            remainingFindingsAreNonBlocking: true,
+            findingCount: auditFindings.length,
+            automaticRepairSkipped: isAutomaticRepairPass ? 'automatic-repair-pass-limit' : 'no-in-scope-deterministic-missing-translation',
+            remainingBlockingFindingCount,
+            remainingFindingsAreNonBlocking: remainingBlockingFindingCount === 0,
           });
         }
       } catch (auditError) {
