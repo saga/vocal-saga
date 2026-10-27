@@ -781,7 +781,7 @@ test('book audit includes accuracy and terminology Reviewer findings, not only s
     [
       { segmentId: 'review-category-1', finding: { category: 'accuracy', dimension: 'accuracy', reason: '准确性检查', sourceExcerpt: 'opened the door', draftExcerpt: '打开了门' } },
       { segmentId: 'review-category-1', finding: { category: 'terminology', dimension: 'terminology', reason: '术语检查', sourceExcerpt: 'Captain Vale', draftExcerpt: '维尔船长' } },
-      { segmentId: 'review-category-1', finding: { category: 'style', dimension: 'character_voice', reason: '文风检查', sourceExcerpt: 'opened the door', draftExcerpt: '打开了门' } },
+      { segmentId: 'review-category-1', finding: { category: 'style', dimension: 'prose_style', reason: '文风检查', sourceExcerpt: 'opened the door', draftExcerpt: '打开了门' } },
     ]);
   store.finishRun(project.projectId, run.runId);
 
