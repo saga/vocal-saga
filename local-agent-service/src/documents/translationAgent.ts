@@ -1308,6 +1308,27 @@ export async function runLiteraryReviewWithMissingRetry(input: Record<string, an
   const store = getDocumentProjectStore();
   const projectId = typeof input.projectId === 'string' ? input.projectId : '';
   const runId = typeof input.runId === 'string' ? input.runId : '';
+  const recordReviewUsage = (usageRequestId: string) => (usage: TurnUsage, modelInfo: {
+    provider?: string;
+    requestedModel?: string;
+    effectiveModel?: string;
+    resolvedModels?: string[];
+  }) => {
+    if (!projectId || !runId) return;
+    const resolvedModels = Array.isArray(modelInfo.resolvedModels) ? modelInfo.resolvedModels : [];
+    const resolvedModel = resolvedModels.length === 1 ? resolvedModels[0] : null;
+    store.appendEvent(projectId, runId, 'model.usage', {
+      stage: input.reviewType === 'style' ? 'style-review' : 'review',
+      requestId: usageRequestId,
+      provider: modelInfo.provider || input.provider || input.runtime || 'workbuddy',
+      model: resolvedModel || modelInfo.effectiveModel || input.model || '<runtime-default>',
+      requestedModel: modelInfo.requestedModel || input.model || '<runtime-default>',
+      effectiveModel: modelInfo.effectiveModel || input.model || '<runtime-default>',
+      ...(resolvedModel ? { resolvedModel } : {}),
+      ...(resolvedModels.length ? { resolvedModels } : {}),
+      ...summarizeTurnUsage(usage),
+    });
+  };
   if (projectId && runId) {
     store.appendEvent(projectId, runId, 'review.audit.input', {
       stage: input.reviewType === 'style' ? 'style-review' : 'review',
@@ -1318,7 +1339,7 @@ export async function runLiteraryReviewWithMissingRetry(input: Record<string, an
   }
   let rawInitial: any;
   try {
-    rawInitial = await runLiteraryReview(reviewInput, requestId, sessionScope);
+    rawInitial = await runLiteraryReview(reviewInput, requestId, sessionScope, recordReviewUsage(requestId));
     if (projectId && runId) store.appendEvent(projectId, runId, 'review.audit.output', {
       stage: input.reviewType === 'style' ? 'style-review' : 'review',
       requestId, sessionScope,
@@ -1347,7 +1368,7 @@ export async function runLiteraryReviewWithMissingRetry(input: Record<string, an
       requestId: requestId + '-missing-retry', parentRequestId: requestId,
       sessionScope, missingIds, audit: { input: retryInput },
     });
-    const rawRetry = await runLiteraryReview(retryInput, requestId + '-missing-retry', sessionScope);
+    const rawRetry = await runLiteraryReview(retryInput, requestId + '-missing-retry', sessionScope, recordReviewUsage(requestId + '-missing-retry'));
     if (projectId && runId) store.appendEvent(projectId, runId, 'review.audit.retry-output', {
       stage: input.reviewType === 'style' ? 'style-review' : 'review',
       requestId: requestId + '-missing-retry', parentRequestId: requestId,
