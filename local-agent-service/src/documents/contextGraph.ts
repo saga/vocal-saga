@@ -9,7 +9,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { parseAgentModel } from '../json.ts';
 import { ANALYSIS_TIMEOUT_MS } from '../config.ts';
 import { runAgentStructured } from '../agents/runner.ts';
-import { formatTurnUsageLog } from '../agents/usage.ts';
+import { formatTurnUsageLog, summarizeTurnUsage } from '../agents/usage.ts';
 import { getCodeBuddyTaskProfile } from '../agents/taskProfiles.ts';
 import { getDocumentProjectStore } from './projectStore.ts';
 import { planBookSamples, scanBookSegments, scanBookSegmentsConcurrent, type BookScanResult } from './bookScan.ts';
@@ -1021,7 +1021,23 @@ async function runAnalysis(projectId: string, runId: string): Promise<void> {
           } : {}),
         },
       );
-      if (stageRun.usage) logInfo('context-graph', 'B 阶段 ' + stage.id + ' · ' + formatTurnUsageLog(stageRun.usage));
+      if (stageRun.usage) {
+        logInfo('context-graph', 'B 阶段 ' + stage.id + ' · ' + formatTurnUsageLog(stageRun.usage));
+        const resolvedModels = Array.isArray(stageRun.resolvedModels) ? stageRun.resolvedModels : [];
+        const resolvedModel = resolvedModels.length === 1 ? resolvedModels[0] : null;
+        store.appendEvent(projectId, runId, 'model.usage', {
+          stage: 'context-graph',
+          substage: stage.id,
+          requestId: runId + ':' + stage.id,
+          provider: stageRun.provider || agent.provider,
+          model: resolvedModel || stageRun.effectiveModel || agent.model || '<runtime-default>',
+          requestedModel: stageRun.requestedModel || agent.model || '<runtime-default>',
+          effectiveModel: stageRun.effectiveModel || agent.model || '<runtime-default>',
+          ...(resolvedModel ? { resolvedModel } : {}),
+          ...(resolvedModels.length ? { resolvedModels } : {}),
+          ...summarizeTurnUsage(stageRun.usage),
+        });
+      }
       if (!stageRun.result || Array.isArray(stageRun.result)) {
         throw new Error('Context Graph 工作流阶段 ' + stage.id + ' 返回了非对象结果。');
       }
@@ -1070,7 +1086,22 @@ async function runAnalysis(projectId: string, runId: string): Promise<void> {
       taskProfile,
       { timeoutMs: ANALYSIS_TIMEOUT_MS },
     );
-    if (analysisRun.usage) logInfo('context-graph', formatTurnUsageLog(analysisRun.usage));
+    if (analysisRun.usage) {
+      logInfo('context-graph', formatTurnUsageLog(analysisRun.usage));
+      const resolvedModels = Array.isArray(analysisRun.resolvedModels) ? analysisRun.resolvedModels : [];
+      const resolvedModel = resolvedModels.length === 1 ? resolvedModels[0] : null;
+      store.appendEvent(projectId, runId, 'model.usage', {
+        stage: 'context-graph', substage: 'analysis',
+        requestId: runId,
+        provider: analysisRun.provider || agent.provider,
+        model: resolvedModel || analysisRun.effectiveModel || agent.model || '<runtime-default>',
+        requestedModel: analysisRun.requestedModel || agent.model || '<runtime-default>',
+        effectiveModel: analysisRun.effectiveModel || agent.model || '<runtime-default>',
+        ...(resolvedModel ? { resolvedModel } : {}),
+        ...(resolvedModels.length ? { resolvedModels } : {}),
+        ...summarizeTurnUsage(analysisRun.usage),
+      });
+    }
     const output = analysisRun.result;
     if (!output || Array.isArray(output)) throw new Error('Context Graph 分析返回了非对象结果。');
     data = output as Record<string, any>;
@@ -1116,6 +1147,22 @@ async function runAnalysis(projectId: string, runId: string): Promise<void> {
         } : {}),
       },
     );
+    if (repairRun.usage) {
+      logInfo('context-graph', '文风补全 · ' + formatTurnUsageLog(repairRun.usage));
+      const resolvedModels = Array.isArray(repairRun.resolvedModels) ? repairRun.resolvedModels : [];
+      const resolvedModel = resolvedModels.length === 1 ? resolvedModels[0] : null;
+      store.appendEvent(projectId, runId, 'model.usage', {
+        stage: 'context-graph', substage: 'style-repair',
+        requestId: runId + ':style-repair',
+        provider: repairRun.provider || agent.provider,
+        model: resolvedModel || repairRun.effectiveModel || agent.model || '<runtime-default>',
+        requestedModel: repairRun.requestedModel || agent.model || '<runtime-default>',
+        effectiveModel: repairRun.effectiveModel || agent.model || '<runtime-default>',
+        ...(resolvedModel ? { resolvedModel } : {}),
+        ...(resolvedModels.length ? { resolvedModels } : {}),
+        ...summarizeTurnUsage(repairRun.usage),
+      });
+    }
     if (!repairRun.result || Array.isArray(repairRun.result)) throw new Error('Context Graph 文风补全返回了非对象结果。');
     const repairedStyle = repairRun.result as Record<string, any>;
     Object.assign(data, repairedStyle);

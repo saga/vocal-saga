@@ -785,10 +785,10 @@ test('parseTurnUsage 解析 SDK result 的 usage 并拒绝无效计量', async (
 
 test('addTurnUsage 累加多轮 token 并合计轮数', async () => {
   const { addTurnUsage } = await import('../src/agents/usage.ts');
-  const a = { inputTokens: 100, outputTokens: 50, cacheReadTokens: 200, cacheCreationTokens: 0, totalCostUsd: null, durationMs: 1000, numTurns: 1 };
-  const b = { inputTokens: 30, outputTokens: 20, cacheReadTokens: 0, cacheCreationTokens: 400, totalCostUsd: 0.01, durationMs: 2000, numTurns: 2 };
+  const a = { inputTokens: 300, outputTokens: 50, cacheReadTokens: 200, cacheCreationTokens: 0, totalCostUsd: null, durationMs: 1000, numTurns: 1 };
+  const b = { inputTokens: 430, outputTokens: 20, cacheReadTokens: 0, cacheCreationTokens: 400, totalCostUsd: 0.01, durationMs: 2000, numTurns: 2 };
   const total = addTurnUsage(a, b);
-  assert.equal(total.inputTokens, 130);
+  assert.equal(total.inputTokens, 730);
   assert.equal(total.outputTokens, 70);
   assert.equal(total.cacheReadTokens, 200);
   assert.equal(total.cacheCreationTokens, 400);
@@ -937,10 +937,10 @@ test('parseTurnUsage 解析 SDK result 的 usage 并拒绝无效计量', async (
 
 test('addTurnUsage 累加多轮 token 并合计轮数', async () => {
   const { addTurnUsage } = await import('../src/agents/usage.ts');
-  const a = { inputTokens: 100, outputTokens: 50, cacheReadTokens: 200, cacheCreationTokens: 0, totalCostUsd: null, durationMs: 1000, numTurns: 1 };
-  const b = { inputTokens: 30, outputTokens: 20, cacheReadTokens: 0, cacheCreationTokens: 400, totalCostUsd: 0.01, durationMs: 2000, numTurns: 2 };
+  const a = { inputTokens: 300, outputTokens: 50, cacheReadTokens: 200, cacheCreationTokens: 0, totalCostUsd: null, durationMs: 1000, numTurns: 1 };
+  const b = { inputTokens: 430, outputTokens: 20, cacheReadTokens: 0, cacheCreationTokens: 400, totalCostUsd: 0.01, durationMs: 2000, numTurns: 2 };
   const total = addTurnUsage(a, b);
-  assert.equal(total.inputTokens, 130);
+  assert.equal(total.inputTokens, 730);
   assert.equal(total.outputTokens, 70);
   assert.equal(total.cacheReadTokens, 200);
   assert.equal(total.cacheCreationTokens, 400);

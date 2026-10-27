@@ -2255,6 +2255,7 @@ export class DocumentProjectStore {
     const only = segmentIds?.length ? new Set(segmentIds) : null;
     const now = isoNow();
     let accepted = 0;
+    let resolvedReviewFindings = 0;
     const preservedManual: string[] = [];
     let finalStatus: RunStatus = 'completed';
     let terminalError: string | null = null;
@@ -2277,8 +2278,8 @@ export class DocumentProjectStore {
       for (const row of rows) {
         if (only && !only.has(row.segment_id)) continue;
         const candidate = db.prepare(
-          'SELECT rowid AS seq, source_hash FROM translation_results WHERE result_id = ? AND run_id = ?',
-        ).get(row.candidate_result_id, runId) as { seq?: number; source_hash?: string } | undefined;
+          'SELECT rowid AS seq, source_hash, translation_text FROM translation_results WHERE result_id = ? AND run_id = ?',
+        ).get(row.candidate_result_id, runId) as { seq?: number; source_hash?: string; translation_text?: string } | undefined;
         if (!candidate) throw Object.assign(new Error('候选译文记录已丢失，拒绝采纳片段：' + row.segment_id), { status: 409 });
         const sameSourceManual = db.prepare(
           "SELECT result_id FROM translation_results WHERE segment_id = ? AND accepted = 1 AND origin = 'manual' AND source_hash = ? ORDER BY rowid DESC LIMIT 1",
@@ -2300,6 +2301,29 @@ export class DocumentProjectStore {
           "UPDATE run_segments SET status = 'accepted', updated_at = ? WHERE run_id = ? AND segment_id = ?",
         ).run(now, runId, row.segment_id);
         accepted++;
+
+        // 只有实际采纳的译文与 Reviewer 明确提出的完整修订译文完全一致时，
+        // 才关闭对应的准确性/术语发现。风格建议仍走用户显式处理流程。
+        const acceptedText = typeof candidate.translation_text === 'string' ? candidate.translation_text.trim() : '';
+        if (acceptedText) {
+          const pendingFindings = db.prepare(
+            "SELECT finding_id, finding_json FROM review_findings " +
+            "WHERE run_id = ? AND segment_id = ? AND category IN ('accuracy','terminology') AND status = 'pending'"
+          ).all(runId, row.segment_id) as Array<{ finding_id: number; finding_json: string }>;
+          for (const item of pendingFindings) {
+            const finding = parseJson<any>(item.finding_json, {});
+            const proposed = typeof finding.proposedTranslation === 'string' ? finding.proposedTranslation.trim() : '';
+            if (!proposed || proposed !== acceptedText) continue;
+            finding.resolution = 'accepted-review-proposal';
+            finding.resolvedResultId = row.candidate_result_id;
+            finding.resolvedAt = now;
+            const changed = db.prepare(
+              "UPDATE review_findings SET status = 'resolved', finding_json = ? " +
+              "WHERE finding_id = ? AND run_id = ? AND status = 'pending'"
+            ).run(JSON.stringify(finding), item.finding_id, runId);
+            resolvedReviewFindings += Number(changed.changes || 0);
+          }
+        }
       }
 
       const counts = db.prepare(
@@ -2340,6 +2364,7 @@ export class DocumentProjectStore {
     this.addEvent(projectId, runId, 'translations.accepted', {
       count: accepted,
       preservedManualSegmentIds: preservedManual,
+      resolvedReviewFindingCount: resolvedReviewFindings,
       segmentIds: only ? Array.from(only) : undefined,
     });
     return this.getRun(projectId, runId);

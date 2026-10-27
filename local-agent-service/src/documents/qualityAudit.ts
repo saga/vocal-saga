@@ -226,16 +226,40 @@ function numericQuantityUnits(value: unknown): string[] {
   return found.sort((a, b) => a.index - b.index).map((item) => item.unit);
 }
 
+/**
+ * 章节标题的序号需要按语义比较，而不是把中文“第一章”当作普通数量词。
+ * 只识别明确的“Chapter N”/“第 N 章”标题形式，避免放宽普通数字检测的边界。
+ */
+function chapterOrdinal(value: unknown): number | null {
+  const source = String(value ?? '').normalize('NFKC').trim();
+  const english = source.match(/^(?:chapter|chap\.?)\s+(\d+)\s*(?:[:：.、-].*)?$/iu);
+  if (english) {
+    const parsed = Number(english[1]);
+    return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
+  }
+  const chinese = source.match(/^第\s*(\d+|[零〇一二两三四五六七八九十百千万亿]+)\s*章(?:\s*[:：.、-].*)?$/u);
+  if (!chinese) return null;
+  const parsed = /^\d+$/u.test(chinese[1]!) ? Number(chinese[1]) : parseChineseNumber(chinese[1]!);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
+}
+
 function numericFindings(
-  segments: Array<{ id: string; text: string; contextPath: string }>,
+  segments: Array<{ id: string; text: string; contextPath: string; kind?: string }>,
   translations: Map<string, string>,
 ) {
   const findings: any[] = [];
   for (const segment of segments) {
     const translation = translations.get(segment.id) || '';
     if (!translation.trim()) continue;
-    const sourceNumbers = numericTokens(segment.text, false);
-    const targetNumbers = numericTokens(translation, sourceNumbers.length > 0);
+    let sourceNumbers = numericTokens(segment.text, false);
+    let targetNumbers = numericTokens(translation, sourceNumbers.length > 0);
+    const sourceChapterOrdinal = chapterOrdinal(segment.text);
+    const targetChapterOrdinal = chapterOrdinal(translation);
+    if (sourceChapterOrdinal !== null && targetChapterOrdinal !== null) {
+      if (sourceChapterOrdinal === targetChapterOrdinal) continue;
+      sourceNumbers = [String(sourceChapterOrdinal)];
+      targetNumbers = [String(targetChapterOrdinal)];
+    }
     const sourceUnits = numericQuantityUnits(segment.text);
     const targetUnits = numericQuantityUnits(translation);
     const numericValuesDiffer = JSON.stringify(sourceNumbers) !== JSON.stringify(targetNumbers);
@@ -459,7 +483,7 @@ function currentReviewFindings(
     'FROM review_findings rf JOIN translation_runs tr ON tr.run_id = rf.run_id ' +
     'LEFT JOIN run_segments rs ON rs.run_id = rf.run_id AND rs.segment_id = rf.segment_id ' +
     'LEFT JOIN translation_results r ON r.result_id = rs.candidate_result_id ' +
-    "WHERE rf.run_id = ? AND tr.source_revision_id = ? AND rf.category = 'style' " +
+    "WHERE rf.run_id = ? AND tr.source_revision_id = ? " +
     'ORDER BY rf.finding_id DESC LIMIT 300'
   ).all(reviewRunId, revisionId) as any[];
   const findings = rows.flatMap((row) => {
@@ -1291,6 +1315,28 @@ function auditTargetLanguage(db: any, runId?: string): string {
  * 可选择叠加一个已结束 Run 的候选译文；审计只产出 finding/metric，不自动修改或采纳译文。
  * 报告固定 sourceRevisionId，后续返工必须再次校验该 revision 仍是当前版本。
  */
+/**
+ * 自动返工只接受当前 Run 范围内的确定性缺译。
+ * 全书审计仍然报告全书覆盖率，但其它章节的未翻译内容不能偷偷扩大局部 Run。
+ */
+export function selectAutomaticMissingTranslationFindings(
+  findings: unknown,
+  runSegmentIds: Iterable<unknown>,
+  limit = 100,
+): any[] {
+  const scopedIds = new Set(Array.from(runSegmentIds, (id) => String(id)));
+  const maxItems = Number.isFinite(limit) ? Math.max(0, Math.min(100, Math.floor(limit))) : 100;
+  if (!maxItems) return [];
+  return (Array.isArray(findings) ? findings : [])
+    .filter((finding: any) =>
+      finding?.type === 'missing-translation' &&
+      finding.repairable === true &&
+      Array.isArray(finding.segmentIds) &&
+      finding.segmentIds.length > 0 &&
+      finding.segmentIds.every((id: unknown) => scopedIds.has(String(id))))
+    .slice(0, maxItems);
+}
+
 export function runProjectQualityAudit(projectId: string, runId?: string): Record<string, any> {
   const { store, context, segments } = currentSource(projectId);
   if (!segments.length) fail('当前来源版本没有可审计的片段。', 409);

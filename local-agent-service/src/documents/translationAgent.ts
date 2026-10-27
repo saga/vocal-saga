@@ -16,7 +16,7 @@ import { runLiteraryReview } from '../literary.ts';
 import { getDocumentProjectStore, normalizeDocumentTranslationStrategy, type DocumentTranslationStrategy } from './projectStore.ts';
 import { buildProjectVoiceContext, sanitizeProjectLiteraryMemory } from './voiceContext.ts';
 import { buildTranslationBrief, summarizeTranslationBrief, type TranslationBrief } from './translationBrief.ts';
-import { runProjectQualityAudit, createQualityRepairRun } from './qualityAudit.ts';
+import { runProjectQualityAudit, createQualityRepairRun, selectAutomaticMissingTranslationFindings } from './qualityAudit.ts';
 import { CONTEXT_GRAPH_ANALYSIS_VERSION, getContextGraphStatus, startContextGraphAnalysis } from './contextGraph.ts';
 import { logError, logInfo, logWarn } from '../log.ts';
 import { isWorthCanonicalEntityMapping, validateCanonicalTarget } from './canonicalEntityPolicy.ts';
@@ -1013,7 +1013,13 @@ async function translateBatch(context: any, items: TranslationItem[], requestId:
     if (turnUsage) {
       store.appendEvent(context.project.projectId, context.run.runId, 'model.usage', {
         stage: 'translate', batchIndex, requestId,
-        provider: agent.provider, model: agent.model || '<runtime-default>',
+        provider: modelRun.provider || agent.provider,
+        model: modelRun.resolvedModels?.length === 1
+          ? modelRun.resolvedModels[0]
+          : modelRun.effectiveModel || agent.model || '<runtime-default>',
+        requestedModel: modelRun.requestedModel || agent.model || '<runtime-default>',
+        effectiveModel: modelRun.effectiveModel || agent.model || '<runtime-default>',
+        ...(modelRun.resolvedModels?.length ? { resolvedModels: modelRun.resolvedModels } : {}),
         thinkingMode: getCodeBuddyTaskProfile(context.prompt.config || {}, 'translation').thinkingMode,
         thinkingBudgetTokens: getCodeBuddyTaskProfile(context.prompt.config || {}, 'translation').thinkingBudgetTokens,
         effort: getCodeBuddyTaskProfile(context.prompt.config || {}, 'translation').effort,
@@ -1302,6 +1308,27 @@ export async function runLiteraryReviewWithMissingRetry(input: Record<string, an
   const store = getDocumentProjectStore();
   const projectId = typeof input.projectId === 'string' ? input.projectId : '';
   const runId = typeof input.runId === 'string' ? input.runId : '';
+  const recordReviewUsage = (usageRequestId: string) => (usage: TurnUsage, modelInfo: {
+    provider?: string;
+    requestedModel?: string;
+    effectiveModel?: string;
+    resolvedModels?: string[];
+  }) => {
+    if (!projectId || !runId) return;
+    const resolvedModels = Array.isArray(modelInfo.resolvedModels) ? modelInfo.resolvedModels : [];
+    const resolvedModel = resolvedModels.length === 1 ? resolvedModels[0] : null;
+    store.appendEvent(projectId, runId, 'model.usage', {
+      stage: input.reviewType === 'style' ? 'style-review' : 'review',
+      requestId: usageRequestId,
+      provider: modelInfo.provider || input.provider || input.runtime || 'workbuddy',
+      model: resolvedModel || modelInfo.effectiveModel || input.model || '<runtime-default>',
+      requestedModel: modelInfo.requestedModel || input.model || '<runtime-default>',
+      effectiveModel: modelInfo.effectiveModel || input.model || '<runtime-default>',
+      ...(resolvedModel ? { resolvedModel } : {}),
+      ...(resolvedModels.length ? { resolvedModels } : {}),
+      ...summarizeTurnUsage(usage),
+    });
+  };
   if (projectId && runId) {
     store.appendEvent(projectId, runId, 'review.audit.input', {
       stage: input.reviewType === 'style' ? 'style-review' : 'review',
@@ -1312,7 +1339,7 @@ export async function runLiteraryReviewWithMissingRetry(input: Record<string, an
   }
   let rawInitial: any;
   try {
-    rawInitial = await runLiteraryReview(reviewInput, requestId, sessionScope);
+    rawInitial = await runLiteraryReview(reviewInput, requestId, sessionScope, recordReviewUsage(requestId));
     if (projectId && runId) store.appendEvent(projectId, runId, 'review.audit.output', {
       stage: input.reviewType === 'style' ? 'style-review' : 'review',
       requestId, sessionScope,
@@ -1341,7 +1368,7 @@ export async function runLiteraryReviewWithMissingRetry(input: Record<string, an
       requestId: requestId + '-missing-retry', parentRequestId: requestId,
       sessionScope, missingIds, audit: { input: retryInput },
     });
-    const rawRetry = await runLiteraryReview(retryInput, requestId + '-missing-retry', sessionScope);
+    const rawRetry = await runLiteraryReview(retryInput, requestId + '-missing-retry', sessionScope, recordReviewUsage(requestId + '-missing-retry'));
     if (projectId && runId) store.appendEvent(projectId, runId, 'review.audit.retry-output', {
       stage: input.reviewType === 'style' ? 'style-review' : 'review',
       requestId: requestId + '-missing-retry', parentRequestId: requestId,
@@ -2137,11 +2164,23 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
           ? (context.run.scope as Record<string, any>).automation : undefined;
         const isAutomaticRepairPass = automationScope?.kind === 'quality-audit-repair' &&
           Number(automationScope.pass) >= 1;
+        // 全书审计负责报告全书覆盖率；自动返工只能处理本 Run 实际包含的片段，
+        // 否则局部 Run 会把其它章节尚未翻译误当作本次失败并擅自扩展范围。
+        const runSegmentIds = new Set<string>(
+          (store.getRun(projectId, runId).segments || []).map((item: any) => String(item.id)),
+        );
+        const auditFindings = Array.isArray(audit.findings) ? audit.findings : [];
+        const belongsToRunScope = (finding: any) =>
+          Array.isArray(finding.segmentIds) &&
+          finding.segmentIds.some((id: unknown) => runSegmentIds.has(String(id)));
+        const closedFindingStatuses = new Set(['resolved', 'dismissed', 'applied']);
         const missingFindings = !isAutomaticRepairPass
-          ? (Array.isArray(audit.findings) ? audit.findings : [])
-              .filter((finding: any) => finding.type === 'missing-translation' && finding.repairable === true)
-              .slice(0, 100)
+          ? selectAutomaticMissingTranslationFindings(auditFindings, runSegmentIds)
           : [];
+        const remainingBlockingFindingCount = auditFindings.filter((finding: any) =>
+          finding.severity === 'must-fix' &&
+          !closedFindingStatuses.has(String(finding.status || 'pending')) &&
+          belongsToRunScope(finding)).length;
         if (missingFindings.length) {
           const repair = createQualityRepairRun(
             projectId,
@@ -2161,9 +2200,10 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
         } else {
           store.appendEvent(projectId, runId, 'quality-audit.auto-disposition', {
             auditId: audit.auditId,
-            findingCount: Array.isArray(audit.findings) ? audit.findings.length : 0,
-            automaticRepairSkipped: isAutomaticRepairPass ? 'automatic-repair-pass-limit' : 'no-deterministic-missing-translation',
-            remainingFindingsAreNonBlocking: true,
+            findingCount: auditFindings.length,
+            automaticRepairSkipped: isAutomaticRepairPass ? 'automatic-repair-pass-limit' : 'no-in-scope-deterministic-missing-translation',
+            remainingBlockingFindingCount,
+            remainingFindingsAreNonBlocking: remainingBlockingFindingCount === 0,
           });
         }
       } catch (auditError) {

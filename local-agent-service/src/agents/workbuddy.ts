@@ -76,7 +76,7 @@ async function queryWorkbuddyRaw(
   timeoutMs = REQUEST_TIMEOUT_MS,
   onSessionId?: (sessionId: string) => void,
   contextWindow?: number,
-): Promise<{ text: string; structuredOutput: unknown; usage: TurnUsage | null; sessionId?: string }> {
+): Promise<{ text: string; structuredOutput: unknown; usage: TurnUsage | null; sessionId?: string; resolvedModels: string[] }> {
   const startedAt = Date.now();
   let effectiveOptions = options;
   let contextWorkspace: { cwd: string; cleanup: () => void } | undefined;
@@ -104,6 +104,7 @@ async function queryWorkbuddyRaw(
   let structuredOutput: unknown;
   let usage: TurnUsage | null = null;
   let sessionId: string | undefined;
+  const resolvedModels = new Set<string>();
   let messageCount = 0;
   let iterator: AsyncIterator<unknown> | undefined;
 
@@ -148,6 +149,10 @@ async function queryWorkbuddyRaw(
             sessionId = observedSessionId;
             onSessionId?.(sessionId);
           }
+          if (raw.type === 'assistant' && raw.message && typeof raw.message.model === 'string') {
+            const model = raw.message.model.trim();
+            if (model && model.toLowerCase() !== 'auto') resolvedModels.add(model);
+          }
           if (raw.type === 'assistant' && raw.message && Array.isArray(raw.message.content)) {
             for (const part of raw.message.content) {
               if (part?.type === 'text' && typeof part.text === 'string' && part.text.trim()) {
@@ -160,6 +165,11 @@ async function queryWorkbuddyRaw(
               throw new Error('Workbuddy 执行失败：' + String(raw.error?.message || raw.error || raw.subtype));
             }
             if (raw.structured_output !== undefined) structuredOutput = raw.structured_output;
+            if (raw.modelUsage && typeof raw.modelUsage === 'object') {
+              for (const model of Object.keys(raw.modelUsage)) {
+                if (model && model.toLowerCase() !== 'auto') resolvedModels.add(model);
+              }
+            }
             usage = parseTurnUsage(raw);
           }
         }
@@ -182,7 +192,7 @@ async function queryWorkbuddyRaw(
 
     await Promise.race([consume, timeoutPromise]);
     if (timedOut) throw timeoutError();
-    return { text: text.trim(), structuredOutput, usage, ...(sessionId ? { sessionId } : {}) };
+    return { text: text.trim(), structuredOutput, usage, resolvedModels: Array.from(resolvedModels), ...(sessionId ? { sessionId } : {}) };
   } catch (error) {
     if (timedOut) throw timeoutError();
     if (query) {
@@ -229,7 +239,7 @@ export async function runWorkbuddy(
   requestId = 'unknown',
   sessionScope?: string,
   taskProfile?: CodeBuddyTaskProfile,
-): Promise<{ text: string; usage: TurnUsage | null }> {
+): Promise<{ text: string; usage: TurnUsage | null; resolvedModels?: string[] }> {
   // Task profiles must go through query() so thinking/effort/fallbackModel are honored.
   if (taskProfile) {
     const result = await queryWorkbuddyRaw(
@@ -237,7 +247,7 @@ export async function runWorkbuddy(
       REQUEST_TIMEOUT_MS, undefined, taskProfile.contextWindow,
     );
     if (!result.text) throw new Error('Workbuddy 已结束，但没有返回译文');
-    return { text: result.text, usage: result.usage };
+    return { text: result.text, usage: result.usage, resolvedModels: result.resolvedModels };
   }
   const pool = getTextPool();
   const index = await pool.acquire(agent, sessionScope || 'shared-text-translation');
@@ -284,8 +294,8 @@ export async function runWorkbuddyStructured(
     persistSession?: boolean;
     onSessionId?: (sessionId: string) => void;
   } = {},
-): Promise<{ parsed: Record<string, any> | any[]; usage: TurnUsage | null; sessionId?: string }> {
-  let result: { text: string; structuredOutput: unknown; usage: TurnUsage | null; sessionId?: string };
+): Promise<{ parsed: Record<string, any> | any[]; usage: TurnUsage | null; sessionId?: string; resolvedModels?: string[] }> {
+  let result: { text: string; structuredOutput: unknown; usage: TurnUsage | null; sessionId?: string; resolvedModels?: string[] };
   // 长任务（全书预处理）显式放宽上限；普通翻译批次沿用 REQUEST_TIMEOUT_MS。
   const timeoutMs = options.timeoutMs ?? REQUEST_TIMEOUT_MS;
   if (taskProfile || options.persistSession || options.sessionId) {
@@ -315,6 +325,7 @@ export async function runWorkbuddyStructured(
   return {
     parsed: resolveWorkbuddyStructured(result.structuredOutput, result.text),
     usage: result.usage,
+    resolvedModels: result.resolvedModels || [],
     ...(result.sessionId ? { sessionId: result.sessionId } : {}),
   };
 }
@@ -328,10 +339,10 @@ export async function runWorkbuddyJson(
   sessionScope?: string,
   taskProfile?: CodeBuddyTaskProfile,
   options: { timeoutMs?: number } = {},
-): Promise<{ parsed: Record<string, any>; usage: TurnUsage | null }> {
+): Promise<{ parsed: Record<string, any>; usage: TurnUsage | null; resolvedModels?: string[] }> {
   const result = await runWorkbuddyStructured(agent, prompt, systemPrompt, schema, requestId, sessionScope, taskProfile, options);
   if (!result.parsed || typeof result.parsed !== 'object' || Array.isArray(result.parsed)) {
     throw new Error('Workbuddy 返回内容不是预期 JSON 对象');
   }
-  return { parsed: result.parsed as Record<string, any>, usage: result.usage };
+  return { parsed: result.parsed as Record<string, any>, usage: result.usage, resolvedModels: result.resolvedModels || [] };
 }

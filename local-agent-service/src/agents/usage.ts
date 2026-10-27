@@ -1,15 +1,16 @@
 /**
  * WorkBuddy 每轮调用的 token 消耗（费用口径）。
  *
- * 来源：Agent SDK `result` 消息（实测 SDK 0.3.276 + CodeBuddy 网关）：
+ * 来源：Agent SDK `result` 消息（SDK 0.3.276 + CodeBuddy 网关）：
  *   usage: { input_tokens, output_tokens, cache_read_input_tokens?, cache_creation_input_tokens? }
+ * 按 CodeBuddy Agent SDK 当前文档口径，input_tokens（未命中缓存的输入）、cache read、cache write 互不重叠，合计为总输入。
  *   total_cost_usd / duration_ms / num_turns
  * CodeBuddy 订阅不计按 token 的美元费用（实测 total_cost_usd=0），
  * 因此对外展示以 token 数为准，cost 仅在 >0 时透出。
  */
 
 export interface TurnUsage {
-  /** 本次请求的输入 token（不含缓存命中部分） */
+  /** 未命中缓存的输入 token；cache read/write 分别计量，三者互不重叠。 */
   inputTokens: number;
   /** 输出 token */
   outputTokens: number;
@@ -74,7 +75,7 @@ export function addTurnUsage(a: TurnUsage | null, b: TurnUsage | null): TurnUsag
   };
 }
 
-/** 面向日志/事件的可读摘要：输入(含缓存)/输出 token 与费用。 */
+/** 面向日志/事件的可读摘要；普通输入、缓存命中、缓存写入为互斥分项。 */
 export function summarizeTurnUsage(usage: TurnUsage | null): Record<string, unknown> | null {
   if (!usage) return null;
   const totalInputTokens = usage.inputTokens + usage.cacheReadTokens + usage.cacheCreationTokens;
@@ -92,13 +93,15 @@ export function summarizeTurnUsage(usage: TurnUsage | null): Record<string, unkn
   return summary;
 }
 
-/** 终端日志用的一行摘要。 */
+/** 终端日志用的一行摘要；明确区分互不重叠的输入分项和合计值。 */
 export function formatTurnUsageLog(usage: TurnUsage | null): string {
   if (!usage) return 'token=未计量';
-  const cached = usage.cacheReadTokens + usage.cacheCreationTokens;
+  const totalInput = usage.inputTokens + usage.cacheReadTokens + usage.cacheCreationTokens;
   const parts = [
-    'in=' + usage.inputTokens.toLocaleString(),
-    cached > 0 ? 'cache=' + cached.toLocaleString() : '',
+    'input=' + usage.inputTokens.toLocaleString(),
+    usage.cacheReadTokens > 0 ? 'cache-read=' + usage.cacheReadTokens.toLocaleString() : '',
+    usage.cacheCreationTokens > 0 ? 'cache-write=' + usage.cacheCreationTokens.toLocaleString() : '',
+    'total-in=' + totalInput.toLocaleString(),
     'out=' + usage.outputTokens.toLocaleString(),
     usage.totalCostUsd != null ? 'cost=$' + usage.totalCostUsd.toFixed(4) : '',
   ].filter(Boolean);

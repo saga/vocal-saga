@@ -355,3 +355,29 @@ python3 -c "
 raw=open('$HOME/.vocal-saga-local-agent/logs/local-agent.log',encoding='utf-8').read()
 print('\n'.join(l for l in raw.split(chr(92)+'n') if 'canonical-terms' in l))"
 ```
+
+## 代码复核结论与修订记录（2026-10-27）
+
+### 已证实并修复
+
+1. **P0：局部 Run 触发全书范围自动返工。** 自动审计可以报告全书缺译，但返工选择没有和父 Run 的片段集合相交，随后按原文顺序取前 100 项。这会把某一章节的局部任务扩展为书首的其它章节。现改为：全书覆盖率继续照常审计，自动返工只选择父 Run 范围内且每个片段 ID 都在该范围内的确定性缺译，100 段上限保留。
+2. **P0：质量审计只查询 style Reviewer findings。** SQL 将准确性和术语发现过滤掉了，与下游 accuracy-review / reviewer-terminology-review 映射及对应指标不一致。已移除 category 过滤，并增加三类发现均进入审计报告的测试。
+3. **P0：Reviewer finding 状态没有随已采纳修订收敛。** 发现一直保持 pending，即便同一个 Run 已采纳了与该 finding 的 proposedTranslation 完全相同的候选译文。现只在候选确实被采纳、且文本精确匹配建议时，将准确性/术语发现标为 resolved；不匹配的发现仍为 pending，风格建议仍走用户显式处理流程。
+4. **P1：英文/中文章节序号比较不一致。** 普通数字解析会识别 Chapter 1 的 1，却不会把第一章当成数量词，导致相同章节序号被误报。现增加严格的章节标题序号识别；相同序号不报差异，不同序号继续报错，并增加回归测试。
+5. **P1：自动 disposition 把所有剩余发现硬编码为非阻塞。** 现按本 Run 范围内 must-fix 发现数量计算并记录，不再不加区分地写入 true。
+6. **P2：文件日志使用字面量反斜杠-n，不是真换行。** 已修正为实际换行，并把只有时分秒的时间戳改为含日期的可排序本地时间；增加文件级回归测试。
+
+### 需要修正或暂不照单全收的判断
+
+- **文学记忆 revision 的 version = 2 不是已证实的缺陷。** 该字段与 revision UUID、fingerprint 和 created_at 分开存储；同一代码中的分析上下文也使用 version: 2。现有证据更符合数据结构/schema 版本，而不是递增的历史修订编号，所以没有改成猜测性的递增值。
+- **不能通过自动把 Style Guide / Context Graph 候选升级为 confirmed 来“修复未生效”。** 服务端明确要求模型提出的记忆先是 candidate；候选与已确认规则具有不同的翻译约束权重。Graph 中的建议映射和 LiteraryMemory 中的用户确认映射也不是同一种信任状态。报告指出两套数据的审计覆盖存在缺口，值得后续单独设计“候选映射的复核提示”，但不能直接写入已确认记忆或让候选静默成为强制规范。
+- **原报告关于 Token 双重累加的判断证据不足，已撤回对应统计改动。** 五次样本中 `input_tokens` 恰好等于 `cache_read_input_tokens + cache_creation_input_tokens` 是值得调查的异常，但仅凭数值相等不能证明字段包含关系。CodeBuddy [状态栏文档](https://www.codebuddy.cn/docs/cli/statusline) 明确说当前请求用量遵循 Claude Code 协议，普通输入、缓存写入、缓存读取互不重叠，计算上下文长度时三者相加；[Agent SDK 更新记录](https://app.unpkg.com/%40tencent-ai/agent-sdk%400.3.200/files/cli/CHANGELOG.md) 也说明 input/cacheRead/cacheWrite 应互不相交并相加得到总输入。因此保留 `totalInputTokens = inputTokens + cacheReadTokens + cacheCreationTokens`，并新增测试落实该口径。样本中的等式应作为需要核对原始 result 事件/SDK 版本的观察项，不能用作擅自改口径的依据。另已为初译、文学审校（含缺失 ID 的补审）和 Context Graph 工作流调用补充独立 `model.usage` 事件，且事件记录 `requestedModel`、`effectiveModel` 与可取得的 `resolvedModels`；按阶段可对账，但不能把分阶段事件简单等同于 `run.finished.usage`。
+- **模型记录的歧义已部分修正，但不能把请求模型名直接改写成单一实跑模型。** WorkBuddy 的 assistant message 会报告实际 `model`，并可在 `modelUsage` 中报告本次调用涉及的模型；当前初译、审校和 Context Graph 的 `model.usage` 事件因此记录 `requestedModel`、`effectiveModel` 和可用的 `resolvedModels`，单一实跑模型明确时再记录 `resolvedModel`。没有可靠的模型回报时仍保留配置/运行时默认信息，而不是推测。`translation_runs.model` 不被强制覆盖，因为一个 Run 可能使用 fallback 或多个模型。\n- **Context Graph 实体未进入 LiteraryMemory 的问题不宜通过直接合并状态来解决。** 审计目前的 canonical-name 漂移主要依据已确认实体/人物画像；Graph 的候选建议不应被当成已确认规范名。下一步若要提升覆盖率，应新增显式标记为候选、只产生 review 级 finding 的审计路径，并验证语言、来源证据和别名可见性，而不是改变确认规则。
+
+上述结论区分了可由代码路径直接证明的问题和仍需要更多运行证据/独立设计的假设。已新增回归测试覆盖本次确认的行为边界。
+
+### 本次变更验证记录
+
+- `fanyi-extension` 文档工作区 UI 变更通过其 CI；准确性/术语修订不再显示文风专用的采纳/忽略按钮。
+- `local-agent-service` 在包含模型元数据传播、审校/Context Graph usage 事件、Token 分项统计及回归测试的代码提交上，专用 CI 已通过（运行记录：[Local Agent Service](https://github.com/saga/vocal-saga/actions/runs/40515865367)；随后仅更新测试 fixture 和本分析报告）。
+- `vocal-saga` 根 CI 的 5 个扩展端失败在 `main` 基线提交上也可复现：page cache key 版本断言、两个路由的 source 默认值、旧 `/api/translate/url` 路由断言和翻译历史 source language 断言。它们与本次 `local-agent-service` 改动无直接关系，但仍应另行修正以恢复总 CI。

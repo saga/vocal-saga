@@ -1,5 +1,5 @@
 import { runAgentJson } from './agents/runner.ts';
-import { formatTurnUsageLog } from './agents/usage.ts';
+import { formatTurnUsageLog, type TurnUsage } from './agents/usage.ts';
 import { getCodeBuddyTaskProfile } from './agents/taskProfiles.ts';
 import { parseAgentModel } from './json.ts';
 import { buildProjectVoiceContext, sanitizeProjectLiteraryMemory } from './documents/voiceContext.ts';
@@ -432,7 +432,17 @@ export function buildLiteraryReviewPrompt(input: {
   };
 }
 
-export async function runLiteraryReview(body: any, requestId: string, sessionScope?: string) {
+export async function runLiteraryReview(
+  body: any,
+  requestId: string,
+  sessionScope?: string,
+  onUsage?: (usage: TurnUsage, model: {
+    provider?: string;
+    requestedModel?: string;
+    effectiveModel?: string;
+    resolvedModels?: string[];
+  }) => void,
+) {
   const segments = validateSegments(body.segments, 32, 'review');
   const memory = body.memory && typeof body.memory === 'object' ? body.memory : {};
   const suppliedPrecedingSegments = Array.isArray(body.precedingSegments)
@@ -483,7 +493,15 @@ export async function runLiteraryReview(body: any, requestId: string, sessionSco
     getCodeBuddyTaskProfile(body, reviewFocus === 'style' ? 'styleReview' : 'accuracyReview'),
   );
   const parsed = modelRun.result;
-  if (modelRun.usage) logInfo('literary-review', formatTurnUsageLog(modelRun.usage) + ' · request=' + requestId.slice(0, 12));
+  if (modelRun.usage) {
+    onUsage?.(modelRun.usage, {
+      provider: modelRun.provider,
+      requestedModel: modelRun.requestedModel,
+      effectiveModel: modelRun.effectiveModel,
+      resolvedModels: modelRun.resolvedModels,
+    });
+    logInfo('literary-review', formatTurnUsageLog(modelRun.usage) + ' · request=' + requestId.slice(0, 12));
+  }
   if (!Array.isArray(parsed.results)) throw new Error('Reviewer 返回格式异常；请重试，扩展端会保留初译');
   const byId = new Map(segments.map((item) => [item.id, item]));
   const translations: Record<string, string> = {};
