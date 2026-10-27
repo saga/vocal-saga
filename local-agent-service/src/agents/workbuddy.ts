@@ -239,7 +239,7 @@ export async function runWorkbuddy(
   requestId = 'unknown',
   sessionScope?: string,
   taskProfile?: CodeBuddyTaskProfile,
-): Promise<{ text: string; usage: TurnUsage | null }> {
+): Promise<{ text: string; usage: TurnUsage | null; resolvedModels?: string[] }> {
   // Task profiles must go through query() so thinking/effort/fallbackModel are honored.
   if (taskProfile) {
     const result = await queryWorkbuddyRaw(
@@ -247,7 +247,7 @@ export async function runWorkbuddy(
       REQUEST_TIMEOUT_MS, undefined, taskProfile.contextWindow,
     );
     if (!result.text) throw new Error('Workbuddy 已结束，但没有返回译文');
-    return { text: result.text, usage: result.usage };
+    return { text: result.text, usage: result.usage, resolvedModels: result.resolvedModels };
   }
   const pool = getTextPool();
   const index = await pool.acquire(agent, sessionScope || 'shared-text-translation');
