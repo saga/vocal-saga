@@ -16,6 +16,7 @@ const realNovelFixture = JSON.parse(readFileSync(
 const { getDocumentProjectStore } = await import('../src/documents/projectStore.ts');
 const {
   runProjectQualityAudit,
+  selectAutomaticMissingTranslationFindings,
   createQualityRepairRun,
   createProjectQualityEvaluation,
   submitProjectQualityEvaluationReviews,
@@ -746,3 +747,99 @@ test('automatic quality repair is marked as bounded service automation and linke
   assert.deepEqual(repair.segmentIds, ['auto-missing']);
 });
 
+
+
+test('automatic missing-translation repair never expands beyond the parent Run scope', () => {
+  const findings = [
+    { findingId: 'in-scope', type: 'missing-translation', repairable: true, segmentIds: ['selected-1'] },
+    { findingId: 'out-of-scope', type: 'missing-translation', repairable: true, segmentIds: ['other-chapter'] },
+    { findingId: 'cross-scope', type: 'missing-translation', repairable: true, segmentIds: ['selected-1', 'other-chapter'] },
+    { findingId: 'not-missing', type: 'terminology-drift', repairable: true, segmentIds: ['selected-1'] },
+  ];
+  assert.deepEqual(
+    selectAutomaticMissingTranslationFindings(findings, new Set(['selected-1'])).map((item) => item.findingId),
+    ['in-scope'],
+  );
+  assert.deepEqual(selectAutomaticMissingTranslationFindings(findings, new Set()), []);
+});
+
+test('book audit includes accuracy and terminology Reviewer findings, not only style findings', () => {
+  const store = getDocumentProjectStore();
+  const project = store.createProject({
+    title: 'Reviewer Categories Audit Test',
+    format: 'txt',
+    sourceFileName: 'reviewer-categories.txt',
+    prompt: { translationMode: 'literary', sourceLang: 'en', targetLang: 'zh' },
+    segments: [
+      { id: 'review-category-1', text: 'Captain Vale opened the door.', kind: 'paragraph', contextPath: 'Chapter 1' },
+    ],
+  });
+  ensureTestContextGraph(store, project);
+  const run = store.createRun(project.projectId, { scope: { type: 'all' } });
+  store.saveCandidates(project.projectId, run.runId,
+    [{ segmentId: 'review-category-1', text: '维尔船长打开了门。' }],
+    [
+      { segmentId: 'review-category-1', finding: { category: 'accuracy', dimension: 'accuracy', reason: '准确性检查', sourceExcerpt: 'opened the door', draftExcerpt: '打开了门' } },
+      { segmentId: 'review-category-1', finding: { category: 'terminology', dimension: 'terminology', reason: '术语检查', sourceExcerpt: 'Captain Vale', draftExcerpt: '维尔船长' } },
+      { segmentId: 'review-category-1', finding: { category: 'style', dimension: 'character_voice', reason: '文风检查', sourceExcerpt: 'opened the door', draftExcerpt: '打开了门' } },
+    ]);
+  store.finishRun(project.projectId, run.runId);
+
+  const report = runProjectQualityAudit(project.projectId, run.runId);
+  assert.ok(report.findings.some((item) => item.type === 'accuracy-review' && item.category === 'accuracy'));
+  assert.ok(report.findings.some((item) => item.type === 'reviewer-terminology-review' && item.category === 'terminology'));
+  assert.ok(report.findings.some((item) => item.type === 'style-review' && item.category === 'style'));
+});
+
+test('accepting an exact Reviewer proposal resolves only matching accuracy/terminology findings', () => {
+  const store = getDocumentProjectStore();
+  const project = store.createProject({
+    title: 'Reviewer Finding Lifecycle Test',
+    format: 'txt',
+    sourceFileName: 'reviewer-finding-lifecycle.txt',
+    prompt: { translationMode: 'literary', sourceLang: 'en', targetLang: 'zh' },
+    segments: [
+      { id: 'review-lifecycle-1', text: 'The door is open.', kind: 'paragraph', contextPath: 'Chapter 1' },
+    ],
+  });
+  const run = store.createRun(project.projectId, { scope: { type: 'all' } });
+  store.saveCandidates(project.projectId, run.runId,
+    [{ segmentId: 'review-lifecycle-1', text: '门开着。' }],
+    [
+      { segmentId: 'review-lifecycle-1', finding: { category: 'accuracy', proposedTranslation: '门开着。', reason: '与原文一致的修订' } },
+      { segmentId: 'review-lifecycle-1', finding: { category: 'accuracy', proposedTranslation: '门没开。', reason: '另一个不同的修订' } },
+      { segmentId: 'review-lifecycle-1', finding: { category: 'terminology', proposedTranslation: '门开着。', reason: '相同候选也满足该发现' } },
+      { segmentId: 'review-lifecycle-1', finding: { category: 'style', proposedTranslation: '门是开着的。', reason: '风格建议依然要显式处理' } },
+    ]);
+  store.finishRun(project.projectId, run.runId);
+  store.acceptCandidates(project.projectId, run.runId);
+
+  const findings = store.getRun(project.projectId, run.runId).findings;
+  assert.equal(findings.find((item) => item.category === 'accuracy' && item.finding.proposedTranslation === '门开着。').status, 'resolved');
+  assert.equal(findings.find((item) => item.category === 'terminology').status, 'resolved');
+  assert.equal(findings.find((item) => item.category === 'accuracy' && item.finding.proposedTranslation === '门没开。').status, 'pending');
+  assert.equal(findings.find((item) => item.category === 'style').status, 'pending');
+});
+
+test('numeric audit compares English chapter numbers with Chinese chapter ordinals', () => {
+  const store = getDocumentProjectStore();
+  const project = store.createProject({
+    title: 'Chapter Ordinal Audit Test',
+    format: 'txt',
+    sourceFileName: 'chapter-ordinal.txt',
+    prompt: { translationMode: 'literary', sourceLang: 'en', targetLang: 'zh' },
+    segments: [
+      { id: 'chapter-heading-1', text: 'Chapter 1', kind: 'heading', contextPath: 'Contents' },
+      { id: 'chapter-heading-2', text: 'Chapter 2', kind: 'heading', contextPath: 'Contents' },
+    ],
+  });
+  store.saveManualEdit(project.projectId, 'chapter-heading-1', '第一章');
+  store.saveManualEdit(project.projectId, 'chapter-heading-2', '第三章');
+  ensureTestContextGraph(store, project);
+
+  const report = runProjectQualityAudit(project.projectId);
+  const mismatches = report.findings.filter((item) => item.type === 'numeric-token-mismatch');
+  assert.deepEqual(mismatches.map((item) => item.segmentIds[0]), ['chapter-heading-2']);
+  assert.deepEqual(mismatches[0].sourceNumbers, ['2']);
+  assert.deepEqual(mismatches[0].translatedNumbers, ['3']);
+});
