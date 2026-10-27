@@ -1315,6 +1315,28 @@ function auditTargetLanguage(db: any, runId?: string): string {
  * 可选择叠加一个已结束 Run 的候选译文；审计只产出 finding/metric，不自动修改或采纳译文。
  * 报告固定 sourceRevisionId，后续返工必须再次校验该 revision 仍是当前版本。
  */
+/**
+ * 自动返工只接受当前 Run 范围内的确定性缺译。
+ * 全书审计仍然报告全书覆盖率，但其它章节的未翻译内容不能偷偷扩大局部 Run。
+ */
+export function selectAutomaticMissingTranslationFindings(
+  findings: unknown,
+  runSegmentIds: Iterable<unknown>,
+  limit = 100,
+): any[] {
+  const scopedIds = new Set(Array.from(runSegmentIds, (id) => String(id)));
+  const maxItems = Number.isFinite(limit) ? Math.max(0, Math.min(100, Math.floor(limit))) : 100;
+  if (!maxItems) return [];
+  return (Array.isArray(findings) ? findings : [])
+    .filter((finding: any) =>
+      finding?.type === 'missing-translation' &&
+      finding.repairable === true &&
+      Array.isArray(finding.segmentIds) &&
+      finding.segmentIds.length > 0 &&
+      finding.segmentIds.every((id: unknown) => scopedIds.has(String(id))))
+    .slice(0, maxItems);
+}
+
 export function runProjectQualityAudit(projectId: string, runId?: string): Record<string, any> {
   const { store, context, segments } = currentSource(projectId);
   if (!segments.length) fail('当前来源版本没有可审计的片段。', 409);
