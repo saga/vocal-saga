@@ -1013,7 +1013,13 @@ async function translateBatch(context: any, items: TranslationItem[], requestId:
     if (turnUsage) {
       store.appendEvent(context.project.projectId, context.run.runId, 'model.usage', {
         stage: 'translate', batchIndex, requestId,
-        provider: agent.provider, model: agent.model || '<runtime-default>',
+        provider: modelRun.provider || agent.provider,
+        model: modelRun.resolvedModels?.length === 1
+          ? modelRun.resolvedModels[0]
+          : modelRun.effectiveModel || agent.model || '<runtime-default>',
+        requestedModel: modelRun.requestedModel || agent.model || '<runtime-default>',
+        effectiveModel: modelRun.effectiveModel || agent.model || '<runtime-default>',
+        ...(modelRun.resolvedModels?.length ? { resolvedModels: modelRun.resolvedModels } : {}),
         thinkingMode: getCodeBuddyTaskProfile(context.prompt.config || {}, 'translation').thinkingMode,
         thinkingBudgetTokens: getCodeBuddyTaskProfile(context.prompt.config || {}, 'translation').thinkingBudgetTokens,
         effort: getCodeBuddyTaskProfile(context.prompt.config || {}, 'translation').effort,
@@ -2146,11 +2152,14 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
         const belongsToRunScope = (finding: any) =>
           Array.isArray(finding.segmentIds) &&
           finding.segmentIds.some((id: unknown) => runSegmentIds.has(String(id)));
+        const closedFindingStatuses = new Set(['resolved', 'dismissed', 'applied']);
         const missingFindings = !isAutomaticRepairPass
           ? selectAutomaticMissingTranslationFindings(auditFindings, runSegmentIds)
           : [];
         const remainingBlockingFindingCount = auditFindings.filter((finding: any) =>
-          finding.severity === 'must-fix' && belongsToRunScope(finding)).length;
+          finding.severity === 'must-fix' &&
+          !closedFindingStatuses.has(String(finding.status || 'pending')) &&
+          belongsToRunScope(finding)).length;
         if (missingFindings.length) {
           const repair = createQualityRepairRun(
             projectId,
