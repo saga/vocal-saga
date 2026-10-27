@@ -355,3 +355,23 @@ python3 -c "
 raw=open('$HOME/.vocal-saga-local-agent/logs/local-agent.log',encoding='utf-8').read()
 print('\n'.join(l for l in raw.split(chr(92)+'n') if 'canonical-terms' in l))"
 ```
+
+## 代码复核结论与修订记录（2026-10-27）
+
+### 已证实并修复
+
+1. **P0：局部 Run 触发全书范围自动返工。** 自动审计可以报告全书缺译，但返工选择没有和父 Run 的片段集合相交，随后按原文顺序取前 100 项。这会把某一章节的局部任务扩展为书首的其它章节。现改为：全书覆盖率继续照常审计，自动返工只选择父 Run 范围内且每个片段 ID 都在该范围内的确定性缺译，100 段上限保留。
+2. **P0：质量审计只查询 style Reviewer findings。** SQL 将准确性和术语发现过滤掉了，与下游 accuracy-review / reviewer-terminology-review 映射及对应指标不一致。已移除 category 过滤，并增加三类发现均进入审计报告的测试。
+3. **P0：Reviewer finding 状态没有随已采纳修订收敛。** 发现一直保持 pending，即便同一个 Run 已采纳了与该 finding 的 proposedTranslation 完全相同的候选译文。现只在候选确实被采纳、且文本精确匹配建议时，将准确性/术语发现标为 resolved；不匹配的发现仍为 pending，风格建议仍走用户显式处理流程。
+4. **P1：英文/中文章节序号比较不一致。** 普通数字解析会识别 Chapter 1 的 1，却不会把第一章当成数量词，导致相同章节序号被误报。现增加严格的章节标题序号识别；相同序号不报差异，不同序号继续报错，并增加回归测试。
+5. **P1：自动 disposition 把所有剩余发现硬编码为非阻塞。** 现按本 Run 范围内 must-fix 发现数量计算并记录，不再不加区分地写入 true。
+6. **P2：文件日志使用字面量反斜杠-n，不是真换行。** 已修正为实际换行，并把只有时分秒的时间戳改为含日期的可排序本地时间；增加文件级回归测试。
+
+### 需要修正或暂不照单全收的判断
+
+- **文学记忆 revision 的 version = 2 不是已证实的缺陷。** 该字段与 revision UUID、fingerprint 和 created_at 分开存储；同一代码中的分析上下文也使用 version: 2。现有证据更符合数据结构/schema 版本，而不是递增的历史修订编号，所以没有改成猜测性的递增值。
+- **不能通过自动把 Style Guide / Context Graph 候选升级为 confirmed 来“修复未生效”。** 服务端明确要求模型提出的记忆先是 candidate；候选与已确认规则具有不同的翻译约束权重。Graph 中的建议映射和 LiteraryMemory 中的用户确认映射也不是同一种信任状态。报告指出两套数据的审计覆盖存在缺口，值得后续单独设计“候选映射的复核提示”，但不能直接写入已确认记忆或让候选静默成为强制规范。
+- **Token 计数口径仍需结合当前 WorkBuddy SDK/网关实际 usage 契约验证。** 观测到的若干样本中字段存在数值重合，但单个运行样本不足以证明 input_tokens 已包含 cache read/write；本次没有凭猜测更改费用公式。审校和 Context Graph 的 token usage 事件也应单独核对其完整性及 Run 汇总定义。
+- **Context Graph 实体未进入 LiteraryMemory 的问题不宜通过直接合并状态来解决。** 审计目前的 canonical-name 漂移主要依据已确认实体/人物画像；Graph 的候选建议不应被当成已确认规范名。下一步若要提升覆盖率，应新增显式标记为候选、只产生 review 级 finding 的审计路径，并验证语言、来源证据和别名可见性，而不是改变确认规则。
+
+上述结论区分了可由代码路径直接证明的问题和仍需要更多运行证据/独立设计的假设。已新增回归测试覆盖本次确认的行为边界。
