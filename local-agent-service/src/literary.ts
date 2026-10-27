@@ -346,15 +346,7 @@ export async function runLiteraryAnalysis(body: any, requestId: string, sessionS
     getCodeBuddyTaskProfile(body, 'literaryAnalysis'),
   );
   const parsed = modelRun.result;
-  if (modelRun.usage) {
-    onUsage?.(modelRun.usage, {
-      provider: modelRun.provider,
-      requestedModel: modelRun.requestedModel,
-      effectiveModel: modelRun.effectiveModel,
-      resolvedModels: modelRun.resolvedModels,
-    });
-    logInfo('literary-review', formatTurnUsageLog(modelRun.usage) + ' · request=' + requestId.slice(0, 12));
-  }
+  if (modelRun.usage) logInfo('literary-analyze', formatTurnUsageLog(modelRun.usage) + ' · request=' + requestId.slice(0, 12));
   if (!Array.isArray(parsed.entities) || !Array.isArray(parsed.relationships)) {
     throw new Error('本章分析结果不是预期 JSON；请重试分析');
   }
@@ -501,7 +493,15 @@ export async function runLiteraryReview(
     getCodeBuddyTaskProfile(body, reviewFocus === 'style' ? 'styleReview' : 'accuracyReview'),
   );
   const parsed = modelRun.result;
-  if (modelRun.usage) logInfo('literary-review', formatTurnUsageLog(modelRun.usage) + ' · request=' + requestId.slice(0, 12));
+  if (modelRun.usage) {
+    onUsage?.(modelRun.usage, {
+      provider: modelRun.provider,
+      requestedModel: modelRun.requestedModel,
+      effectiveModel: modelRun.effectiveModel,
+      resolvedModels: modelRun.resolvedModels,
+    });
+    logInfo('literary-review', formatTurnUsageLog(modelRun.usage) + ' · request=' + requestId.slice(0, 12));
+  }
   if (!Array.isArray(parsed.results)) throw new Error('Reviewer 返回格式异常；请重试，扩展端会保留初译');
   const byId = new Map(segments.map((item) => [item.id, item]));
   const translations: Record<string, string> = {};
