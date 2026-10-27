@@ -9,9 +9,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { homedir } from 'node:os';
 
-/** 本地时间戳（时:分:秒），与 `[agent …]` 现有格式一致。 */
+/** 本地日期时间戳，便于跨天关联服务日志。 */
 export function logStamp(): string {
-  return new Date().toLocaleTimeString('zh-CN', { hour12: false });
+  const now = new Date();
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return now.getFullYear() + '-' + pad(now.getMonth() + 1) + '-' + pad(now.getDate()) +
+    ' ' + pad(now.getHours()) + ':' + pad(now.getMinutes()) + ':' + pad(now.getSeconds());
 }
 
 /**
@@ -30,7 +33,7 @@ export function appendLogToFile(line: string): void {
   try {
     const file = getLogFilePath();
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.appendFileSync(file, line + '\\n', { encoding: 'utf8' });
+    fs.appendFileSync(file, line + '\n', { encoding: 'utf8' });
   } catch {
     // 日志落盘失败不应影响主流程；终端输出仍保留。
   }
