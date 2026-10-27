@@ -379,5 +379,5 @@ print('\n'.join(l for l in raw.split(chr(92)+'n') if 'canonical-terms' in l))"
 ### 本次变更验证记录
 
 - `fanyi-extension` 文档工作区 UI 变更通过其 CI；准确性/术语修订不再显示文风专用的采纳/忽略按钮。
-- `local-agent-service` 最近一次已通过的专用 CI 是早于模型元数据传播/审校用量埋点的提交；最新提交正在重跑，必须以最新分支结果为准。
+- `local-agent-service` 在包含模型元数据传播、审校/Context Graph usage 事件、Token 分项统计及回归测试的代码提交上，专用 CI 已通过（运行记录：[Local Agent Service](https://github.com/saga/vocal-saga/actions/runs/40515865367)；随后仅更新测试 fixture 和本分析报告）。
 - `vocal-saga` 根 CI 的 5 个扩展端失败在 `main` 基线提交上也可复现：page cache key 版本断言、两个路由的 source 默认值、旧 `/api/translate/url` 路由断言和翻译历史 source language 断言。它们与本次 `local-agent-service` 改动无直接关系，但仍应另行修正以恢复总 CI。
