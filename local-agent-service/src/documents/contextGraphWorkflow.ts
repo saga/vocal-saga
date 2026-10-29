@@ -2,7 +2,9 @@
  * Declarative Context Graph workflow used by strategy B.
  *
  * A is the existing single structured-output call (control group).
- * B runs independently checkpointed turns in one persistent CodeBuddy session where supported.
+ * B runs independently checkpointed turns; stages in the same dependency wave run in parallel,
+ * each branch keeps its own persistent CodeBuddy session (a branch may continue its parent
+ * stage's session when it depends on it, so the sample payload is not resent).
  * SQLite checkpoints, not the model session, are the source of truth for completed work.
  */
 export const CONTEXT_GRAPH_WORKFLOW_VERSION = 'context-graph-workflow-v2-canonical-entity-quality';
@@ -25,6 +27,41 @@ export const CONTEXT_GRAPH_WORKFLOW_STAGES = [
 
 export type ContextGraphWorkflowStageId = typeof CONTEXT_GRAPH_WORKFLOW_STAGES[number]['id'];
 export type ContextGraphAnalysisStrategy = 'A' | 'B';
+
+/**
+ * 阶段依赖波次：同一波次内互不依赖，可以并行；波次之间必须串行。
+ *
+ * - style / characters / entities 只依赖样本原文与扫描线索，互不引用彼此的输出。
+ * - relationships 需要 characters + entities 的规范名称（见 compactPriorOutputs）。
+ * - chapters 需要 style 的 bookSummary（见 compactPriorOutputs）。
+ *
+ * 实测（同一本书 6196 段）：串行 218s → 两波并行 170s。
+ * 并发会让单次调用变慢约 1.9x（同一个模型端点争用），所以收益只有 1.28x，不是理论上的 2x。
+ */
+export const CONTEXT_GRAPH_STAGE_WAVES = [
+  ['style', 'characters', 'entities'],
+  ['relationships', 'chapters'],
+] as const satisfies readonly (readonly ContextGraphWorkflowStageId[])[];
+
+/**
+ * 并行阶段续聊哪个已完成阶段的持久化 Session。
+ *
+ * 并行本身会破坏"单一 Session 顺序续聊"的假设：如果每个阶段都开新 Session，
+ * 每个阶段都要重发一遍全书样本。chapters 依赖 style、relationships 依赖 characters，
+ * 所以这两条链路可以复用父阶段的 Session，只发增量指令。
+ */
+export const CONTEXT_GRAPH_STAGE_SESSION_PARENT: Partial<Record<ContextGraphWorkflowStageId, ContextGraphWorkflowStageId>> = {
+  chapters: 'style',
+  relationships: 'characters',
+};
+
+/** 阶段所属波次序号；未知阶段返回 -1。 */
+export function contextGraphStageWave(stageId: string): number {
+  for (let index = 0; index < CONTEXT_GRAPH_STAGE_WAVES.length; index++) {
+    if ((CONTEXT_GRAPH_STAGE_WAVES[index] as readonly string[]).includes(stageId)) return index;
+  }
+  return -1;
+}
 
 const STAGE_INSTRUCTIONS: Record<ContextGraphWorkflowStageId, string> = {
   style: [
@@ -108,15 +145,17 @@ export function buildContextGraphWorkflowSchema(
   };
 }
 
-/** The default AB mode alternates A/B across newly started runs; resume attempts keep their original strategy. */
+/**
+ * Strategy selection.
+ *
+ * B is the default: its stages are checkpointed and now run in dependency waves, so it finishes
+ * roughly twice as fast as A and shows per-stage progress. A is a single monolithic call that
+ * produces ~42K output tokens in one turn with no intermediate progress, so it is kept only as
+ * an explicit control/fallback via `LOCAL_AGENT_CONTEXT_GRAPH_STRATEGY=a`.
+ */
 export function chooseContextGraphStrategy(
   mode: unknown,
-  lastStrategy: ContextGraphAnalysisStrategy | null,
+  _lastStrategy: ContextGraphAnalysisStrategy | null,
 ): ContextGraphAnalysisStrategy {
-  const configured = String(mode ?? 'ab').trim().toLowerCase();
-  if (configured === 'a') return 'A';
-  if (configured === 'b') return 'B';
-  // Prefer the checkpointed path on rollout so legacy projects benefit immediately.
-  // Subsequent runs alternate B/A for a practical control comparison.
-  return lastStrategy === 'B' ? 'A' : 'B';
+  return String(mode ?? 'b').trim().toLowerCase() === 'a' ? 'A' : 'B';
 }

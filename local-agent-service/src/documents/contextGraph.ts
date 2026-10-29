@@ -19,6 +19,8 @@ import {
   buildContextGraphWorkflowPrompt,
   buildContextGraphWorkflowSchema,
   chooseContextGraphStrategy,
+  CONTEXT_GRAPH_STAGE_SESSION_PARENT,
+  CONTEXT_GRAPH_STAGE_WAVES,
   CONTEXT_GRAPH_WORKFLOW_STAGES,
   CONTEXT_GRAPH_WORKFLOW_VERSION,
   type ContextGraphAnalysisStrategy,
@@ -502,6 +504,25 @@ function writeChapterSnapshots(db: DatabaseSync, revisionId: string, segments: S
   }
 }
 
+/**
+ * 重新分析前重置上一轮模型生成的章节摘要。
+ *
+ * context_graph_chapters.summary / summary_kind 都是 NOT NULL 列，不能用 NULL 标记"失效"：
+ * 早期实现写 `SET summary = NULL`，导致同一 source revision 的第二次预处理在模型跑完 4 分钟后
+ * 抛 `NOT NULL constraint failed`，整轮结果被回滚。这里改为降级成空 extractive，
+ * 再由 writeChapterSnapshots 重新生成确定性摘要；本轮模型摘要稍后会覆盖需要的章节。
+ */
+export function resetChapterSummariesForReanalysis(
+  db: DatabaseSync,
+  revisionId: string,
+  segments: Segment[],
+): void {
+  db.prepare(
+    "UPDATE context_graph_chapters SET summary = '', summary_kind = 'extractive', segment_ids_json = '[]', updated_at = ? " +
+    "WHERE source_revision_id = ? AND summary_kind = 'model'"
+  ).run(new Date().toISOString(), revisionId);
+  writeChapterSnapshots(db, revisionId, segments);
+}
 
 function saveMeta(db: DatabaseSync, revisionId: string, key: string, value: unknown): void {
   db.prepare(
@@ -537,8 +558,8 @@ function workflowCheckpointKey(runId: string, stageId: ContextGraphWorkflowStage
   return 'contextGraphCheckpoint:' + runId + ':' + stageId;
 }
 
-function workflowSessionKey(runId: string): string {
-  return 'contextGraphSession:' + runId;
+function workflowSessionKey(runId: string, stageId?: ContextGraphWorkflowStageId): string {
+  return 'contextGraphSession:' + runId + (stageId ? ':' + stageId : '');
 }
 
 function readLatestStrategy(db: DatabaseSync, revisionId: string): ContextGraphAnalysisStrategy | null {
@@ -946,10 +967,16 @@ async function runAnalysis(projectId: string, runId: string): Promise<void> {
   });
   const modelAnalysisStartedAt = Date.now();
   let data: Record<string, any>;
+  // style 沿用 run 级 Session key（兼容旧数据与文风补全路径），其余阶段各自持有独立 Session。
   let workflowSessionId = safeText(getMeta(db, revisionId, workflowSessionKey(runId)), 500);
+  const stageSessionIds = new Map<ContextGraphWorkflowStageId, string>();
+  if (workflowSessionId) stageSessionIds.set('style', workflowSessionId);
   if (!workflowSessionId && initialProgress.resumedFromRunId) {
     workflowSessionId = safeText(getMeta(db, revisionId, workflowSessionKey(String(initialProgress.resumedFromRunId))), 500);
-    if (workflowSessionId) saveMeta(db, revisionId, workflowSessionKey(runId), workflowSessionId);
+    if (workflowSessionId) {
+      saveMeta(db, revisionId, workflowSessionKey(runId), workflowSessionId);
+      stageSessionIds.set('style', workflowSessionId);
+    }
   }
 
   if (strategy === 'B') {
@@ -962,7 +989,17 @@ async function runAnalysis(projectId: string, runId: string): Promise<void> {
       ? Math.min(ANALYSIS_TIMEOUT_MS, stageTimeoutConfigured)
       : Math.min(ANALYSIS_TIMEOUT_MS, 5 * 60 * 1000);
 
-    for (const stage of CONTEXT_GRAPH_WORKFLOW_STAGES) {
+    type WorkflowStage = { id: ContextGraphWorkflowStageId; label: string; phase: string; fields: readonly string[] };
+
+    /** 阶段 Session key：style 沿用 run 级 key，其余阶段按阶段隔离，避免并行分支互相覆盖。 */
+    const stageSessionKey = (stageId: ContextGraphWorkflowStageId, forRunId: string) =>
+      stageId === 'style' ? workflowSessionKey(forRunId) : workflowSessionKey(forRunId, stageId);
+
+    /**
+     * 执行单个阶段：命中检查点直接恢复，否则发起一次结构化调用并落库。
+     * 同波次内多个阶段会并发调用本函数，因此每次读写 progress_json 之间不能插入 await。
+     */
+    const runStage = async (stage: WorkflowStage, waveIndex: number): Promise<void> => {
       const checkpoint = completedBefore.has(stage.id)
         ? getMeta(db, revisionId, workflowCheckpointKey(checkpointSourceRunId, stage.id))
         : null;
@@ -979,7 +1016,7 @@ async function runAnalysis(projectId: string, runId: string): Promise<void> {
           stageCount: CONTEXT_GRAPH_WORKFLOW_STAGES.length,
         });
         logInfo('context-graph', '恢复已保存阶段 · ' + stage.id + ' · run=' + runId.slice(0, 8));
-        continue;
+        return;
       }
 
       const prior = readRunProgress(db, runId);
@@ -988,16 +1025,24 @@ async function runAnalysis(projectId: string, runId: string): Promise<void> {
         strategy: 'B', workflowVersion: CONTEXT_GRAPH_WORKFLOW_VERSION,
         currentStage: stage.id, completedStages,
       });
-      db.prepare('UPDATE context_graph_runs SET phase = ? WHERE run_id = ?').run(stage.phase, runId);
       store.appendEvent(projectId, runId, 'context-graph.phase', {
         phase: stage.phase, strategy: 'B', stage: stage.id, stageLabel: stage.label,
         stageIndex: CONTEXT_GRAPH_WORKFLOW_STAGES.findIndex((item) => item.id === stage.id) + 1,
         stageCount: CONTEXT_GRAPH_WORKFLOW_STAGES.length, completedStageCount: completedStages.length,
+        waveIndex: waveIndex + 1, waveSize: (CONTEXT_GRAPH_STAGE_WAVES[waveIndex] || []).length,
       });
 
+      // 并行分支不能共用同一个 Session；能续聊时复用父阶段 Session，避免重发整份样本。
+      const parentStageId = CONTEXT_GRAPH_STAGE_SESSION_PARENT[stage.id];
+      const sessionId = stageSessionIds.get(stage.id)
+        || safeText(getMeta(db, revisionId, stageSessionKey(stage.id, checkpointSourceRunId)), 500)
+        || (parentStageId
+          ? stageSessionIds.get(parentStageId)
+            || safeText(getMeta(db, revisionId, stageSessionKey(parentStageId, checkpointSourceRunId)), 500)
+          : '');
       const stagePrompt = buildContextGraphWorkflowPrompt(
         stage.id, prompt, aggregate,
-        agent.provider === 'workbuddy' && !!workflowSessionId,
+        agent.provider === 'workbuddy' && !!sessionId,
       );
       const stageSchema = buildContextGraphWorkflowSchema(ANALYSIS_SCHEMA, stage.id);
       const stageStartedAt = Date.now();
@@ -1013,10 +1058,11 @@ async function runAnalysis(projectId: string, runId: string): Promise<void> {
           timeoutMs: stageTimeoutMs,
           ...(agent.provider === 'workbuddy' ? {
             persistSession: true,
-            ...(workflowSessionId ? { sessionId: workflowSessionId } : {}),
-            onSessionId: (sessionId: string) => {
-              workflowSessionId = sessionId;
-              saveMeta(db, revisionId, workflowSessionKey(runId), sessionId);
+            ...(sessionId ? { sessionId } : {}),
+            onSessionId: (newSessionId: string) => {
+              stageSessionIds.set(stage.id, newSessionId);
+              saveMeta(db, revisionId, stageSessionKey(stage.id, runId), newSessionId);
+              if (stage.id === 'style') workflowSessionId = newSessionId;
             },
           } : {}),
         },
@@ -1031,8 +1077,9 @@ async function runAnalysis(projectId: string, runId: string): Promise<void> {
         throw new Error('Context Graph 工作流阶段 ' + stage.id + ' 缺少结构化字段：' + missingFields.join(', '));
       }
       if (stageRun.sessionId && agent.provider === 'workbuddy') {
-        workflowSessionId = stageRun.sessionId;
-        saveMeta(db, revisionId, workflowSessionKey(runId), workflowSessionId);
+        stageSessionIds.set(stage.id, stageRun.sessionId);
+        saveMeta(db, revisionId, stageSessionKey(stage.id, runId), stageRun.sessionId);
+        if (stage.id === 'style') workflowSessionId = stageRun.sessionId;
       }
       const stageElapsedMs = Date.now() - stageStartedAt;
       persistWorkflowStageCheckpoint(
@@ -1049,8 +1096,25 @@ async function runAnalysis(projectId: string, runId: string): Promise<void> {
         stageCount: CONTEXT_GRAPH_WORKFLOW_STAGES.length,
         completedStageCount: Array.isArray(stageProgress.completedStages) ? stageProgress.completedStages.length : 0,
         elapsedMs: stageElapsedMs, outputCounts: stageSummary?.outputCounts || {},
+        waveIndex: waveIndex + 1,
       });
       Object.assign(aggregate, stageOutput);
+    };
+
+    for (let waveIndex = 0; waveIndex < CONTEXT_GRAPH_STAGE_WAVES.length; waveIndex++) {
+      const wave = CONTEXT_GRAPH_STAGE_WAVES[waveIndex]!;
+      const stages = wave
+        .map((stageId) => CONTEXT_GRAPH_WORKFLOW_STAGES.find((item) => item.id === stageId) as WorkflowStage | undefined)
+        .filter((stage): stage is WorkflowStage => !!stage);
+      if (!stages.length) continue;
+      // 同波次只写一次 phase：并发阶段各自写会让 UI 的阶段读数来回跳动。
+      db.prepare('UPDATE context_graph_runs SET phase = ? WHERE run_id = ?').run(stages[0]!.phase, runId);
+      if (stages.length > 1) {
+        logInfo('context-graph', '并行波次 ' + (waveIndex + 1) + '/' + CONTEXT_GRAPH_STAGE_WAVES.length +
+          ' · ' + stages.map((stage) => stage.id).join('+'));
+      }
+      // 同波次阶段互不依赖；任一失败即整体失败，已落库的检查点留给下次恢复。
+      await Promise.all(stages.map((stage) => runStage(stage, waveIndex)));
     }
 
     data = aggregate;
@@ -1186,10 +1250,8 @@ async function runAnalysis(projectId: string, runId: string): Promise<void> {
     ).run(revisionId, revisionId, revisionId);
     db.prepare("DELETE FROM context_graph_edges WHERE source_revision_id = ? AND status = 'candidate'").run(revisionId);
     db.prepare("DELETE FROM context_graph_nodes WHERE source_revision_id = ? AND status = 'candidate'").run(revisionId);
-    db.prepare(
-      "UPDATE context_graph_chapters SET summary = NULL, summary_kind = NULL, segment_ids_json = '[]', updated_at = ? " +
-      "WHERE source_revision_id = ? AND summary_kind = 'model'"
-    ).run(new Date().toISOString(), revisionId);
+    // 重新分析前重置上一轮模型生成的章节摘要（见 resetChapterSummariesForReanalysis）。
+    resetChapterSummariesForReanalysis(db, revisionId, segments);
     saveMeta(db, revisionId, 'stylePolicyVersion', 'literary-style-v2-auto-context');
     saveMeta(db, revisionId, 'bookSummary', safeText(data.bookSummary, 4000));
     saveMeta(db, revisionId, 'narrativeStyle', safeText(data.narrativeStyle, 1200));
@@ -1653,7 +1715,7 @@ export function startContextGraphAnalysis(
   if (activeAnalyses.has(projectId)) {
     throw Object.assign(new Error('该项目的上一轮 Context Graph 分析仍在运行，请稍后重试。'), { status: 409 });
   }
-  const strategyMode = process.env.LOCAL_AGENT_CONTEXT_GRAPH_STRATEGY || 'ab';
+  const strategyMode = process.env.LOCAL_AGENT_CONTEXT_GRAPH_STRATEGY || 'b';
   let resume: { runId: string; progress: Record<string, any>; completedStages: string[] } | null = null;
   if (String(strategyMode).trim().toLowerCase() !== 'a') {
     const failedRows = db.prepare(
@@ -2001,7 +2063,7 @@ export function selectRecentPriorChapterSummaries(
     chapter: chapter.chapter_title,
     summary: String(chapter.summary),
     summaryKind: chapter.summary_kind,
-  }));
+  })).filter((chapter) => chapter.summary.trim().length > 0);
 }
 
 export function buildProjectContextGraphBundle(

@@ -19,6 +19,7 @@ const {
   persistSourceFeatureIndex,
   readSourceFeatureIndex,
   ensureSourceFeatureIndex,
+  resetChapterSummariesForReanalysis,
 } = await import('../src/documents/contextGraph.ts');
 const { scanBookSegments } = await import('../src/documents/bookScan.ts');
 
@@ -375,4 +376,48 @@ test('literary memory save events retain compact entity and character-voice sync
   assert.equal(firstPayload.characterProfiles[0].evidenceCount, 1);
   assert.ok(!JSON.stringify(firstPayload).includes('Leave it to me.'),
     'diagnostic events record evidence counts, never full source quotations');
+});
+
+test('re-analysis resets model chapter summaries without violating the NOT NULL columns', () => {
+  const store = getDocumentProjectStore();
+  const segments = [
+    { id: 'reset-ch1-s1', text: 'Alice opened the iron gate.', kind: 'paragraph', contextPath: 'Chapter 1' },
+    { id: 'reset-ch1-s2', text: 'Alice counted the steps.', kind: 'paragraph', contextPath: 'Chapter 1' },
+    { id: 'reset-ch2-s1', text: 'Bob waited in the rain.', kind: 'paragraph', contextPath: 'Chapter 2' },
+  ];
+  const project = store.createProject({
+    title: 'Chapter Reset Test',
+    format: 'txt',
+    sourceFileName: 'chapter-reset.txt',
+    prompt: { translationMode: 'literary' },
+    segments,
+  });
+  const { db, currentSourceRevisionId } = store.getProjectContext(project.projectId);
+  // 通过公共读取器初始化生产 schema。
+  getContextGraph(project.projectId);
+
+  // 模拟上一轮预处理留下的模型摘要：summary_kind='model'。
+  db.prepare(
+    'INSERT INTO context_graph_chapters(source_revision_id, chapter_key, chapter_order, chapter_title, summary, summary_kind, segment_ids_json, updated_at) ' +
+    'VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+  ).run(currentSourceRevisionId, 'Chapter 1', 0, 'Chapter 1', '上一轮模型摘要', 'model', '[]', new Date().toISOString());
+  const before = db.prepare(
+    'SELECT summary, summary_kind FROM context_graph_chapters WHERE source_revision_id = ? AND chapter_key = ?'
+  ).get(currentSourceRevisionId, 'Chapter 1');
+  assert.equal(before.summary_kind, 'model');
+
+  // 回归点：旧实现写 summary = NULL，会在第二次预处理时抛 NOT NULL constraint failed。
+  const ordered = segments.map((segment, ordinal) => ({ ...segment, ordinal }));
+  resetChapterSummariesForReanalysis(db, currentSourceRevisionId, ordered);
+
+  const rows = db.prepare(
+    'SELECT chapter_key, summary, summary_kind, segment_ids_json FROM context_graph_chapters WHERE source_revision_id = ? ORDER BY chapter_order'
+  ).all(currentSourceRevisionId);
+  assert.equal(rows.length, 2);
+  for (const row of rows) {
+    assert.equal(row.summary_kind, 'extractive', row.chapter_key + ' 必须降级为确定性摘要');
+    assert.ok(row.summary.length > 0, row.chapter_key + ' 的确定性摘要必须被重新生成');
+    assert.notEqual(row.summary, '上一轮模型摘要');
+    assert.ok(JSON.parse(row.segment_ids_json).length > 0);
+  }
 });

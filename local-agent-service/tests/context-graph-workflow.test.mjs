@@ -5,6 +5,9 @@ const {
   buildContextGraphWorkflowPrompt,
   buildContextGraphWorkflowSchema,
   chooseContextGraphStrategy,
+  contextGraphStageWave,
+  CONTEXT_GRAPH_STAGE_SESSION_PARENT,
+  CONTEXT_GRAPH_STAGE_WAVES,
   CONTEXT_GRAPH_WORKFLOW_STAGES,
   CONTEXT_GRAPH_WORKFLOW_VERSION,
 } = await import('../src/documents/contextGraphWorkflow.ts');
@@ -40,12 +43,13 @@ test('B defines five isolated stages with stage-specific required schemas', () =
   assert.equal(CONTEXT_GRAPH_WORKFLOW_VERSION, 'context-graph-workflow-v2-canonical-entity-quality');
 });
 
-test('A/B assignment starts with B for legacy projects, alternates, and supports forcing a strategy', () => {
+test('strategy defaults to the checkpointed parallel workflow and A stays an explicit opt-in', () => {
   assert.equal(chooseContextGraphStrategy('ab', null), 'B');
+  assert.equal(chooseContextGraphStrategy('ab', 'B'), 'B');
   assert.equal(chooseContextGraphStrategy('ab', 'A'), 'B');
-  assert.equal(chooseContextGraphStrategy('ab', 'B'), 'A');
-  assert.equal(chooseContextGraphStrategy('a', 'B'), 'A');
+  assert.equal(chooseContextGraphStrategy(undefined, null), 'B');
   assert.equal(chooseContextGraphStrategy('b', 'A'), 'B');
+  assert.equal(chooseContextGraphStrategy('a', 'B'), 'A');
 });
 
 test('B style prompt asks for concrete values in every field instead of allowing silent blanks', () => {
@@ -62,6 +66,42 @@ test('entity preflight preserves fictional clan names instead of replacing histo
   assert.match(prompt, /现实原型不是源文别名/);
   assert.match(prompt, /一个 canonical name/);
   assert.match(prompt, /bookSpecificMeaning=true/);
+});
+
+test('stage waves cover every stage once and keep dependencies in earlier waves', () => {
+  const flat = CONTEXT_GRAPH_STAGE_WAVES.flat();
+  assert.equal(flat.length, CONTEXT_GRAPH_WORKFLOW_STAGES.length);
+  assert.deepEqual([...flat].sort(), CONTEXT_GRAPH_WORKFLOW_STAGES.map((stage) => stage.id).sort());
+
+  // relationships 依赖 characters + entities；chapters 依赖 style 的 bookSummary。
+  const dependencies = {
+    relationships: ['characters', 'entities'],
+    chapters: ['style'],
+  };
+  for (const [stageId, required] of Object.entries(dependencies)) {
+    for (const dependency of required) {
+      assert.ok(
+        contextGraphStageWave(dependency) < contextGraphStageWave(stageId),
+        stageId + ' 必须在 ' + dependency + ' 之后的波次执行',
+      );
+    }
+  }
+  // 首波必须真的并行，否则优化没有意义。
+  assert.ok(CONTEXT_GRAPH_STAGE_WAVES[0].length >= 3);
+  assert.equal(contextGraphStageWave('unknown-stage'), -1);
+});
+
+test('parallel stages only reuse a session from an earlier wave', () => {
+  for (const [stageId, parent] of Object.entries(CONTEXT_GRAPH_STAGE_SESSION_PARENT)) {
+    assert.ok(contextGraphStageWave(parent) < contextGraphStageWave(stageId),
+      stageId + ' 只能续聊更早波次的 ' + parent + ' Session');
+    assert.notEqual(contextGraphStageWave(parent), contextGraphStageWave(stageId),
+      stageId + ' 与 ' + parent + ' 不能在同一波次共用 Session');
+  }
+  // 首波三个阶段各自开新 Session（都要带全量样本），不能互相续聊。
+  for (const stageId of CONTEXT_GRAPH_STAGE_WAVES[0]) {
+    assert.equal(CONTEXT_GRAPH_STAGE_SESSION_PARENT[stageId], undefined);
+  }
 });
 
 test('CodeBuddy workflow turns can resume a persisted SDK session', () => {
