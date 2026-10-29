@@ -14,6 +14,12 @@
  *     +【句子数】双信号，且对「较长原文才检查过短」以降低短文压缩的误报。
  *   - 句子数对语言密度不敏感：标题通常 1 句、正文多句；原文 1 句译文 5 句
  *     是强烈错配信号，与中英文无关。
+ *   - 但句子计数本身必须可靠：英文列表项里一个 `e.g.` 就能把 1 句数成 3 句
+ *     （`...mid-conversation (e.g. memory lookup) move into the tools.` →
+ *     "…(e" / "g" / " memory lookup)…"），配上中文译文的 1 句就是 0.33 < 0.34
+ *     的假告警。因此 `;`、缩写内的句点、「句点+空格+小写」都不再算句末。
+ *   - 「骤减」比「激增」弱：中文把几个英文短句并成一句是常态，所以只在原文
+ *     句数 ≥ 4 时才把骤减当信号，3 句→1 句不告警。
  *
  * 默认行为：仅返回 verdict（是否可疑 + 原因），由调用方决定 log-only 还是
  * 严格剔除。不修改任何翻译结果。
@@ -48,25 +54,90 @@ export interface MappingOptions {
   minAbsoluteChars?: number;
   /** 启用「过短」字符比判定所需的原文最小字符数，默认 40（短文压缩属正常） */
   minOrigCharsForShortCheck?: number;
+  /** 启用「句子数骤减」判定所需的原文最小句数，默认 4（3 句并 1 句属正常合并） */
+  minOrigSentencesForCollapse?: number;
+}
+
+/** 句末标点：中英文句号/叹号/问号。分号属从句级标点，不切分句子。 */
+const SENTENCE_END_CHARS = new Set(['。', '！', '？', '!', '?']);
+
+/** 句点后面允许出现的「收尾」字符；其余字符（字母/数字）说明句点是词内点。 */
+const TRAILING_CHARS = /[\s"'”’)\]】]/;
+
+/** 常见缩写（小写比较）：其后的句点不是句末。 */
+const ABBREVIATIONS = new Set([
+  'e.g.',
+  'i.e.',
+  'etc.',
+  'vs.',
+  'cf.',
+  'ca.',
+  'approx.',
+  'al.',
+  'mr.',
+  'mrs.',
+  'ms.',
+  'dr.',
+  'prof.',
+  'st.',
+  'fig.',
+  'no.',
+  'vol.',
+  'u.s.',
+  'u.k.',
+  'a.k.a.',
+  'p.s.',
+]);
+
+/** `beforeDot` 是否以已知缩写结尾（例如 "...(e.g." 里的 "e.g."）。 */
+function endsWithAbbreviation(beforeDot: string): boolean {
+  const token = beforeDot.match(/([A-Za-z][A-Za-z.]*\.)$/)?.[1];
+  return token !== undefined && ABBREVIATIONS.has(token.toLowerCase());
+}
+
+/** 判断 index 处的 `.` 是否为句末（而非 3.5 / node.js / e.g. 这类词内点）。 */
+function isPeriodBoundary(text: string, index: number): boolean {
+  const next = text[index + 1];
+  // 句点后直接跟字母/数字 → 词内点
+  if (next !== undefined && !TRAILING_CHARS.test(next)) return false;
+  // 已知缩写 → 不是句末
+  if (endsWithAbbreviation(text.slice(0, index + 1))) return false;
+  // 句点后是空格 + 小写字母 → 同一句的延续（"e.g. memory" / "wait... and then"）
+  const after = text.slice(index + 1).replace(/^[\s"'”’)\]】]+/, '')[0];
+  if (after !== undefined && /[a-z]/.test(after)) return false;
+  return true;
 }
 
 /**
  * 统计句子数（中英文通用）。
- * 以 . ! ? ; 及中文 。 ！ ？ ； 以及换行作为句末切分，过滤空片段。
- * 空串返回 0；普通单句文本返回 1。
+ *
+ * 切分规则：`。！？!?` 恒为句末；`.` 仅在「后面不是词内字符、不是已知缩写、
+ * 且后面首个实字符不是小写字母」时算句末；换行视为段落分隔（按句末处理）。
+ * 过滤空片段与纯符号/数字片段（不含字母或汉字）。空串返回 0；普通单句返回 1。
  */
 export function countSentences(text: string): number {
   if (!text) return 0;
   const normalized = text.replace(/[\n\r]+/g, '。');
-  const parts = normalized.split(/[.!?;。！？；]+/);
+
   let count = 0;
-  for (const raw of parts) {
-    const t = raw.trim();
-    if (t.length === 0) continue;
+  let start = 0;
+  const flush = (end: number) => {
+    const piece = normalized.slice(start, end).trim();
+    start = end;
+    if (piece.length === 0) return;
     // 过滤纯符号/数字片段（不含任何字母或汉字）
-    if (!/[一-鿿a-zA-Z]/.test(t)) continue;
+    if (!/[一-鿿a-zA-Z]/.test(piece)) return;
     count++;
+  };
+
+  for (let i = 0; i < normalized.length; i++) {
+    const ch = normalized.charAt(i);
+    if (SENTENCE_END_CHARS.has(ch) || (ch === '.' && isPeriodBoundary(normalized, i))) {
+      flush(i + 1);
+    }
   }
+  flush(normalized.length);
+
   return count;
 }
 
@@ -84,6 +155,7 @@ export function validateBlockMapping(
   const minSentenceRatio = opts.minSentenceRatio ?? 0.34;
   const minAbs = opts.minAbsoluteChars ?? 25;
   const minOrigForShort = opts.minOrigCharsForShortCheck ?? 40;
+  const minOrigForCollapse = opts.minOrigSentencesForCollapse ?? 4;
 
   const origChars = (original || '').replace(/\s/g, '').length;
   const transChars = (translated || '').replace(/\s/g, '').length;
@@ -123,7 +195,9 @@ export function validateBlockMapping(
     if (sentenceRatio > maxSentenceRatio) {
       reasons.push(`句子数激增：比 ${sentenceRatio.toFixed(2)} > ${maxSentenceRatio}`);
     }
-    if (sentenceRatio < minSentenceRatio) {
+    // 「骤减」需要原文句数足够多才有区分度：中文把几个英文短句并成一句是常态，
+    // 3 句→1 句（比 0.33）刚好压在阈值下，属于正常合并，不告警。
+    if (sentenceRatio < minSentenceRatio && origSentences >= minOrigForCollapse) {
       reasons.push(`句子数骤减：比 ${sentenceRatio.toFixed(2)} < ${minSentenceRatio}`);
     }
   }
