@@ -396,10 +396,17 @@ export function buildLiteraryReviewPrompt(input: {
     '尊重作品自身风格：简洁不必润饰成华丽，有意的重复不要随便删，冷峻不应煽情，粗粝不应文雅化，幽默与反讽不能磨平。人物声音审校必须先说明说话人/听话人归属是否可靠，再指出与具体画像/人物对规则的偏离，并用同批其他人物的语言差异作对照；不能只说“声音不鲜明”。如果 attribution uncertain，报告该不确定性，不强行套用画像。全书 styleGuide 只有 status=confirmed 时才是用户确认的风格约束，不允许将其中的内容解释为人物身份或剧情事实。',
     'finding category 只能为 accuracy（可核验的意义/事实错误）、terminology（实体规范译名错误）、style（具体的翻译腔、不自然搭配或语气/节奏/人物声音问题）。accuracy 与 terminology 的 priority 必须是 must_fix；style 的 priority 必须是 optional。style 必须指出具体文本问题，不能只是审校者个人偏好。',
     'finalTranslation 必须是完整可阅读的修订译文。发现明确错误要纠正，发现有依据的文风问题应作适度修订；如果原稿已妥当则原样返回。保留初译可取之处，禁止添加原文不存在的内容。',
-    'style finding 可以带可选字段 dimension=character_voice|register|narrative_style|pacing、characterId、relatedCharacterId、evidenceSegmentIds。人物声音 finding 必须给出具体 source/draft 片段与画像或人物对证据；不允许凭空增加口头禅、方言、粗口、情绪或修辞。',
+    'style finding 可以带可选字段 dimension=character_voice|register|narrative_style|pacing|chinese_literary_editing、characterId、relatedCharacterId、evidenceSegmentIds。人物声音 finding 必须给出具体 source/draft 片段与画像或人物对证据；不允许凭空增加口头禅、方言、粗口、情绪或修辞。',
     reviewFocus === 'style'
       ? '本次是独立文风审校阶段：只输出 category=style 的 findings，重点检查人物声音差异、叙述声音、语域、节奏、翻译腔和不自然表达；不要输出 accuracy/terminology findings。finalTranslation 如有文风改进，应给出完整修订译文，但不得改变事实或新增原文没有的信息。'
       : '本次是准确性与专名审校阶段：只输出 accuracy 或 terminology findings，修复可核验的误译、漏译、增译、否定/指代错误和规范译名不一致；不要输出 style findings，也不要做纯润色。文风由独立阶段处理。',
+    ...(reviewFocus === 'style' && /^zh(?:[-_]|$)/i.test(String(body.target || 'zh')) ? [
+      '中文文学编辑（Chinese Literary Editing）是本次文风审校的一部分，不是额外的审校阶段或独立任务。目标是把准确的译文编辑成自然、成熟、符合中文文学阅读习惯的中文；适用于小说、散文、回忆录、传记、文学纪实和随笔，不要把所有作品改成同一种腔调。',
+      '重点检查并适度处理：不必要的第一/第二/第三人称代词及“我的/他的”等所属表达；“的、地、得”及其他虚词的冗余或僵硬搭配；英文语序、关系从句、嵌套定语、被动句、名词化和介词结构留下的翻译腔；重复、空泛动词、副词堆叠和不自然词语搭配；句子长度、停顿、衔接和段落节奏。',
+      '不要机械删除“我、的、地、得”，也不要以词频或句长作为质量目标。只有在指代清楚、语义不变且中文更自然时才省略或重组；保留必要的所属关系、语气词、修辞性重复、长句、意象、歧义和作者有意安排的节奏。',
+      '编辑时先理解整句和上下文，再决定局部调整还是重组句子。不得为追求简洁、优美或所谓文学性而漏掉信息、增加解释、改变叙述视角、时间关系、人物关系、语气强度或原文的模糊性。避免把克制的文字润色成华丽辞藻，也不要擅自现代化、古典化或网络化作品语体。',
+      '中文编辑类 finding 使用 dimension=chinese_literary_editing，可用 editingAspect=pronoun|particle|syntax|translationese|redundancy|diction|rhythm|register 标明具体问题；必须引用当前片段中可定位的原文和初译证据，说明为什么当前表达不自然以及建议的编辑方向。若只是个人偏好、无法证明改善，或原稿已经自然准确，不要创建 finding，也不要改写。',
+    ] : []),
     'sourceExcerpt 必须是当前原文片段中的逐字连续引文，draftExcerpt 必须是本次传入初译中的逐字连续引文；两者缺失或不能核验时，该 finding 会被丢弃且不会触发自动修订。',
     '只返回严格 JSON：{ "results": [{ "id": "...", "finalTranslation": "...", "findings": [{ "category": "accuracy|terminology|style", "priority": "must_fix|optional", "dimension": "character_voice", "characterId": "...", "relatedCharacterId": "...", "evidenceSegmentIds": [], "sourceExcerpt": "...", "draftExcerpt": "...", "reason": "...", "suggestion": "..." }] }] }。',
   ].join('\n');
@@ -512,8 +519,10 @@ export async function runLiteraryReview(body: any, requestId: string, sessionSco
           draftExcerpt,
           reason: typeof item.reason === 'string' ? item.reason.slice(0, 400) : '',
           suggestion: typeof item.suggestion === 'string' ? item.suggestion.slice(0, 400) : '',
-          ...(item.category === 'style' && ['character_voice', 'register', 'narrative_style', 'pacing'].includes(item.dimension)
+          ...(item.category === 'style' && ['character_voice', 'register', 'narrative_style', 'pacing', 'chinese_literary_editing'].includes(item.dimension)
             ? { dimension: item.dimension,
+                ...(typeof item.editingAspect === 'string' && ['pronoun', 'particle', 'syntax', 'translationese', 'redundancy', 'diction', 'rhythm', 'register'].includes(item.editingAspect)
+                  ? { editingAspect: item.editingAspect } : {}),
                 ...(typeof item.characterId === 'string' ? { characterId: item.characterId.slice(0, 100) } : {}),
                 ...(typeof item.relatedCharacterId === 'string' ? { relatedCharacterId: item.relatedCharacterId.slice(0, 100) } : {}),
                 ...(Array.isArray(item.evidenceSegmentIds) ? { evidenceSegmentIds: item.evidenceSegmentIds.filter((id: unknown) => typeof id === 'string').slice(0, 8).map((id: string) => id.slice(0, 160)) } : {}) }
