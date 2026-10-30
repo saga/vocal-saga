@@ -496,8 +496,8 @@ export function buildChineseTargetOnlyVoiceContext(input: Record<string, any> | 
     : [];
   return {
     policyVersion: 'chinese-target-only-v1',
-    styleGuide: context.styleGuideStatus === 'confirmed' && context.styleGuide && typeof context.styleGuide === 'object'
-      ? context.styleGuide : {},
+    styleGuide: (context.styleGuideStatus === 'confirmed' || context.styleGuideOrigin === 'user-edited') &&
+      context.styleGuide && typeof context.styleGuide === 'object' ? context.styleGuide : {},
     characterVoices,
     voiceAnchors,
     dialogueParticipants,
