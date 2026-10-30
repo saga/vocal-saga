@@ -869,3 +869,49 @@ LiTransProQA 的专业问题清单可以作为 rubric 设计参考，但需要�
 - [local-agent-service/skills/fiction-translation/SKILL.md](local-agent-service/skills/fiction-translation/SKILL.md)
 - [local-agent-service/README.md](local-agent-service/README.md)
 - [docs/TRANSLATION_PIPELINE_EFFECTIVENESS_CHECKLIST.md](docs/TRANSLATION_PIPELINE_EFFECTIVENESS_CHECKLIST.md)
+
+
+---
+
+## 16. 实施进展（2026-10-31）
+
+本报告的 Phase 1 核心代码已开始落地，提交在 `main`：
+
+- `src/literary.ts`
+  - 新增 `buildChineseLiteraryEditingPrompt`。
+  - 新增 `buildChineseTargetOnlyVoiceContext`，剔除源语言名称、原文证据、关系、章节摘要和 source-side anchors。
+  - 只保留已确认中文风格规范、目标语人物声音、已批准中文对白和 TranslationBrief 已按来源版本/ordinal 过滤的已采纳中文例句。
+  - 新增 `isChineseLiteraryFindingGrounded`；编辑 finding 必须以中文 draft 的 `targetExcerpt` 为证据。
+  - 原稿未改变时不产生空洞风格 finding。
+  - 双语审校可同时收到初译 `initialDraft` 和待核验的编辑版 `draft`。
+- `src/documents/translationAgent.ts`
+  - 中文文学 Run 先执行单语编辑，再执行双语 Accuracy / Terminology Review。
+  - 编辑候选仅在当前批次内传递给后续双语复核，不提前写入 accepted translation。
+  - 非中文目标语言保留既有审校顺序。
+  - 双语复核完成后才标记中文编辑候选为 verified/corrected。
+- `src/documents/projectStore.ts`
+  - 新增 `markChineseEditorialFindingsReviewed`，在事务中更新编辑建议的双语复核状态和最终候选。
+  - `setReviewFindingDisposition(action='apply')` 拒绝尚未完成双语复核的中文单语编辑建议。
+- 测试
+  - 新增单语输入不包含 source、source-side memory、章节标题的回归测试。
+  - 新增 target excerpt grounding 和 target-only memory projection 测试。
+  - 新增“未完成双语复核不得采纳”的 Project Store 测试。
+- 文档
+  - 更新 `fiction-translation` Skill、`docs/TRANSLATION_PIPELINE.md` 和本地 Agent 有效性检查清单。
+
+### 自动化验证
+
+截至本报告更新时，GitHub Actions 的 Local Agent Service 工作流在提交 `00640658a4b60108c9a9b54df18f9516a094e49b` 上已通过：
+- local-agent-service tests
+- TypeScript typecheck
+- API route manifest check
+- deterministic book-scan benchmark
+
+其后的 target-only accepted-example 调整正在由最新提交的 GitHub Actions 继续验证。根仓库 CI 的另一个工作流还会执行 fanyi-extension 跨仓库测试；此前失败的用例位于 `.cross-sync/fanyi-extension`，涉及 page cache fingerprint 版本、source language 默认值及旧 URL 路由断言，与本次 local-agent-service 中文编辑改动无关。不要把该根 CI 失败误报为 local-agent-service 测试失败。
+
+### 尚未完成的后续阶段
+
+- Phase 2：从已采纳中文译文自动形成独立、可确认的 Chinese Target Voice / Editorial Policy；目前只复用已有 styleGuide、characterVoices 和 accepted examples，不引入新数据库。
+- Phase 3：扩展全书质量审计，统计编辑建议数、verified/corrected 数、采纳/拒绝/撤销、过度编辑和双语复核失败率。
+- Phase 4：建立 100–200 段的中文文学编辑 A/B 盲评语料，并对主力模型和本地模型进行可重复评测。
+- Phase 5：积累人工偏好数据后再评估 SFT / LoRA / preference optimization；当前不做模型微调。
