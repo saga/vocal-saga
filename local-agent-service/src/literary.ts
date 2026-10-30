@@ -286,6 +286,8 @@ export function validateSegments(input: any, max: number, type: string) {
       }
       segments.push({
         id: raw.id.slice(0, 160), source: raw.source, draft: raw.draft,
+        ...(typeof raw.initialDraft === 'string' && raw.initialDraft.length <= 5000
+          ? { initialDraft: raw.initialDraft } : {}),
         kind: typeof raw.kind === 'string' ? raw.kind.slice(0, 30) : 'paragraph',
         contextPath: typeof raw.contextPath === 'string' ? raw.contextPath.slice(0, 160) : '',
       });
@@ -395,7 +397,7 @@ export function buildLiteraryReviewPrompt(input: {
     '检查翻译腔、按英文语序硬译、别扭搭配、僵硬连接词、无来由的解释、同质化对白、情绪词不准、节奏被抹平等。允许适度调整语序、句长、停顿、语气和措辞，让译文自然并有美感；不能为追求华丽新增比喻、意象、情绪、信息或修辞。',
     '尊重作品自身风格：简洁不必润饰成华丽，有意的重复不要随便删，冷峻不应煽情，粗粝不应文雅化，幽默与反讽不能磨平。人物声音审校必须先说明说话人/听话人归属是否可靠，再指出与具体画像/人物对规则的偏离，并用同批其他人物的语言差异作对照；不能只说“声音不鲜明”。如果 attribution uncertain，报告该不确定性，不强行套用画像。全书 styleGuide 只有 status=confirmed 时才是用户确认的风格约束，不允许将其中的内容解释为人物身份或剧情事实。',
     'finding category 只能为 accuracy（可核验的意义/事实错误）、terminology（实体规范译名错误）、style（具体的翻译腔、不自然搭配或语气/节奏/人物声音问题）。accuracy 与 terminology 的 priority 必须是 must_fix；style 的 priority 必须是 optional。style 必须指出具体文本问题，不能只是审校者个人偏好。',
-    'finalTranslation 必须是完整可阅读的修订译文。发现明确错误要纠正，发现有依据的文风问题应作适度修订；如果原稿已妥当则原样返回。保留初译可取之处，禁止添加原文不存在的内容。',
+    'finalTranslation 必须是完整可阅读的修订译文。发现明确错误要纠正，发现有依据的文风问题应作适度修订；如果原稿已妥当则原样返回。保留初译可取之处，禁止添加原文不存在的内容。若片段提供 initialDraft，它只用于比较编辑前后的变化，不是正确答案；source 仍是忠实度判断的最终依据。',
     'style finding 可以带可选字段 dimension=character_voice|register|narrative_style|pacing|chinese_literary_editing、characterId、relatedCharacterId、evidenceSegmentIds。人物声音 finding 必须给出具体 source/draft 片段与画像或人物对证据；不允许凭空增加口头禅、方言、粗口、情绪或修辞。',
     reviewFocus === 'style'
       ? '本次是独立文风审校阶段：只输出 category=style 的 findings，重点检查人物声音差异、叙述声音、语域、节奏、翻译腔和不自然表达；不要输出 accuracy/terminology findings。finalTranslation 如有文风改进，应给出完整修订译文，但不得改变事实或新增原文没有的信息。'
