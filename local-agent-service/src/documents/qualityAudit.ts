@@ -179,6 +179,19 @@ function parseLocalizedNumberRun(
   }
   return sawNumber ? { value:total+current, end:index, hasScale } : null;
 }
+function normalizeNumericLiteralToken(value: string, language: string): string {
+  // Spanish, French, German and Italian conventionally use comma decimals and dot grouping.
+  if (['es','fr','de','it'].includes(language)) {
+    if (value.includes(',')) {
+      const separator = value.lastIndexOf(',');
+      const integer = value.slice(0, separator).replace(/[.,]/g, '') || '0';
+      const fraction = value.slice(separator + 1).replace(/[.,]/g, '');
+      return integer + '.' + fraction;
+    }
+    if (/^\\d{1,3}(?:\\.\\d{3})+$/u.test(value)) return value.replace(/\\./g, '');
+  }
+  return value.replace(/,/g, '');
+}
 function numericTokens(value: unknown, allowImplicitChineseClassifierOne = true, sourceLang = 'en'): string[] {
   // Unsupported source-language words are not guessed. Only recognized numerals and explicit digits
   // are compared; an unrecognized number phrase must not be treated as a source value of zero.
@@ -190,7 +203,7 @@ function numericTokens(value: unknown, allowImplicitChineseClassifierOne = true,
   let index=0;
   while(index<matches.length) {
     const current=matches[index]!;
-    if(/^\d/u.test(current.token)) { result.push(current.token.replace(/,/g,'')); index++; continue; }
+    if(/^\d/u.test(current.token)) { result.push(normalizeNumericLiteralToken(current.token,language)); index++; continue; }
     if(/^[零〇一二两三四五六七八九十百千万亿]+$/u.test(current.token)) {
       const valueNumber=parseChineseNumber(current.token);
       const suffix=source.slice(current.index+current.token.length);
@@ -291,7 +304,7 @@ function numericFindings(
     // Only compare when the source contains a number/quantity the selected lexical rules could
     // identify. Empty source evidence is "unknown", not a numeric value of zero.
     if(!sourceNumbers.length && !sourceUnits.length)continue;
-    const targetNumbers=numericTokens(translation,sourceNumbers.length>0,resolvedSourceLang);
+    const targetNumbers=numericTokens(translation,sourceNumbers.length>0,'zh');
     const targetUnits=numericQuantityUnits(translation,'zh');
     const numericValuesDiffer=sourceNumbers.length>0 && JSON.stringify(sourceNumbers)!==JSON.stringify(targetNumbers);
     const quantityUnitsDiffer=sourceUnits.length>0 &&
