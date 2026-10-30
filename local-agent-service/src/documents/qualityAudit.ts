@@ -271,7 +271,7 @@ function numericFindings(
     const targetNumbers=numericTokens(translation,sourceNumbers.length>0,resolvedSourceLang);
     const targetUnits=numericQuantityUnits(translation,'zh');
     const numericValuesDiffer=sourceNumbers.length>0 && JSON.stringify(sourceNumbers)!==JSON.stringify(targetNumbers);
-    const quantityUnitsDiffer=(sourceUnits.length>0||targetUnits.length>0) &&
+    const quantityUnitsDiffer=sourceUnits.length>0 &&
       JSON.stringify(sourceUnits)!==JSON.stringify(targetUnits);
     if(!numericValuesDiffer&&!quantityUnitsDiffer)continue;
     findings.push({
