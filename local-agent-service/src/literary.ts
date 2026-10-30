@@ -619,6 +619,7 @@ export async function runLiteraryReview(body: any, requestId: string, sessionSco
           : '';
         const draftExcerpt = chineseMonolingualEdit ? targetExcerpt :
           typeof item.draftExcerpt === 'string' ? item.draftExcerpt.trim().slice(0, 240) : '';
+        if (chineseMonolingualEdit && candidateText === original.draft) continue;
         // Monolingual findings are grounded only in the exact Chinese draft the editor saw.
         if (chineseMonolingualEdit
           ? !isChineseLiteraryFindingGrounded(original.draft, targetExcerpt)
