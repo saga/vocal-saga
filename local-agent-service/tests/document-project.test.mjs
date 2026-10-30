@@ -940,3 +940,64 @@ test('Run recovery after store re-open preserves candidate revisions and never r
     await rm(root, { recursive: true, force: true });
   }
 });
+
+
+test('Chinese monolingual style proposals cannot be applied before bilingual verification', async () => {
+  await withStore((store) => {
+    const project = store.createProject({ title: 'Chinese Editorial Gate', format: 'epub', segments });
+    const run = store.createRun(project.projectId, { scope: { type: 'ids', ids: ['ch1-p1'] } });
+    store.saveCandidate(project.projectId, run.runId, 'ch1-p1', '门开着。');
+    store.saveFinding(project.projectId, run.runId, 'ch1-p1', {
+      category: 'style',
+      priority: 'optional',
+      editorialMode: 'chinese-monolingual',
+      bilingualReviewStatus: 'pending',
+      reason: '中文表达可以更自然。',
+      targetExcerpt: '门开着。',
+      proposedTranslation: '门敞开着。',
+      applicationStatus: 'pending',
+    });
+
+    assert.throws(
+      () => store.setReviewFindingDisposition(project.projectId, run.runId, 1, 'apply'),
+      /尚未完成双语忠实度复核/,
+      'a target-only edit must not be accepted before source-based verification',
+    );
+
+    assert.equal(store.markChineseEditorialFindingsReviewed(project.projectId, run.runId, [{
+      segmentId: 'ch1-p1',
+      status: 'corrected',
+      proposedTranslation: '门仍然敞开着。',
+    }]), true);
+
+    store.finishRun(project.projectId, run.runId);
+    const applied = store.setReviewFindingDisposition(project.projectId, run.runId, 1, 'apply');
+    assert.equal(applied.applicationStatus, 'applied');
+    assert.equal(applied.text, '门仍然敞开着。');
+    assert.equal(
+      store.getSegments(project.projectId, { limit: 10 }).find((item) => item.id === 'ch1-p1')?.acceptedTranslation,
+      '门仍然敞开着。',
+    );
+  });
+});
+
+test('Chinese monolingual style proposal remains blocked when bilingual review did not complete', async () => {
+  await withStore((store) => {
+    const project = store.createProject({ title: 'Unverified Chinese Editorial', format: 'epub', segments });
+    const run = store.createRun(project.projectId, { scope: { type: 'ids', ids: ['ch1-p1'] } });
+    store.saveFinding(project.projectId, run.runId, 'ch1-p1', {
+      category: 'style',
+      priority: 'optional',
+      editorialMode: 'chinese-monolingual',
+      bilingualReviewStatus: 'pending',
+      reason: '待双语复核。',
+      targetExcerpt: '门开着。',
+      proposedTranslation: '门敞开着。',
+    });
+    store.finishRun(project.projectId, run.runId);
+    assert.throws(
+      () => store.setReviewFindingDisposition(project.projectId, run.runId, 1, 'apply'),
+      /尚未完成双语忠实度复核/,
+    );
+  });
+});
