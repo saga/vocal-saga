@@ -499,6 +499,11 @@ export function buildChineseTargetOnlyVoiceContext(input: Record<string, any> | 
   };
 }
 
+export function isChineseLiteraryFindingGrounded(draft: string, targetExcerpt: unknown): boolean {
+  const quote = typeof targetExcerpt === 'string' ? normalizeEvidenceText(targetExcerpt) : '';
+  return quote.length >= 2 && normalizeEvidenceText(draft).includes(quote);
+}
+
 export function buildChineseLiteraryEditingPrompt(input: {
   body: any;
   segments: Array<Record<string, any>>;
@@ -616,7 +621,7 @@ export async function runLiteraryReview(body: any, requestId: string, sessionSco
           typeof item.draftExcerpt === 'string' ? item.draftExcerpt.trim().slice(0, 240) : '';
         // Monolingual findings are grounded only in the exact Chinese draft the editor saw.
         if (chineseMonolingualEdit
-          ? !targetExcerpt || targetExcerpt.length < 2 || !normalizeEvidenceText(original.draft).includes(normalizeEvidenceText(targetExcerpt))
+          ? !isChineseLiteraryFindingGrounded(original.draft, targetExcerpt)
           : !isLiteraryReviewFindingGrounded(original.source, original.draft, sourceExcerpt, draftExcerpt)) continue;
         const priority = item.category === 'style' ? 'optional' : 'must_fix';
         const finding = {
