@@ -83,7 +83,7 @@ export const ANALYSIS_SCHEMA: Record<string, unknown> = {
 };
 
 
-export const BOOK_SCAN_INDEX_VERSION = 'book-scan-index-v2';
+export const BOOK_SCAN_INDEX_VERSION = 'book-scan-index-v3';
 
 export interface StoredSegmentFeatures {
   entityMentions: Array<{ surface: string; normalized: string; start: number; end: number; kind: string; dialogue: boolean }>;
@@ -94,13 +94,14 @@ export interface StoredSegmentFeatures {
 export interface StoredSourceFeatureIndex {
   sourceRevisionId: string;
   indexVersion: string;
+  sourceLang: string;
   sourceSegmentCount: number;
   diagnostics: Record<string, unknown>;
   segments: Map<string, StoredSegmentFeatures>;
 }
 
 /** Persist lexical source features once per immutable source revision. Offsets use source UTF-16 positions. */
-export function persistSourceFeatureIndex(db: DatabaseSync, revisionId: string, segments: Segment[], scan: BookScanResult): void {
+export function persistSourceFeatureIndex(db: DatabaseSync, revisionId: string, segments: Segment[], scan: BookScanResult, sourceLang = 'auto'): void {
   ensureSchema(db);
   const entityById = new Map<string, BookScanResult['entityMentions']>();
   const unitsById = new Map<string, BookScanResult['textUnits']>();
@@ -139,7 +140,7 @@ export function persistSourceFeatureIndex(db: DatabaseSync, revisionId: string, 
       statement.run(revisionId, segment.id, segment.ordinal, segment.contextPath || '正文', JSON.stringify(features), BOOK_SCAN_INDEX_VERSION, now);
     }
     const summary = {
-      indexVersion: BOOK_SCAN_INDEX_VERSION, sourceSegmentCount: segments.length,
+      indexVersion: BOOK_SCAN_INDEX_VERSION, sourceLang, sourceSegmentCount: segments.length,
       entityMentionCount: scan.indexDiagnostics.entityMentionCount, entityMentionLimit: scan.indexDiagnostics.entityMentionLimit,
       entityMentionsTruncated: scan.indexDiagnostics.entityMentionsTruncated,
       textUnitCount: scan.indexDiagnostics.textUnitCount, textUnitLimit: scan.indexDiagnostics.textUnitLimit,
@@ -159,7 +160,7 @@ export function persistSourceFeatureIndex(db: DatabaseSync, revisionId: string, 
 }
 
 /** Return a complete, version-matched index or null if it is absent/incomplete. */
-export function readSourceFeatureIndex(db: DatabaseSync, revisionId: string): StoredSourceFeatureIndex | null {
+export function readSourceFeatureIndex(db: DatabaseSync, revisionId: string, expectedSourceLang?: string): StoredSourceFeatureIndex | null {
   ensureSchema(db);
   const metaRow = db.prepare('SELECT value FROM context_graph_meta WHERE source_revision_id = ? AND key = ?')
     .get(revisionId, 'sourceFeatureIndex') as { value?: string } | undefined;
@@ -167,6 +168,7 @@ export function readSourceFeatureIndex(db: DatabaseSync, revisionId: string): St
   let meta: any;
   try { meta = JSON.parse(metaRow.value); } catch { return null; }
   if (meta?.indexVersion !== BOOK_SCAN_INDEX_VERSION) return null;
+  if (expectedSourceLang && String(meta.sourceLang || '') !== expectedSourceLang) return null;
   const rows = db.prepare(
     'SELECT segment_id, features_json FROM context_graph_source_features WHERE source_revision_id = ? AND index_version = ? ORDER BY ordinal'
   ).all(revisionId, BOOK_SCAN_INDEX_VERSION) as Array<{ segment_id: string; features_json: string }>;
@@ -180,7 +182,7 @@ export function readSourceFeatureIndex(db: DatabaseSync, revisionId: string): St
       indexed.set(row.segment_id, features);
     } catch { return null; }
   }
-  return { sourceRevisionId: revisionId, indexVersion: BOOK_SCAN_INDEX_VERSION, sourceSegmentCount: rows.length, diagnostics: meta, segments: indexed };
+  return { sourceRevisionId: revisionId, indexVersion: BOOK_SCAN_INDEX_VERSION, sourceLang: String(meta.sourceLang || 'auto'), sourceSegmentCount: rows.length, diagnostics: meta, segments: indexed };
 }
 
 // Track the exact live run; a project-level boolean cannot distinguish stale runs from another revision.
@@ -381,10 +383,10 @@ function readSegments(projectId: string): { db: DatabaseSync; revisionId: string
 
 const readySourceFeatureIndexes = new Map<string, Record<string, any>>();
 
-function hasCurrentSourceFeatureIndex(db: DatabaseSync, revisionId: string, sourceSegmentCount: number): boolean {
+function hasCurrentSourceFeatureIndex(db: DatabaseSync, revisionId: string, sourceSegmentCount: number, sourceLang = 'auto'): boolean {
   const cached = readySourceFeatureIndexes.get(revisionId);
   if (cached?.indexVersion === BOOK_SCAN_INDEX_VERSION &&
-      Number(cached.sourceSegmentCount) === sourceSegmentCount) return true;
+      cached.sourceLang === sourceLang && Number(cached.sourceSegmentCount) === sourceSegmentCount) return true;
 
   const metaRow = db.prepare(
     'SELECT value FROM context_graph_meta WHERE source_revision_id = ? AND key = ?'
@@ -392,7 +394,7 @@ function hasCurrentSourceFeatureIndex(db: DatabaseSync, revisionId: string, sour
   let meta: Record<string, any> | null = null;
   try { meta = metaRow?.value ? JSON.parse(metaRow.value) : null; } catch { meta = null; }
   if (meta?.indexVersion !== BOOK_SCAN_INDEX_VERSION ||
-      Number(meta.sourceSegmentCount) !== sourceSegmentCount) return false;
+      String(meta.sourceLang || '') !== sourceLang || Number(meta.sourceSegmentCount) !== sourceSegmentCount) return false;
 
   const indexedCount = Number((db.prepare(
     'SELECT COUNT(*) AS count FROM context_graph_source_features WHERE source_revision_id = ? AND index_version = ?'
@@ -406,10 +408,13 @@ function ensureSourceFeatureIndexInDatabase(
   projectId: string,
   db: DatabaseSync,
   revisionId: string,
+  sourceLangOverride?: string,
 ): Record<string, any> {
   ensureSchema(db);
+  const promptConfig = getDocumentProjectStore().listPrompts(projectId)[0]?.config || {};
+  const sourceLang = String(sourceLangOverride || promptConfig.sourceLang || 'auto').trim() || 'auto';
   const cached = readySourceFeatureIndexes.get(revisionId);
-  if (cached) return cached;
+  if (cached?.sourceLang === sourceLang && cached.indexVersion === BOOK_SCAN_INDEX_VERSION) return cached;
   const metaRow = db.prepare(
     'SELECT value FROM context_graph_meta WHERE source_revision_id = ? AND key = ?'
   ).get(revisionId, 'sourceFeatureIndex') as { value?: string } | undefined;
@@ -421,7 +426,7 @@ function ensureSourceFeatureIndexInDatabase(
   const indexedCount = Number((db.prepare(
     'SELECT COUNT(*) AS count FROM context_graph_source_features WHERE source_revision_id = ? AND index_version = ?'
   ).get(revisionId, BOOK_SCAN_INDEX_VERSION) as any)?.count || 0);
-  if (meta?.indexVersion === BOOK_SCAN_INDEX_VERSION &&
+  if (meta?.indexVersion === BOOK_SCAN_INDEX_VERSION && String(meta.sourceLang || '') === sourceLang &&
       Number(meta.sourceSegmentCount) === sourceCount && indexedCount === sourceCount) {
     readySourceFeatureIndexes.set(revisionId, meta);
     return meta;
@@ -435,9 +440,9 @@ function ensureSourceFeatureIndexInDatabase(
     id: String(row.segment_id), ordinal: Number(row.ordinal), text: String(row.text),
     kind: String(row.kind || 'paragraph'), contextPath: String(row.context_path || ''),
   }));
-  const scan = scanBookSegments(segments);
-  persistSourceFeatureIndex(db, revisionId, segments, scan);
-  const refreshed = readSourceFeatureIndex(db, revisionId);
+  const scan = scanBookSegments(segments, { sourceLang });
+  persistSourceFeatureIndex(db, revisionId, segments, scan, sourceLang);
+  const refreshed = readSourceFeatureIndex(db, revisionId, sourceLang);
   const summary = refreshed?.diagnostics as Record<string, any> | undefined;
   if (!refreshed || !summary) throw new Error('来源特征索引写入后仍无法验证完整性。');
   readySourceFeatureIndexes.set(revisionId, summary);
@@ -457,9 +462,9 @@ function ensureSourceFeatureIndexInDatabase(
 }
 
 /** Build/upgrade the deterministic feature index without invoking a model. */
-export function ensureSourceFeatureIndex(projectId: string, sourceRevisionId?: string): Record<string, any> {
+export function ensureSourceFeatureIndex(projectId: string, sourceRevisionId?: string, sourceLang?: string): Record<string, any> {
   const { db, revisionId } = graphContext(projectId, sourceRevisionId);
-  return ensureSourceFeatureIndexInDatabase(projectId, db, revisionId);
+  return ensureSourceFeatureIndexInDatabase(projectId, db, revisionId, sourceLang);
 }
 
 function chapterMap(segments: Segment[]): Array<{ key: string; title: string; order: number; segments: Segment[] }> {
