@@ -256,7 +256,7 @@ test('preprocessing persists source-revision-scoped feature index with exact sou
 
   const index = readSourceFeatureIndex(db, currentSourceRevisionId);
   assert.ok(index);
-  assert.equal(index.indexVersion, 'book-scan-index-v2');
+  assert.equal(index.indexVersion, 'book-scan-index-v3');
   assert.equal(index.sourceSegmentCount, 2);
   assert.equal(index.segments.size, 2);
 
@@ -297,7 +297,7 @@ test('legacy project gets a deterministic source index without re-running Contex
   assert.equal(readSourceFeatureIndex(db, currentSourceRevisionId), null);
 
   const summary = ensureSourceFeatureIndex(project.projectId, currentSourceRevisionId);
-  assert.equal(summary.indexVersion, 'book-scan-index-v2');
+  assert.equal(summary.indexVersion, 'book-scan-index-v3');
   assert.equal(summary.sourceSegmentCount, 2);
   assert.ok(readSourceFeatureIndex(db, currentSourceRevisionId));
   const events = store.getEvents(project.projectId);
