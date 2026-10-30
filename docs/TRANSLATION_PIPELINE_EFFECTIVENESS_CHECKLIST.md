@@ -176,3 +176,20 @@
 - **修复范围**：
 - **防回归测试**：
 - **修复后复验**：
+
+
+## 中文单语文学编辑专项检查
+
+主要检查：`literary.ts`、`translationAgent.ts`、`projectStore.ts`、`voiceContext.ts`。
+
+- [ ] 中文文学 Run 的 Style Review 输入只包含 segment ID、中文 draft、片段类型和目标语言上下文；模型请求 payload 中不存在 source、sourceExcerpt、英文名称/别名、源语言 glossary、Context Graph 原文证据或 preceding source segments。
+- [ ] `target-only` voice projection 只保留已确认中文 styleGuide、中文人物名、中文人物声音描述、已批准中文对白锚点，以及 TranslationBrief 已按当前来源版本和 ordinal 筛选出的 accepted Chinese examples。
+- [ ] 中文编辑 finding 的 `targetExcerpt` 必须逐字连续存在于当前中文 draft；不能以模型自报理由代替证据。原稿不变时不得产生无意义的风格候选。
+- [ ] 编辑输出必须返回完整 segment ID 集合和完整段落；未知/重复/缺失 ID、空文本、超长文本、保护 token 丢失或结构错误均不能覆盖初译。
+- [ ] 中文编辑阶段失败时保留初译并继续执行双语 Reviewer；编辑成功后，Accuracy / Terminology Review 必须收到原文、初译对照和编辑候选。
+- [ ] 双语 Reviewer 以 source 为忠实度依据，能够发现编辑造成的漏译、增译、否定/视角/指代/时间关系变化及术语漂移；初译只用于变化比较。
+- [ ] 只有双语 Reviewer 已覆盖该 segment 且 Run 仍可写入时，中文编辑 finding 才能从 `bilingualReviewStatus=pending` 更新为 `verified` 或 `corrected`。
+- [ ] `setReviewFindingDisposition(action=apply)` 必须拒绝尚未完成双语复核的中文单语编辑建议；dismiss 仍可用。
+- [ ] 双语复核失败、超时、取消或漏段时，编辑候选保持 pending，不能误报为已验证或允许采纳。
+- [ ] 非中文目标语言继续使用原 Style Review；普通网页翻译和技术文档翻译不触发中文文学编辑。
+- [ ] A/B 评估分别覆盖中文单语盲评与双语忠实度复核；LLM Judge 不得单独决定文学创造性、作者声音或自动采纳。
