@@ -242,3 +242,16 @@ test('parallel worker scan receives source language and matches serial output', 
     scanBookSegments(segments, options),
   );
 });
+
+
+test('German digit quantities are indexed once and greeting words are not person candidates', () => {
+  const scan = scanBookSegments([
+    { id: 'de-digit-1', ordinal: 0, contextPath: 'Kapitel 1', text: 'Er ging 3 Meter.' },
+    { id: 'de-digit-2', ordinal: 1, contextPath: 'Kapitel 2', text: '„Guten Tag“, sagte er.' },
+    { id: 'it-greeting', ordinal: 2, contextPath: 'Capitolo 1', text: '«Buongiorno», disse Marco.' },
+  ], { sourceLang: 'de' });
+  const quantity = scan.quantityMentions.filter((item) => item.segmentId === 'de-digit-1');
+  assert.equal(quantity.length, 1);
+  assert.equal(quantity[0].unit, 'meter');
+  assert.ok(!scan.nameCandidates.some((candidate) => ['Guten Tag', 'Guten', 'Tag', 'Buongiorno'].includes(candidate.name)));
+});
