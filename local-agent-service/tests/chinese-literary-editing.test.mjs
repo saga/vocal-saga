@@ -77,6 +77,7 @@ test('Chinese literary editor receives only Chinese draft text and target-langua
   assert.match(prompt, /克制、疏离/);
   assert.doesNotMatch(prompt, /SOURCE_SECRET/);
   assert.doesNotMatch(prompt, /upon which I was lying/);
+  assert.doesNotMatch(prompt, /Chapter 1/, 'source-language chapter labels are not part of the monolingual edit context');
   assert.doesNotMatch(prompt, /Alice/);
   assert.doesNotMatch(prompt, /source evidence must not leak/);
   assert.doesNotMatch(prompt, /最近/);
