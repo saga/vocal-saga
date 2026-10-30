@@ -486,6 +486,14 @@ export function buildChineseTargetOnlyVoiceContext(input: Record<string, any> | 
         return name ? [{ character: name, role: participant.role, confidence: participant.confidence }] : [];
       }).slice(0, 24)
     : [];
+  // TranslationBrief has already retrieved accepted examples from the same source revision
+  // and strictly before the current batch. Keep only their Chinese side; never expose source.
+  const recentExamples = Array.isArray(context.recentExamples)
+    ? context.recentExamples.flatMap((example: any) =>
+        example && typeof example.target === 'string' && example.target.trim()
+          ? [{ target: example.target, origin: example.origin === 'manual' ? 'manual' : 'accepted' }]
+          : []).slice(-8)
+    : [];
   return {
     policyVersion: 'chinese-target-only-v1',
     styleGuide: context.styleGuideStatus === 'confirmed' && context.styleGuide && typeof context.styleGuide === 'object'
@@ -493,6 +501,7 @@ export function buildChineseTargetOnlyVoiceContext(input: Record<string, any> | 
     characterVoices,
     voiceAnchors,
     dialogueParticipants,
+    recentExamples,
     constraints: [
       '这些资料只描述已建立的中文表达习惯，不提供原文、剧情事实或源语言句法。',
       '人物声音资料是弱提示；当前中文文本和明确上下文优先。',
