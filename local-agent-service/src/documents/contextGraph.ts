@@ -865,6 +865,10 @@ async function runAnalysis(projectId: string, runId: string): Promise<void> {
   });
   writeChapterSnapshots(db, revisionId, segments);
 
+  const prompts = store.listPrompts(projectId);
+  const config = prompts[0]?.config || {};
+  const sourceLang = safeText(config.sourceLang, 40) || 'auto';
+  const targetLang = safeText(config.targetLang, 40) || 'zh';
   const provider = safeText(config.provider, 40) || 'workbuddy';
   const modelName = safeText(config.model, 240) || 'auto';
   const scanStartedAt = Date.now();
@@ -937,10 +941,7 @@ async function runAnalysis(projectId: string, runId: string): Promise<void> {
       quantityMentions: scan.indexDiagnostics.quantityMentionsTruncated,
     },
   });
-  const prompts = store.listPrompts(projectId);
-  const config = prompts[0]?.config || {};
-  const sourceLang = safeText(config.sourceLang, 40) || 'auto';
-  const targetLang = safeText(config.targetLang, 40) || 'zh';
+
 
   const agent = parseAgentModel(modelName, provider);
   const prompt = graphAnalysisPrompt(
