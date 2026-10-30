@@ -118,3 +118,13 @@ test('Chinese literary editing findings require a quoted target excerpt and do n
   assert.equal(isChineseLiteraryFindingGrounded(draft, 'x'), false);
   assert.equal(isChineseLiteraryFindingGrounded(draft, ''), false);
 });
+
+
+test('target-only editor preserves explicitly user-edited style guidance', () => {
+  const projected = buildChineseTargetOnlyVoiceContext({
+    styleGuideStatus: 'candidate',
+    styleGuideOrigin: 'user-edited',
+    styleGuide: { narrativeVoice: '用户明确要求保持克制。' },
+  });
+  assert.deepEqual(projected.styleGuide, { narrativeVoice: '用户明确要求保持克制。' });
+});
