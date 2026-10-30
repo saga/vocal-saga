@@ -46,6 +46,8 @@ flowchart TD
 
 统一的是项目、调度、持久化、恢复、输出校验、审校、候选和审计契约；不要求小说、技术文档和短文本使用相同 Prompt。任务类型差异以同一执行器中的显式策略表达，不能按 UI 入口分叉。文学上下文增量对文学模式生效，非文学请求继续使用相同结构化翻译和候选生命周期，但不会把普通术语或代码片段强行建模成人物关系。
 
+文学模式的 Reviewer 保持两个既有职责：Accuracy / Terminology Review 负责可核验的语义与专名问题；Style Review 负责人物声音、叙述风格、语域、节奏和自然表达。中文目标语言下，Chinese Literary Editing（中文文学编辑）作为 Style Review 的内置编辑维度，覆盖代词/所属表达、助词、英文句法残留、翻译腔、冗余、词汇搭配和中文阅读节奏。它适用于小说、散文、回忆录、传记、文学纪实等文学类作品，不是独立 Pipeline Stage，不增加 Reviewer 或模型调用。中文规则仅注入中文目标语言的 Style Review；其他语言不受影响。文风建议仍按可选候选保存，不静默覆盖已接受译文。详见仓库根目录 [CHINESE-LITERARY-EDITING-PLAN.md](../CHINESE-LITERARY-EDITING-PLAN.md)。
+
 ## 2. 初译响应契约
 
 文学初译除必需的 `translations` 外，还应返回有界的 `context_delta`。例子中的字段采用 snake_case，是模型协议的一部分；服务端将其验证后转换为内部类型。
