@@ -439,6 +439,101 @@ export function buildLiteraryReviewPrompt(input: {
   };
 }
 
+
+/**
+ * Build a target-language-only view of literary memory. Source names, quotations,
+ * chapter summaries, glossary entries and source-linked evidence are intentionally
+ * excluded: this context is for Chinese copyediting, not bilingual correctness review.
+ */
+export function buildChineseTargetOnlyVoiceContext(input: Record<string, any> | null | undefined): Record<string, unknown> {
+  const context = input && typeof input === 'object' ? input : {};
+  const characterVoices = Array.isArray(context.characterVoices)
+    ? context.characterVoices.flatMap((profile: any) => {
+        if (!profile || typeof profile !== 'object' ||
+            !['confirmed', 'candidate'].includes(String(profile.status)) ||
+            profile.useForTranslation === false) return [];
+        return [{
+          characterId: typeof profile.characterId === 'string' ? profile.characterId : '',
+          targetName: typeof profile.targetName === 'string' ? profile.targetName : '',
+          status: profile.status,
+          ...(typeof profile.role === 'string' ? { role: profile.role } : {}),
+          ...(Array.isArray(profile.traits) ? { traits: profile.traits.filter((v: unknown) => typeof v === 'string').slice(0, 8) } : {}),
+          ...(profile.voiceCore && typeof profile.voiceCore === 'object' ? { voiceCore: profile.voiceCore } : {}),
+          ...(Array.isArray(profile.contrastRules) ? {
+            contrastRules: profile.contrastRules.filter((rule: any) => rule && typeof rule.difference === 'string')
+              .map((rule: any) => ({ difference: rule.difference })).slice(0, 6),
+          } : {}),
+        }];
+      })
+    : [];
+  const targetNames = new Map(characterVoices.map((profile: any) => [profile.characterId, profile.targetName]));
+  const voiceAnchors = Array.isArray(context.voiceAnchors)
+    ? context.voiceAnchors.flatMap((anchor: any) => {
+        if (!anchor || anchor.status !== 'approved' || typeof anchor.target !== 'string') return [];
+        return [{
+          ...(targetNames.has(anchor.speakerId) ? { speaker: targetNames.get(anchor.speakerId) } : {}),
+          ...(targetNames.has(anchor.addresseeId) ? { addressee: targetNames.get(anchor.addresseeId) } : {}),
+          target: anchor.target,
+          ...(Array.isArray(anchor.tags) ? { tags: anchor.tags.filter((v: unknown) => typeof v === 'string').slice(0, 8) } : {}),
+        }];
+      }).slice(-16)
+    : [];
+  const dialogueParticipants = Array.isArray(context.dialogueParticipants)
+    ? context.dialogueParticipants.flatMap((participant: any) => {
+        const name = targetNames.get(participant?.characterId);
+        return name ? [{ character: name, role: participant.role, confidence: participant.confidence }] : [];
+      }).slice(0, 24)
+    : [];
+  return {
+    policyVersion: 'chinese-target-only-v1',
+    styleGuide: context.styleGuideStatus === 'confirmed' && context.styleGuide && typeof context.styleGuide === 'object'
+      ? context.styleGuide : {},
+    characterVoices,
+    voiceAnchors,
+    dialogueParticipants,
+    constraints: [
+      '这些资料只描述已建立的中文表达习惯，不提供原文、剧情事实或源语言句法。',
+      '人物声音资料是弱提示；当前中文文本和明确上下文优先。',
+      '没有可靠人物归属时，不得猜测说话人或添加口头禅、方言和情绪。',
+    ],
+  };
+}
+
+export function buildChineseLiteraryEditingPrompt(input: {
+  body: any;
+  segments: Array<Record<string, any>>;
+  voiceContext: Record<string, any>;
+}): { systemPrompt: string; prompt: string; contextChars: number } {
+  const targetOnlyContext = buildChineseTargetOnlyVoiceContext(input.voiceContext);
+  const systemPrompt = [
+    '你是中文文学编辑，正在编辑一份已经完成初译的中文稿件。你不是翻译器，也不是双语审校者。',
+    '本任务只允许依据中文文本本身判断表达是否自然、成熟、准确、有节奏。你不会收到外文原文；不得假设自己知道原文写了什么。',
+    '编辑目标：保留作者的叙述声音、作品语体、人物差异和文学手法；只修改确实存在的中文表达问题。原稿已经自然、准确、有文学效果时，必须原样保留。',
+    '重点检查：英文语序残留、嵌套定语和关系结构造成的翻译腔；不自然搭配、空泛动词、僵硬连接词；无必要的代词和所属表达重复；“的、地、得”及其他虚词的冗余；句子停顿、段落衔接和节奏。',
+    '禁止机械删除代词或虚词，禁止把长句一律拆短，禁止把重复一律删除，禁止把朴素文字润色成华丽辞藻，禁止擅自现代化、古典化或网络化语体。',
+    '不得补充解释、心理活动、背景、情绪、因果、意象或任何当前中文稿件没有表达的信息。不得改变叙述视角、人物关系、时间关系、否定、歧义或语气强度。',
+    '人物声音资料只作为已建立的中文表达参考。证据不足时不推断说话人，不创造口头禅、方言、粗口或人物标签。',
+    '对每个输入 id 返回完整 editedText。没有必要修改时 decision=unchanged 且 editedText 必须与 draft 完全一致。',
+    '每条 finding 必须引用 draft 中逐字连续、可定位的 targetExcerpt，并说明具体问题及修改方向。纯粹个人偏好、无法证明改善的表达不得产生 finding。',
+    '仅返回严格 JSON：{"results":[{"id":"...","decision":"edited|unchanged|needs_human_review","editedText":"完整中文文本","findings":[{"editingAspect":"pronoun|particle|syntax|translationese|redundancy|diction|rhythm|register","targetExcerpt":"中文初稿中的连续原文","reason":"具体问题","suggestion":"编辑方向"}]}]}。',
+  ].join('\n');
+  const targetSegments = input.segments.map((segment: any) => ({
+    id: segment.id,
+    draft: segment.draft,
+    kind: segment.kind || 'paragraph',
+    contextPath: segment.contextPath || '',
+  }));
+  const prompt = [
+    '目标语言：中文（简体/繁体按项目设置，不自行转换字形）',
+    '作品/章节：' + String(input.body.chapterTitle || ''),
+    '已确认的中文风格与人物表达参考（不含源语言文本）：',
+    JSON.stringify(targetOnlyContext),
+    '待编辑中文片段：',
+    JSON.stringify(targetSegments),
+  ].join('\n\n');
+  return { systemPrompt, prompt, contextChars: JSON.stringify(targetOnlyContext).length };
+}
+
 export async function runLiteraryReview(body: any, requestId: string, sessionScope?: string) {
   const segments = validateSegments(body.segments, 32, 'review');
   const memory = body.memory && typeof body.memory === 'object' ? body.memory : {};
@@ -481,9 +576,11 @@ export async function runLiteraryReview(body: any, requestId: string, sessionSco
     ? translationBrief.contextGraph
     : null;
   const reviewFocus = body.reviewFocus === 'style' ? 'style' : 'accuracy';
-  const { systemPrompt, prompt, contextChars } = buildLiteraryReviewPrompt({
-    body, segments, reviewFocus, translationBrief, precedingSegments, voiceContext, contextGraph,
-  });
+  const chineseMonolingualEdit = body.chineseMonolingualEdit === true &&
+    reviewFocus === 'style' && /^zh(?:[-_]|$)/i.test(String(body.target || 'zh'));
+  const { systemPrompt, prompt, contextChars } = chineseMonolingualEdit
+    ? buildChineseLiteraryEditingPrompt({ body, segments, voiceContext })
+    : buildLiteraryReviewPrompt({ body, segments, reviewFocus, translationBrief, precedingSegments, voiceContext, contextGraph });
   const agent = parseAgentModel(body.model || 'auto', body.runtime || body.provider || '');
   const modelRun = await runAgentJson(
     agent, prompt, systemPrompt, LITERARY_REVIEW_SCHEMA, requestId, sessionScope,
@@ -498,7 +595,9 @@ export async function runLiteraryReview(body: any, requestId: string, sessionSco
   for (const raw of parsed.results.slice(0, 32)) {
     if (!raw || typeof raw.id !== 'string' || !byId.has(raw.id)) continue;
     const original = byId.get(raw.id);
-    let candidateText = typeof raw.finalTranslation === 'string' ? raw.finalTranslation.trim() : '';
+    let candidateText = (chineseMonolingualEdit
+      ? typeof raw.editedText === 'string' ? raw.editedText.trim() : ''
+      : typeof raw.finalTranslation === 'string' ? raw.finalTranslation.trim() : '');
     const candidateUsable = candidateText.length > 0 && candidateText.length <= 5000;
     if (!candidateUsable) candidateText = original.draft;
     const candidateFindings: any[] = [];
@@ -506,21 +605,31 @@ export async function runLiteraryReview(body: any, requestId: string, sessionSco
       for (const item of raw.findings.slice(0, 12)) {
         // 准确性/实体错误必须修复；具体文风问题作为可选的受控修订依据。
         if (!item || (reviewFocus === 'style'
-          ? item.category !== 'style'
+          ? (!chineseMonolingualEdit && item.category !== 'style')
           : !['accuracy', 'terminology'].includes(item.category))) continue;
-        const sourceExcerpt = typeof item.sourceExcerpt === 'string' ? item.sourceExcerpt.trim().slice(0, 240) : '';
-        const draftExcerpt = typeof item.draftExcerpt === 'string' ? item.draftExcerpt.trim().slice(0, 240) : '';
-        // Do not let a fabricated finding turn an arbitrary full rewrite into a must-fix result.
-        if (!isLiteraryReviewFindingGrounded(original.source, original.draft, sourceExcerpt, draftExcerpt)) continue;
+        const sourceExcerpt = chineseMonolingualEdit ? '' :
+          typeof item.sourceExcerpt === 'string' ? item.sourceExcerpt.trim().slice(0, 240) : '';
+        const targetExcerpt = chineseMonolingualEdit
+          ? typeof item.targetExcerpt === 'string' ? item.targetExcerpt.trim().slice(0, 240) : ''
+          : '';
+        const draftExcerpt = chineseMonolingualEdit ? targetExcerpt :
+          typeof item.draftExcerpt === 'string' ? item.draftExcerpt.trim().slice(0, 240) : '';
+        // Monolingual findings are grounded only in the exact Chinese draft the editor saw.
+        if (chineseMonolingualEdit
+          ? !targetExcerpt || targetExcerpt.length < 2 || !normalizeEvidenceText(original.draft).includes(normalizeEvidenceText(targetExcerpt))
+          : !isLiteraryReviewFindingGrounded(original.source, original.draft, sourceExcerpt, draftExcerpt)) continue;
         const priority = item.category === 'style' ? 'optional' : 'must_fix';
         const finding = {
           id: raw.id, category: item.category, priority,
           sourceExcerpt,
           draftExcerpt,
+          ...(chineseMonolingualEdit ? { targetExcerpt, editorialMode: 'chinese-monolingual' } : {}),
           reason: typeof item.reason === 'string' ? item.reason.slice(0, 400) : '',
           suggestion: typeof item.suggestion === 'string' ? item.suggestion.slice(0, 400) : '',
-          ...(item.category === 'style' && ['character_voice', 'register', 'narrative_style', 'pacing', 'chinese_literary_editing'].includes(item.dimension)
-            ? { dimension: item.dimension,
+          ...(item.category === 'style' && (chineseMonolingualEdit
+            ? true
+            : ['character_voice', 'register', 'narrative_style', 'pacing', 'chinese_literary_editing'].includes(item.dimension))
+            ? { dimension: chineseMonolingualEdit ? 'chinese_literary_editing' : item.dimension,
                 ...(typeof item.editingAspect === 'string' && ['pronoun', 'particle', 'syntax', 'translationese', 'redundancy', 'diction', 'rhythm', 'register'].includes(item.editingAspect)
                   ? { editingAspect: item.editingAspect } : {}),
                 ...(typeof item.characterId === 'string' ? { characterId: item.characterId.slice(0, 100) } : {}),
@@ -550,11 +659,16 @@ export async function runLiteraryReview(body: any, requestId: string, sessionSco
     }
     findings.push(...candidateFindings);
     // Facts/terminology must be fixed, but style-only suggestions must not silently replace the draft.
-    translations[raw.id] = hasMustFixFinding && candidateUsable ? candidateText : original.draft;
+    const hasGroundedChineseEdit = chineseMonolingualEdit && candidateUsable &&
+      candidateText !== original.draft && candidateFindings.length > 0;
+    translations[raw.id] = hasMustFixFinding && candidateUsable
+      ? candidateText
+      : hasGroundedChineseEdit ? candidateText : original.draft;
   }
   const expectedIds = segments.map((item) => item.id);
   return {
     translations,
+    ...(chineseMonolingualEdit ? { editorialMode: 'chinese-monolingual' } : {}),
     reviewedIds: expectedIds.filter((id) => typeof translations[id] === 'string'),
     missingIds: expectedIds.filter((id) => typeof translations[id] !== 'string'),
     findings: findings.slice(0, 240),
