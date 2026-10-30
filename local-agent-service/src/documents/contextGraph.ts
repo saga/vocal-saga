@@ -1898,7 +1898,10 @@ export function getContextGraphStatus(projectId: string, runId?: string): Record
   // UI/status DTO only: never return graph nodes, edges, evidence or chapter summaries while polling.
   return {
     sourceRevisionId: revisionId, segmentCount,
+    // analysisVersion 是「这条记录由哪个版本产出」，currentAnalysisVersion 是「服务端当前版本」。
+    // 扩展必须比较这两者，不能自己硬编码版本号，否则服务端升版后扩展会一直误报「版本过旧」。
     analysisVersion: String(progress.analysisVersion || ''),
+    currentAnalysisVersion: CONTEXT_GRAPH_ANALYSIS_VERSION,
     styleGuideReady: status === 'completed' && progress.analysisVersion === CONTEXT_GRAPH_ANALYSIS_VERSION && styleMissingFields.length === 0,
     styleMissingFields,
     styleFieldCoverage: Object.fromEntries(requiredStyleFields.map(([key, value]) => [key, !!value.trim()])),

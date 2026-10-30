@@ -11,6 +11,7 @@ process.env.LOCAL_AGENT_DATABASE = path.join(testDataDir, 'service.sqlite');
 
 const { getDocumentProjectStore } = await import('../src/documents/projectStore.ts');
 const {
+  CONTEXT_GRAPH_ANALYSIS_VERSION,
   getContextGraph,
   getContextGraphStatus,
   buildProjectContextGraphBundle,
@@ -107,6 +108,8 @@ test('retrieval injects matched graph records and excludes future chapter summar
   const graph = getContextGraph(project.projectId);
   const status = getContextGraphStatus(project.projectId);
   assert.equal(status.sourceRevisionId, currentSourceRevisionId);
+  // 扩展必须拿到「服务端当前版本」才能判断记录是否过期；本地硬编码副本会随服务端升版漂移。
+  assert.equal(status.currentAnalysisVersion, CONTEXT_GRAPH_ANALYSIS_VERSION);
   assert.equal(status.counts.characters, 3);
   assert.equal(status.counts.entities, 2);
   assert.equal(status.counts.chapters, 3);
