@@ -528,11 +528,9 @@ export function buildChineseLiteraryEditingPrompt(input: {
     id: segment.id,
     draft: segment.draft,
     kind: segment.kind || 'paragraph',
-    contextPath: segment.contextPath || '',
   }));
   const prompt = [
     '目标语言：中文（简体/繁体按项目设置，不自行转换字形）',
-    '作品/章节：' + String(input.body.chapterTitle || ''),
     '已确认的中文风格与人物表达参考（不含源语言文本）：',
     JSON.stringify(targetOnlyContext),
     '待编辑中文片段：',
