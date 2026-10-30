@@ -296,21 +296,23 @@ function collectTextUnits(segments: BookScanSegment[]): { units: BookTextUnit[];
   }
   return {units:units.sort((a,b)=>a.ordinal-b.ordinal || a.start-b.start || a.end-b.end),discovered};
 }
-function collectDialogueIndex(segments: BookScanSegment[]): BookDialogueIndex[] {
+function collectDialogueIndex(segments: BookScanSegment[], sourceLang = 'en'): BookDialogueIndex[] {
   return segments.map((segment) => {
     const spans = quoteSpans(segment.text), signals: BookDialogueIndex['signals'] = [];
     if (spans.length) signals.push('quotation');
-    if (SPEECH_VERBS.test(segment.text)) signals.push('speech-verb');
-    if (/(?:^|\s)[—–]\s*\p{Lu}/u.test(segment.text)) signals.push('em-dash');
-    const quoteCount = (segment.text.match(/[“”「」『』"]/g) || []).length;
+    const language = sourceLanguageCode(sourceLang, segment.text);
+    const speechVerbs = SPEECH_VERBS_BY_LANGUAGE[language] || SPEECH_VERBS_BY_LANGUAGE.en!;
+    if (speechVerbs.test(segment.text)) signals.push('speech-verb');
+    if (/(?:^|\s)[—–]\s*\p{L}/u.test(segment.text)) signals.push('em-dash');
+    const quoteCount = (segment.text.match(/[“”„«»「」『』"]/gu) || []).length;
     return {
-      segmentId:segment.id,ordinal:segment.ordinal,chapterKey:chapterTitle(segment),isDialogue:isDialogueSegment(segment),
+      segmentId:segment.id,ordinal:segment.ordinal,chapterKey:chapterTitle(segment),isDialogue:isDialogueSegment(segment, language),
       quoteCount,signals,quoteSpans:spans,
       score:Math.min(10,quoteCount)+(signals.includes('speech-verb')?2:0)+(signals.includes('em-dash')?2:0),
     };
   });
 }
-function collectQuantityMentions(segments: BookScanSegment[]): {mentions:BookQuantityMention[];discovered:number} {
+function collectQuantityMentions(segments: BookScanSegment[], sourceLang = 'en'): {mentions:BookQuantityMention[];discovered:number} {
   const mentions:BookQuantityMention[]=[]; let discovered=0;
   for (const segment of segments) {
     ENGLISH_QUANTITY_PATTERN.lastIndex=0;
@@ -404,6 +406,7 @@ function collectRepeatedPhrases(segments:BookScanSegment[],units:BookTextUnit[],
   })).sort((a,b)=>b.count-a.count||b.chapterKeys.length-a.chapterKeys.length).slice(0,Math.max(1,maxGroups));
 }
 export interface BookScanOptions {
+  sourceLang?: string;
   maxRepeatedPhraseSegmentIds?: number;
   maxRepeatedPhraseGroups?: number;
   maxEntityMentions?: number;
@@ -422,17 +425,17 @@ export interface BookScanFeatureChunk {
   quantityMentionsDiscovered: number;
 }
 
-export function scanBookSegmentFeatures(segmentsInput: BookScanSegment[]): BookScanFeatureChunk {
+export function scanBookSegmentFeatures(segmentsInput: BookScanSegment[], sourceLang = 'en'): BookScanFeatureChunk {
   const segments = segmentsInput.slice().sort((a, b) => a.ordinal - b.ordinal);
-  const entities = collectEntityMentions(segments);
+  const entities = collectEntityMentions(segments, sourceLang);
   const units = collectTextUnits(segments);
-  const quantities = collectQuantityMentions(segments);
+  const quantities = collectQuantityMentions(segments, sourceLang);
   return {
     entityMentions: entities.mentions,
     entityMentionsDiscovered: entities.discovered,
     textUnits: units.units,
     textUnitsDiscovered: units.discovered,
-    dialogueIndex: collectDialogueIndex(segments),
+    dialogueIndex: collectDialogueIndex(segments, sourceLang),
     quantityMentions: quantities.mentions,
     quantityMentionsDiscovered: quantities.discovered,
   };
@@ -471,7 +474,7 @@ function assembleBookScan(
   const entityMentions = entityResult.slice(0, entityLimit);
   const textUnits = textResult.slice(0, textLimit);
   const quantityMentions = quantityResult.slice(0, quantityLimit);
-  const chapters = getChapters(segments);
+  const chapters = getChapters(segments, String(options.sourceLang || 'en'));
   const dialogueIndex = featureChunks.flatMap((item) => item.dialogueIndex);
   return {
     segmentCount: segments.length,
@@ -516,10 +519,10 @@ function configuredBookScanWorkers(): number {
   return Math.min(MAX_BOOK_SCAN_WORKERS, Math.max(1, availableParallelism() - 1));
 }
 
-async function scanFeatureChunkInWorker(segments: BookScanSegment[]): Promise<BookScanFeatureChunk> {
+async function scanFeatureChunkInWorker(segments: BookScanSegment[], sourceLang = 'en'): Promise<BookScanFeatureChunk> {
   return new Promise<BookScanFeatureChunk>((resolve, reject) => {
     const worker = new Worker(new URL('./bookScanWorker.mjs', import.meta.url), {
-      workerData: { segments },
+      workerData: { segments, sourceLang },
     });
     let result: BookScanFeatureChunk | undefined;
     let workerError: Error | undefined;
@@ -572,7 +575,7 @@ export async function scanBookSegmentsConcurrent(
   for (let offset = 0; offset < segments.length; offset += chunkSize) {
     chunks.push(segments.slice(offset, offset + chunkSize));
   }
-  const featureChunks = await Promise.all(chunks.map((chunk) => scanFeatureChunkInWorker(chunk)));
+  const featureChunks = await Promise.all(chunks.map((chunk) => scanFeatureChunkInWorker(chunk, options.sourceLang || 'en')));
   return assembleBookScan(segments, featureChunks, options);
 }
 
@@ -582,7 +585,7 @@ export async function scanBookSegmentsConcurrent(
  */
 export function scanBookSegments(segmentsInput: BookScanSegment[], options: BookScanOptions = {}): BookScanResult {
   const segments = segmentsInput.slice().sort((a, b) => a.ordinal - b.ordinal);
-  return assembleBookScan(segments, [scanBookSegmentFeatures(segments)], options);
+  return assembleBookScan(segments, [scanBookSegmentFeatures(segments, options.sourceLang || 'en')], options);
 }
 
 /**
