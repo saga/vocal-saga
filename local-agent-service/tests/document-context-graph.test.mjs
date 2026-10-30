@@ -424,3 +424,28 @@ test('re-analysis resets model chapter summaries without violating the NOT NULL 
     assert.ok(JSON.parse(row.segment_ids_json).length > 0);
   }
 });
+
+
+test('source feature index is scoped to both source revision and source language', () => {
+  const store = getDocumentProjectStore();
+  const project = store.createProject({
+    title: 'Language Scoped Source Feature Index', format: 'txt', sourceFileName: 'language-scoped-index.txt',
+    prompt: { translationMode: 'literary', sourceLang: 'fr', targetLang: 'zh' },
+    segments: [
+      { id: 'lang-index-1', text: 'Émile ouvrit la porte. «Bonjour», dit Émile.', kind: 'paragraph', contextPath: 'Chapitre 1' },
+      { id: 'lang-index-2', text: 'Émile revint après trois mètres.', kind: 'paragraph', contextPath: 'Chapitre 2' },
+    ],
+  });
+  const { db, currentSourceRevisionId } = store.getProjectContext(project.projectId);
+  ensureSourceFeatureIndex(project.projectId, currentSourceRevisionId, 'fr');
+  const french = readSourceFeatureIndex(db, currentSourceRevisionId, 'fr');
+  assert.ok(french);
+  assert.equal(french.sourceLang, 'fr');
+  assert.ok(Array.from(french.segments.values()).some((features) => features.entityMentions.some((mention) => mention.surface === 'Émile')));
+  assert.equal(readSourceFeatureIndex(db, currentSourceRevisionId, 'de'), null);
+  ensureSourceFeatureIndex(project.projectId, currentSourceRevisionId, 'de');
+  const german = readSourceFeatureIndex(db, currentSourceRevisionId, 'de');
+  assert.ok(german);
+  assert.equal(german.sourceLang, 'de');
+  assert.equal(readSourceFeatureIndex(db, currentSourceRevisionId, 'fr'), null);
+});
