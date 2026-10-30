@@ -108,6 +108,7 @@ const SPEECH_VERBS_BY_LANGUAGE: Record<string, RegExp> = {
   fr: /(?<![\p{L}])(?:dit|demanda|répondit|répliqua|murmura|chuchota|cria|s'écria|ajouta|poursuivit|continua|insista|soupira|raconta)(?![\p{L}])/iu,
   de: /(?<![\p{L}])(?:sagte|fragte|antwortete|erwiderte|flüsterte|rief|schrie|murmelte|meinte|fügte|erklärte|lachte|seufzte|erzählte)(?![\p{L}])/iu,
   it: /(?<![\p{L}])(?:disse|chiese|rispose|sussurrò|urlò|gridò|mormorò|esclamò|aggiunse|continuò|insistette|sospirò|raccontò|replicò)(?![\p{L}])/iu,
+  ja: /(?:言った|尋ねた|答えた|話した|叫んだ|囁いた|つぶやいた|聞いた|続けた|返した|問いかけた|説明した)/u,
 };
 const NAME_PATTERN = /(?<![\p{L}\p{N}])\p{Lu}\p{Ll}{2,}(?:[’'-]\p{Lu}?\p{Ll}+)*(?![\p{L}\p{N}])/gu;
 const COMPOUND_NAME_PATTERN = /(?<![\p{L}\p{N}])\p{Lu}\p{Ll}{2,}(?:[’'-]\p{Lu}?\p{Ll}+)*(?:\s+\p{Lu}\p{Ll}{2,}(?:[’'-]\p{Lu}?\p{Ll}+)*){1,2}(?![\p{L}\p{N}])/gu;
