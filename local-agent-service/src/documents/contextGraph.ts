@@ -865,14 +865,17 @@ async function runAnalysis(projectId: string, runId: string): Promise<void> {
   });
   writeChapterSnapshots(db, revisionId, segments);
 
+  const provider = safeText(config.provider, 40) || 'workbuddy';
+  const modelName = safeText(config.model, 240) || 'auto';
   const scanStartedAt = Date.now();
-  const scan = await scanBookSegmentsConcurrent(segments);
+  const scan = await scanBookSegmentsConcurrent(segments, { sourceLang });
   const scanDurationMs = Date.now() - scanStartedAt;
-  const sourceFeatureIndexReused = hasCurrentSourceFeatureIndex(db, revisionId, segments.length);
+  const sourceFeatureIndexReused = hasCurrentSourceFeatureIndex(db, revisionId, segments.length, sourceLang);
   if (!sourceFeatureIndexReused) {
-    persistSourceFeatureIndex(db, revisionId, segments, scan);
+    persistSourceFeatureIndex(db, revisionId, segments, scan, sourceLang);
     readySourceFeatureIndexes.set(revisionId, {
       indexVersion: BOOK_SCAN_INDEX_VERSION,
+      sourceLang,
       sourceSegmentCount: segments.length,
       entityMentionCount: scan.indexDiagnostics.entityMentionCount,
       entityMentionLimit: scan.indexDiagnostics.entityMentionLimit,
@@ -895,7 +898,7 @@ async function runAnalysis(projectId: string, runId: string): Promise<void> {
   const samplesById = new Map(samples.map((segment) => [segment.id, segment]));
   const chapters = chapterMap(segments);
   const scanSummary = {
-    strategyVersion: 'adaptive-book-scan-v2-source-index',
+    strategyVersion: 'adaptive-book-scan-v3-source-language-index',
     segmentCount: scan.segmentCount,
     sourceCharCount: scan.charCount,
     chapterCount: scan.chapterCount,
@@ -936,10 +939,9 @@ async function runAnalysis(projectId: string, runId: string): Promise<void> {
   });
   const prompts = store.listPrompts(projectId);
   const config = prompts[0]?.config || {};
-  const provider = safeText(config.provider, 40) || 'workbuddy';
-  const modelName = safeText(config.model, 240) || 'auto';
   const sourceLang = safeText(config.sourceLang, 40) || 'auto';
   const targetLang = safeText(config.targetLang, 40) || 'zh';
+
   const agent = parseAgentModel(modelName, provider);
   const prompt = graphAnalysisPrompt(
     store.getProject(projectId)?.title || '未命名文档',
