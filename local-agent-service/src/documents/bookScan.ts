@@ -86,11 +86,11 @@ const NAME_STOP_WORDS = new Set([
   'der','die','das','den','dem','des','ein','eine','einer','eines','einem','und','oder','aber','auch','nicht',
   'doch','mit','für','von','zu','zum','zur','im','am','auf','aus','bei','nach','vor','über','unter','zwischen',
   'ist','war','sind','waren','wird','werden','hat','haben','ich','du','er','es','wir','ihr','man','wie','was',
-  'wer','wann','wo','wenn','weil','dass','denn','sagte','fragte','hallo','danke','nein','ja','ach','so',
+  'wer','wann','wo','wenn','weil','dass','denn','sagte','fragte','hallo','danke','nein','ja','ach','so','guten','gute','morgen','abend',
   'frau','mann','stadt','zeit','haus','weg','hand','auge','tag','nacht','welt','zimmer','straße','strasse','kind','kinder','leute','mensch',
   'il','lo','i','gli','uno','una','di','da','del','della','dei','degli','delle','e','o','ma','anche',
   'non','che','chi','cui','per','con','su','tra','fra','è','era','sono','sei','ha','hanno','io','tu',
-  'lui','lei','noi','voi','loro','questo','quella','quello','ciao','grazie','signore','signora','sì',
+  'lui','lei','noi','voi','loro','questo','quella','quello','ciao','grazie','buongiorno','buonasera','salve','bene','signore','signora','sì',
   '彼女','彼ら','私達','自分','先生','友人','男性','女性','人物','家族','父親','母親','少年','少女','子供',
   '老人','警察','会社','学校','時間','場所','部屋','人々',
 ]);
@@ -374,9 +374,13 @@ function collectDialogueIndex(segments: BookScanSegment[], sourceLang = 'en'): B
 }
 function collectQuantityMentions(segments: BookScanSegment[], sourceLang = 'en'): {mentions:BookQuantityMention[];discovered:number} {
   const mentions:BookQuantityMention[]=[]; let discovered=0;
+  const seenOccurrences = new Set<string>();
   const add = (segment: BookScanSegment, match: RegExpMatchArray, rawUnit: string) => {
     const unit=QUANTITY_UNITS.find((item)=>item.pattern.test(rawUnit));
     if(!unit) return;
+    const occurrenceKey = segment.id + ':' + String(match.index ?? 0) + ':' + unit.unit;
+    if (seenOccurrences.has(occurrenceKey)) return;
+    seenOccurrences.add(occurrenceKey);
     discovered++;
     if(mentions.length>=MAX_QUANTITY_MENTIONS) return;
     const start=match.index??0,surface=match[0];
