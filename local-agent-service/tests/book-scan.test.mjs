@@ -231,6 +231,28 @@ test('localized quantity feature extraction covers French German Italian and Jap
   }
 });
 
+test('Spanish source scan recognizes titled compound names, dialogue, quantities and auto language detection', () => {
+  const scan = scanBookSegments([
+    { id: 'es-1', ordinal: 0, contextPath: 'Capítulo 1', text: 'Don Quijote de la Mancha llegó al pueblo.' },
+    { id: 'es-2', ordinal: 1, contextPath: 'Capítulo 1', text: 'Don Quijote de la Mancha miró a Sancho Panza.' },
+    { id: 'es-3', ordinal: 2, contextPath: 'Capítulo 2', text: '«No lo sé», dijo Don Quijote.' },
+    { id: 'es-4', ordinal: 3, contextPath: 'Capítulo 2', text: 'Caminó treinta y dos metros antes de volver.' },
+    { id: 'es-5', ordinal: 4, contextPath: 'Capítulo 3', text: 'Tenía veintiún años.' },
+  ], { sourceLang: 'es-ES' });
+  assert.ok(scan.entityMentions.some((mention) => mention.surface === 'Don Quijote de la Mancha'));
+  assert.ok(scan.nameCandidates.some((candidate) => candidate.name === 'Don Quijote de la Mancha'));
+  assert.ok(scan.nameCandidates.some((candidate) => candidate.name === 'Sancho Panza'));
+  assert.ok(scan.dialogueIndex.some((item) => item.segmentId === 'es-3' && item.isDialogue && item.signals.includes('speech-verb')));
+  assert.ok(scan.quantityMentions.some((item) => item.segmentId === 'es-4' && item.unit === 'meter'));
+  assert.ok(scan.quantityMentions.some((item) => item.segmentId === 'es-5' && item.unit === 'year'));
+
+  const auto = scanBookSegments([
+    { id: 'es-auto', ordinal: 0, text: '¿Qué haces? —dijo Don Quijote.' },
+  ], { sourceLang: 'auto' });
+  assert.ok(auto.dialogueIndex.some((item) => item.segmentId === 'es-auto' && item.isDialogue),
+    'Spanish punctuation and speech verbs should be recognized when sourceLang is auto');
+});
+
 test('parallel worker scan receives source language and matches serial output', async () => {
   const segments = [
     { id: 'worker-fr-1', ordinal: 0, text: 'Émile ouvrit la porte. «Bonjour», dit Émile.' },
