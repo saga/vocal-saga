@@ -1507,9 +1507,16 @@ async function runAnalysis(projectId: string, runId: string): Promise<void> {
       const normalized = normalize(name);
       const direct = identities.get(normalized);
       if (direct) return direct;
-      // Models sometimes use an article ("the King") where the graph node is stored as "King".
-      // Apply only this conservative English-article normalization after exact lookup fails.
-      const withoutArticle = normalized.replace(/^(the|a|an)\s+/, '');
+      // Models may include a language-specific article while the graph stores the bare node name.
+      // This is a conservative one-token normalization; do not perform fuzzy or substring matching.
+      const language = String(sourceLang || 'auto').toLocaleLowerCase().split(/[-_]/u)[0];
+      const articlePatterns: Record<string, RegExp> = {
+        en: /^(?:the|a|an)\s+/u,
+        fr: /^(?:le|la|les|un|une|des|l')\s*/u,
+        de: /^(?:der|die|das|den|dem|des|ein|eine|einer|eines|einem)\s+/u,
+        it: /^(?:il|lo|la|i|gli|le|un|uno|una|l')\s*/u,
+      };
+      const withoutArticle = normalized.replace(articlePatterns[language] || /^(?!)$/u, '');
       return withoutArticle !== normalized ? identities.get(withoutArticle) : undefined;
     };
     for (const raw of (Array.isArray(data.relationships) ? data.relationships : []).slice(0, 100)) {
