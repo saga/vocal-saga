@@ -101,10 +101,12 @@ test('target-only voice projection removes source identity, quotations, summarie
       speakerId: 'char-a', source: 'secret source dialogue', target: '中文对白',
       status: 'approved',
     }],
+    recentExamples: [{ source: 'secret source example', target: '已采纳的中文例句。', origin: 'manual' }],
   });
   const serialized = JSON.stringify(projected);
   assert.match(serialized, /艾丽丝/);
   assert.match(serialized, /中文对白/);
+  assert.match(serialized, /已采纳的中文例句/);
   assert.doesNotMatch(serialized, /Alice|secret source|source-derived|must not be included/);
 });
 
