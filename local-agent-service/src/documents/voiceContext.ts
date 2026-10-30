@@ -583,8 +583,9 @@ export function buildProjectVoiceContext(
 
   const result = {
     version: 1, policyVersion: 'character-voice-v4-dialogue-participants',
-    styleGuide: memory.styleGuideStatus === 'confirmed' ? memory.styleGuide : {},
+    styleGuide: memory.styleGuideStatus === 'confirmed' || memory.styleGuideOrigin === 'user-edited' ? memory.styleGuide : {},
     styleGuideStatus: memory.styleGuideStatus,
+    styleGuideOrigin: memory.styleGuideOrigin,
     chapterSummaries,
     scene: {
       ...(chapterTitle ? { chapterTitle: text(chapterTitle, 160) } : {}),
