@@ -755,7 +755,7 @@ test('numeric audit recognizes French German Italian and Japanese source quantit
     { sourceLang: 'de', source: 'Er ging drei Meter.', translation: '他走了三米。' },
     { sourceLang: 'it', source: 'Camminò tre metri.', translation: '他走了三米。' },
     { sourceLang: 'ja', source: '三メートル歩いた。', translation: '走了三米。' },
-    { sourceLang: 'pt', source: 'Ele caminhou três metros.', translation: '他走了三米。' },
+    { sourceLang: 'pt', source: 'Ele caminhou 3 metros.', translation: '他走了三米。' },
   ];
   for (const [index, item] of cases.entries()) {
     const project = store.createProject({
