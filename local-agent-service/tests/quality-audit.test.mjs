@@ -815,3 +815,24 @@ test('source-language residue audit detects accented French German Italian and J
   }
 });
 
+
+
+test('short French and Italian greetings are flagged as possible source-language residue', () => {
+  const store = getDocumentProjectStore();
+  const cases = [
+    { sourceLang: 'fr', source: 'Il partit sans un mot.', translation: '他转身离开了，Merci beaucoup。', residue: 'Merci' },
+    { sourceLang: 'it', source: 'Lui entrò nella stanza.', translation: '他走进房间，说了 Buongiorno。', residue: 'Buongiorno' },
+  ];
+  for (const item of cases) {
+    const id = 'short-residue-' + item.sourceLang;
+    const project = store.createProject({
+      title: 'Short Residue Audit ' + item.sourceLang, format: 'txt', sourceFileName: 'short-residue-' + item.sourceLang + '.txt',
+      prompt: { translationMode: 'literary', sourceLang: item.sourceLang, targetLang: 'zh' },
+      segments: [{ id, text: item.source, kind: 'paragraph', contextPath: 'Chapter 1' }],
+    });
+    store.saveManualEdit(project.projectId, id, item.translation);
+    ensureTestContextGraph(store, project);
+    const report = runProjectQualityAudit(project.projectId);
+    assert.ok(report.findings.some((finding) => finding.type === 'english-residue' && finding.segmentIds.includes(id) && finding.residueExamples.includes(item.residue)), item.sourceLang + ' short greeting residue should be surfaced for review');
+  }
+});
