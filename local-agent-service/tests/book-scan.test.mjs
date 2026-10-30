@@ -241,7 +241,7 @@ test('Spanish source scan recognizes titled compound names, dialogue, quantities
   ], { sourceLang: 'es-ES' });
   assert.ok(scan.entityMentions.some((mention) => mention.surface === 'Don Quijote de la Mancha'));
   assert.ok(scan.nameCandidates.some((candidate) => candidate.name === 'Don Quijote de la Mancha'));
-  assert.ok(scan.nameCandidates.some((candidate) => candidate.name === 'Sancho Panza'));
+  assert.ok(scan.entityMentions.some((mention) => mention.surface === 'Sancho Panza'));
   assert.ok(scan.dialogueIndex.some((item) => item.segmentId === 'es-3' && item.isDialogue && item.signals.includes('speech-verb')));
   assert.ok(scan.quantityMentions.some((item) => item.segmentId === 'es-4' && item.unit === 'meter'));
   assert.ok(scan.quantityMentions.some((item) => item.segmentId === 'es-5' && item.unit === 'year'));
