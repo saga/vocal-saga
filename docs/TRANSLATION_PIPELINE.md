@@ -46,7 +46,7 @@ flowchart TD
 
 统一的是项目、调度、持久化、恢复、输出校验、审校、候选和审计契约；不要求小说、技术文档和短文本使用相同 Prompt。任务类型差异以同一执行器中的显式策略表达，不能按 UI 入口分叉。文学上下文增量对文学模式生效，非文学请求继续使用相同结构化翻译和候选生命周期，但不会把普通术语或代码片段强行建模成人物关系。
 
-文学模式的 Reviewer 保持两个既有职责：Accuracy / Terminology Review 负责可核验的语义与专名问题；Style Review 负责人物声音、叙述风格、语域、节奏和自然表达。中文目标语言下，Chinese Literary Editing（中文文学编辑）作为 Style Review 的内置编辑维度，覆盖代词/所属表达、助词、英文句法残留、翻译腔、冗余、词汇搭配和中文阅读节奏。它适用于小说、散文、回忆录、传记、文学纪实等文学类作品，不是独立 Pipeline Stage，不增加 Reviewer 或模型调用。中文规则仅注入中文目标语言的 Style Review；其他语言不受影响。文风建议仍按可选候选保存，不静默覆盖已接受译文。详见仓库根目录 [CHINESE-LITERARY-EDITING-PLAN.md](../CHINESE-LITERARY-EDITING-PLAN.md)。
+文学模式仍复用两个既有 Reviewer 任务，不新增 Agent 或模型调用。非中文目标语言保持原有顺序和行为。中文目标语言下，Style Review 改为真正的中文单语编辑：模型只接收中文初稿、目标语言人物声音描述、已确认中文风格规范和同一来源版本中更早已采纳的中文例句；不接收英文原文、英文引文、源语言人名/别名、源语言术语表、来源摘要或前文原文。编辑 finding 必须引用中文初稿中的 `targetExcerpt`。编辑候选随后交给 Accuracy / Terminology Review，与原文和初译对照复核；初译仅作为变化比较，不作为正确答案。只有双语复核完成的中文编辑候选才能被用户采纳，未完成复核时 Store 会拒绝应用。文风建议始终保持 pending，不静默覆盖已接受译文。详见根目录 [VOCAL-SAGA-LOCAL-AGENT-CHINESE-LITERARY-EDITING-RESEARCH-AND-IMPROVEMENT-PLAN-2026-10-31.md](../VOCAL-SAGA-LOCAL-AGENT-CHINESE-LITERARY-EDITING-RESEARCH-AND-IMPROVEMENT-PLAN-2026-10-31.md)。
 
 ## 2. 初译响应契约
 
