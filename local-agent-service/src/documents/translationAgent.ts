@@ -1541,6 +1541,7 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
       }
       const reviewedItems = batch.filter((item) => translations.has(item.id));
       const initialDrafts = new Map(reviewedItems.map((item) => [item.id, translations.get(item.id)!]));
+      const chineseEditorialCandidateIds = new Set<string>();
       if (!reviewedItems.length) {
         store.appendEvent(projectId, runId, 'batch.completed', {
           batchIndex, batchCount: batches.length, candidateCount: translations.size,
@@ -1641,6 +1642,7 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
             for (const [id, edited] of Object.entries(styleReview.translations || {})) {
               if (typeof edited === 'string' && edited.trim() && reviewedItems.some((item) => item.id === id)) {
                 translations.set(id, edited);
+                if (edited !== initialDrafts.get(id)) chineseEditorialCandidateIds.add(id);
               }
             }
           }
@@ -1743,6 +1745,26 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
         }
         const revisedCount = revisedCandidates.length;
         for (const item of revisedCandidates) translations.set(item.segmentId, item.text);
+        if (chineseEditorialCandidateIds.size) {
+          const correctedIds = new Set(revisedCandidates.map((item) => item.segmentId));
+          const reviewedIds = new Set(review.reviewedIds || []);
+          const missingIds = new Set(review.missingIds || []);
+          const editorialResults = Array.from(chineseEditorialCandidateIds)
+            .filter((id) => reviewedIds.has(id) && !missingIds.has(id) && typeof translations.get(id) === 'string')
+            .map((segmentId) => ({
+              segmentId,
+              status: correctedIds.has(segmentId) ? 'corrected' as const : 'verified' as const,
+              proposedTranslation: translations.get(segmentId)!,
+            }));
+          const marked = store.markChineseEditorialFindingsReviewed(projectId, runId, editorialResults);
+          if (!marked) {
+            store.appendEvent(projectId, runId, 'review.discarded', {
+              batchIndex, stage: 'chinese-literary-editing',
+              reason: 'Run left active state before bilingual verification status commit',
+            });
+            return;
+          }
+        }
         store.appendEvent(projectId, runId, 'stage.completed', {
           stage: 'review',
           batchIndex,
