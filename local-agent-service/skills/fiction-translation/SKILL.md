@@ -25,7 +25,7 @@ Use this skill only for literary documents (novels, stories, memoir, dialogue-he
 - The editor input contains only segment ID, Chinese draft, segment kind/path and target-only memory. The source text is omitted from the model prompt even though the service retains it for later bilingual verification and audit.
 - Target-only memory strips canonical source names, aliases, source quotations, source evidence, relationships, source summaries, source glossary forms and source dialogue. It retains confirmed Chinese style guidance, Chinese character names, target-language voice descriptions and approved Chinese dialogue examples.
 - Every style finding must quote a continuous `targetExcerpt` from the exact Chinese draft. The complete edited paragraph is stored as a pending `proposedTranslation`; it is not automatically written over the accepted translation.
-- The subsequent bilingual accuracy/terminology reviewer receives the edited candidate as its draft and the original source. If the editor fails, the original draft proceeds unchanged. If bilingual review fails, the style proposal remains pending and the run records the review warning; it is not marked as bilingual-verified.
+- The subsequent bilingual accuracy/terminology reviewer receives the edited candidate as its draft and the original source plus the initial draft as comparison context. The initial draft is not treated as authoritative; the source remains the fidelity reference. If the editor fails, the original draft proceeds unchanged. If bilingual review fails, the style proposal remains pending and the run records the review warning; it is not marked as bilingual-verified.
 - Non-Chinese literary targets retain the existing review behavior.
 
 ## Memory contract
