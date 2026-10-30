@@ -80,15 +80,52 @@ const NAME_STOP_WORDS = new Set([
   'us','very','was','we','were','what','when','where','which','while','who','why','will','with','would','yes',
   'you','your','suddenly','however','perhaps','indeed','well','still','yet','finally','mr','mrs','ms','miss',
   'dr','prof','captain','capt','sir','lord','lady','warden','archivist',
+  'le','la','les','un','une','des','du','de','et','à','au','aux','en','dans','sur','avec','pour','par','pas',
+  'ne','que','qui','dont','je','tu','il','elle','nous','vous','ils','elles','est','sont','était','été','mais',
+  'donc','alors','ainsi','bonjour','bonsoir','merci','monsieur','madame','mademoiselle','oui','non',
+  'der','die','das','den','dem','des','ein','eine','einer','eines','einem','und','oder','aber','auch','nicht',
+  'doch','mit','für','von','zu','zum','zur','im','am','auf','aus','bei','nach','vor','über','unter','zwischen',
+  'ist','war','sind','waren','wird','werden','hat','haben','ich','du','er','es','wir','ihr','man','wie','was',
+  'wer','wann','wo','wenn','weil','dass','denn','sagte','fragte','hallo','danke','nein','ja','ach','so',
+  'il','lo','i','gli','uno','una','di','da','del','della','dei','degli','delle','e','o','ma','anche',
+  'non','che','chi','cui','per','con','su','tra','fra','è','era','sono','sei','ha','hanno','io','tu',
+  'lui','lei','noi','voi','loro','questo','quella','quello','ciao','grazie','signore','signora','sì',
+  '彼女','彼ら','私達','自分','先生','友人','男性','女性','人物','家族','父親','母親','少年','少女','子供',
+  '老人','警察','会社','学校','時間','場所','部屋','人々',
 ]);
-const ARTICLE_PREFIX_WORDS = new Set(['the','a','an']);
+const ARTICLE_PREFIX_WORDS = new Set([
+  'the','a','an','le','la','les','un','une','der','die','das','den','dem','ein','eine',
+  'il','lo','i','gli','uno','una',
+]);
 const TITLE_PREFIX_WORDS = new Set([
   'mr','mrs','ms','miss','dr','prof','sir','lord','lady','captain','capt',
+  'm','mme','mlle','monsieur','madame','mademoiselle','herr','frau','fräulein',
+  'sig','signor','signora','signorina','dott','dottore','capitano','kapitän','könig','königin',
 ]);
-const SPEECH_VERBS = /\b(said|asked|replied|answered|whispered|shouted|murmured|called|cried|snapped|remarked|wondered|added|insisted|began|continued|laughed|sighed|told)\b/i;
-const NAME_PATTERN = /\b\p{Lu}\p{Ll}{2,}(?:[’'-]\p{Lu}?\p{Ll}+)*\b/gu;
-const COMPOUND_NAME_PATTERN = /\b\p{Lu}\p{Ll}{2,}(?:[’'-]\p{Lu}?\p{Ll}+)*(?:\s+\p{Lu}\p{Ll}{2,}(?:[’'-]\p{Lu}?\p{Ll}+)*){1,2}\b/gu;
-const TITLED_NAME_PATTERN = /\b(?:[Tt]he|[Aa]|[Aa]n|[Mm]r\.?|[Mm]rs\.?|[Mm]s\.?|[Mm]iss|[Dd]r\.?|[Pp]rof\.?|[Ss]ir|[Ll]ord|[Ll]ady|[Cc]aptain|[Cc]apt\.?|[Kk]ing|[Qq]ueen|[Pp]rince|[Pp]rincess|[Gg]eneral|[Cc]olonel|[Mm]ajor|[Ss]ergeant)\s+\p{Lu}\p{Ll}{2,}(?:[’'-]\p{Lu}?\p{Ll}+)*(?:\s+\p{Lu}\p{Ll}{2,}(?:[’'-]\p{Lu}?\p{Ll}+)*)?\b/gu;
+const SPEECH_VERBS_BY_LANGUAGE: Record<string, RegExp> = {
+  en: /\b(said|asked|replied|answered|whispered|shouted|murmured|called|cried|snapped|remarked|wondered|added|insisted|began|continued|laughed|sighed|told)\b/iu,
+  fr: /(?<![\p{L}])(?:dit|demanda|répondit|répliqua|murmura|chuchota|cria|s'écria|ajouta|poursuivit|continua|insista|soupira|raconta)(?![\p{L}])/iu,
+  de: /(?<![\p{L}])(?:sagte|fragte|antwortete|erwiderte|flüsterte|rief|schrie|murmelte|meinte|fügte|erklärte|lachte|seufzte|erzählte)(?![\p{L}])/iu,
+  it: /(?<![\p{L}])(?:disse|chiese|rispose|sussurrò|urlò|gridò|mormorò|esclamò|aggiunse|continuò|insistette|sospirò|raccontò|replicò)(?![\p{L}])/iu,
+};
+const NAME_PATTERN = /(?<![\p{L}\p{N}])\p{Lu}\p{Ll}{2,}(?:[’'-]\p{Lu}?\p{Ll}+)*(?![\p{L}\p{N}])/gu;
+const COMPOUND_NAME_PATTERN = /(?<![\p{L}\p{N}])\p{Lu}\p{Ll}{2,}(?:[’'-]\p{Lu}?\p{Ll}+)*(?:\s+\p{Lu}\p{Ll}{2,}(?:[’'-]\p{Lu}?\p{Ll}+)*){1,2}(?![\p{L}\p{N}])/gu;
+const TITLED_NAME_PATTERN = /(?<![\p{L}\p{N}])(?:[Tt]he|[Aa]|[Aa]n|[Mm]r\.?|[Mm]rs\.?|[Mm]s\.?|[Mm]iss|[Dd]r\.?|[Pp]rof\.?|[Ss]ir|[Ll]ord|[Ll]ady|[Cc]aptain|[Cc]apt\.?|[Kk]ing|[Qq]ueen|[Pp]rince|[Pp]rincess|[Gg]eneral|[Cc]olonel|[Mm]ajor|[Ss]ergeant|Monsieur|Madame|Mademoiselle|M\.|Mme\.?|Mlle\.?|Herr|Frau|Fräulein|Signor(?:a|ina)?|Sig\.?|Dott\.?|Dottore|Capitano|Kapitän|König|Königin|Regina)\s+\p{Lu}\p{Ll}{2,}(?:[’'-]\p{Lu}?\p{Ll}+)*(?:\s+\p{Lu}\p{Ll}{2,}(?:[’'-]\p{Lu}?\p{Ll}+)*)?(?![\p{L}\p{N}])/gu;
+const JAPANESE_NAME_PATTERN = /(?<![\p{Script=Han}])[\p{Script=Han}]{2,4}(?=(?:さん|様|氏|君|殿|先生))/gu;
+const JAPANESE_KATAKANA_NAME_PATTERN = /(?<![\p{L}\p{N}])[\p{Script=Katakana}ー]{2,8}(?=(?:さん|様|氏|君))/gu;
+function sourceLanguageCode(value: string | undefined, text = ''): string {
+  const raw = String(value || '').trim().toLocaleLowerCase();
+  const primary = raw.split(/[-_]/u)[0] || 'en';
+  const aliases: Record<string, string> = {
+    english:'en',eng:'en',french:'fr',français:'fr',fra:'fr',fre:'fr',
+    german:'de',deutsch:'de',deu:'de',ger:'de',italian:'it',italiano:'it',ita:'it',
+    japanese:'ja',日本語:'ja',jpn:'ja',chinese:'zh',中文:'zh',zho:'zh',
+  };
+  if (!raw || ['auto','unknown','und'].includes(raw)) {
+    return /[\p{Script=Hiragana}\p{Script=Katakana}]/u.test(text) ? 'ja' : 'en';
+  }
+  return aliases[raw] || aliases[primary] || primary;
+}
 const QUANTITY_UNITS: Array<{ pattern: RegExp; unit: string; family: string }> = [
   { pattern: /^inches?$/i, unit: 'inch', family: 'length' }, { pattern: /^(feet|foot)$/i, unit: 'foot', family: 'length' },
   { pattern: /^miles?$/i, unit: 'mile', family: 'length' }, { pattern: /^centimeters?$/i, unit: 'centimeter', family: 'length' },
