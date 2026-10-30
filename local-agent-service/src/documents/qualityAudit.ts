@@ -667,41 +667,58 @@ function terminologyFindings(
 // Catch likely source-language residue in Chinese translations. This is deliberately a review hint:
 // Latin names, short isolated tokens not in the watchlist, and all stylistic decisions remain untouched.
 const ENGLISH_RESIDUE_WORDS = new Set([
-  'again', 'although', 'already', 'anyway', 'because', 'before', 'behind', 'between', 'beyond',
-  'could', 'during', 'ever', 'however', 'indeed', 'instead', 'later', 'maybe', 'might', 'must',
-  'never', 'nothing', 'perhaps', 'rather', 'really', 'should', 'since', 'still', 'though',
-  'through', 'until', 'unless', 'whether', 'while', 'would',
+  'again','although','already','anyway','because','before','behind','between','beyond','could','during',
+  'ever','however','indeed','instead','later','maybe','might','must','never','nothing','perhaps','rather',
+  'really','should','since','still','though','through','until','unless','whether','while','would',
 ]);
 const ENGLISH_FUNCTION_WORDS = new Set([
-  'a', 'an', 'and', 'are', 'as', 'at', 'be', 'been', 'but', 'by', 'can', 'did', 'do', 'does',
-  'for', 'from', 'had', 'has', 'have', 'he', 'her', 'him', 'his', 'how', 'i', 'if', 'in', 'is',
-  'it', 'its', 'me', 'my', 'no', 'not', 'of', 'on', 'or', 'our', 'she', 'so', 'than', 'that',
-  'the', 'their', 'them', 'then', 'there', 'they', 'this', 'to', 'was', 'we', 'were', 'what',
-  'when', 'where', 'which', 'who', 'will', 'with', 'you', 'your',
+  'a','an','and','are','as','at','be','been','but','by','can','did','do','does','for','from','had','has',
+  'have','he','her','him','his','how','i','if','in','is','it','its','me','my','no','not','of','on','or',
+  'our','she','so','than','that','the','their','them','then','there','they','this','to','was','we','were',
+  'what','when','where','which','who','will','with','you','your',
 ]);
-
+const RESIDUE_WORDS_BY_SOURCE_LANG: Record<string, Set<string>> = {
+  fr: new Set(['déjà','était','étaient','encore','alors','pourtant','toujours','jamais','peut-être','bonjour','bonsoir','merci','oui','non','voilà','ainsi','très','mais','donc','parce','pourquoi']),
+  de: new Set(['schön','schon','nicht','doch','auch','aber','oder','und','der','die','das','ein','eine','ich','du','er','sie','wir','ihr','ja','nein','danke','hallo','ach','also','noch','schon','wieder','immer','nie','weil','wenn','dass','was','wie']),
+  it: new Set(['allora','perché','perche','però','pero','già','gia','ancora','sempre','mai','ciao','grazie','sì','si','no','non','che','come','dunque','quindi','anche','molto','era','sono']),
+  ja: new Set(),
+};
+const FUNCTION_WORDS_BY_SOURCE_LANG: Record<string, Set<string>> = {
+  en: ENGLISH_FUNCTION_WORDS,
+  fr: new Set(['je','tu','il','elle','nous','vous','ils','elles','le','la','les','un','une','des','de','du','et','mais','pas','ne','que','qui','dans','pour','avec','est','sont','était','était']),
+  de: new Set(['ich','du','er','sie','es','wir','ihr','der','die','das','ein','eine','und','oder','aber','nicht','mit','von','zu','ist','war','sind','hat','haben','dass','weil','wenn','was','wie']),
+  it: new Set(['io','tu','lui','lei','noi','voi','loro','il','lo','la','i','gli','le','un','una','di','da','e','ma','non','che','per','con','è','era','sono','ha']),
+};
 function englishResidueFindings(
   segments: Array<{ id: string; text: string; contextPath: string }>,
   translations: Map<string, string>,
   targetLang: string,
+  sourceLang = 'en',
 ): any[] {
   if (!/^(?:zh(?:[-_].*)?|chinese|中文|简体中文|繁体中文)$/iu.test(String(targetLang || '').trim())) return [];
+  const language = normalizeAuditLanguage(sourceLang);
+  const residueWords = RESIDUE_WORDS_BY_SOURCE_LANG[language] || ENGLISH_RESIDUE_WORDS;
+  const functionWords = FUNCTION_WORDS_BY_SOURCE_LANG[language] || ENGLISH_FUNCTION_WORDS;
+  const phrasePattern = /(?<![\p{L}\p{M}])(?:[\p{Script=Latin}][\p{Script=Latin}\p{M}'’-]*\s+){1,}[\p{Script=Latin}][\p{Script=Latin}\p{M}'’-]*(?![\p{L}\p{M}])/gu;
+  const wordPattern = /(?<![\p{L}\p{M}])[\p{Script=Latin}][\p{Script=Latin}\p{M}'’-]*(?![\p{L}\p{M}])/gu;
+  const japaneseResiduePattern = /[\p{Script=Hiragana}\p{Script=Katakana}ー]{2,}/gu;
   const findings: any[] = [];
-  const phrasePattern = /\b(?:[A-Za-z][A-Za-z'-]*\s+){2,}[A-Za-z][A-Za-z'-]*\b/g;
-  const wordPattern = /\b[A-Za-z][A-Za-z'-]*\b/g;
   for (const segment of segments) {
     const translation = translations.get(segment.id) || '';
     if (!translation.trim()) continue;
     const residues = new Set<string>();
     for (const match of translation.matchAll(phrasePattern)) {
       const phrase = match[0].trim();
-      const words: string[] = phrase.split(/\s+/u).filter((word) => word.length > 0);
-      const hasFunctionWord = words.some((word) => ENGLISH_FUNCTION_WORDS.has(word.toLocaleLowerCase()));
+      const words = phrase.split(/\s+/u).filter((word) => word.length > 0);
+      const hasFunctionWord = words.some((word) => functionWords.has(word.toLocaleLowerCase()));
       if (words.length >= 4 || hasFunctionWord) residues.add(phrase);
     }
     for (const match of translation.matchAll(wordPattern)) {
-      const word: string = String(match[0] || '');
-      if (ENGLISH_RESIDUE_WORDS.has(word.toLocaleLowerCase())) residues.add(word);
+      const word = String(match[0] || '').toLocaleLowerCase();
+      if (residueWords.has(word)) residues.add(String(match[0] || ''));
+    }
+    if (language === 'ja') {
+      for (const match of translation.matchAll(japaneseResiduePattern)) residues.add(match[0]);
     }
     if (!residues.size) continue;
     const examples = Array.from(residues).slice(0, 5);
@@ -717,7 +734,7 @@ function englishResidueFindings(
       sourceExcerpt: segment.text.slice(0, 240),
       translationExcerpt: translation.slice(0, 360),
       residueExamples: examples,
-      explanation: '中文译文里仍存在疑似未翻译的英文词或短语。专名、刻意保留的外语表达也可能命中；请检查原文与上下文后再决定是否定点返工。',
+      explanation: '中文译文里仍存在疑似未翻译的源语言词语或短语。人名、专名和刻意保留的外语表达也可能命中；日文汉字与中文汉字无法仅凭字形可靠区分，请结合上下文人工判断。',
     });
   }
   return findings;
