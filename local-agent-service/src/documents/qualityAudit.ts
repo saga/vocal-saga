@@ -83,14 +83,26 @@ const ITALIAN_NUMBER_VALUES: Record<string, number> = {
   diciotto:18, diciannove:19, venti:20, trenta:30, quaranta:40, cinquanta:50, sessanta:60,
   settanta:70, ottanta:80, novanta:90,
 };
+const SPANISH_NUMBER_VALUES: Record<string, number> = {
+  cero:0, un:1, uno:1, una:1, dos:2, tres:3, cuatro:4, cinco:5, seis:6, siete:7, ocho:8, nueve:9,
+  diez:10, once:11, doce:12, trece:13, catorce:14, quince:15, dieciseis:16, 'dieciséis':16,
+  diecisiete:17, dieciocho:18, diecinueve:19, veinte:20, veintiuno:21, veintiun:21, 'veintiún':21,
+  veintiuna:21, veintidos:22, 'veintidós':22, veintitres:23, 'veintitrés':23, veinticuatro:24,
+  veinticinco:25, veintiseis:26, 'veintiséis':26, veintisiete:27, veintiocho:28, veintinueve:29,
+  treinta:30, cuarenta:40, cincuenta:50, sesenta:60, setenta:70, ochenta:80, noventa:90,
+  doscientos:200, trescientos:300, cuatrocientos:400, quinientos:500, seiscientos:600,
+  setecientos:700, ochocientos:800, novecientos:900,
+};
 const FRENCH_NUMBER_SCALES: Record<string, number> = { cent:100, cents:100, mille:1_000, million:1_000_000, millions:1_000_000 };
 const GERMAN_NUMBER_SCALES: Record<string, number> = { hundert:100, tausend:1_000, million:1_000_000, millionen:1_000_000 };
 const ITALIAN_NUMBER_SCALES: Record<string, number> = { cento:100, mille:1_000, mila:1_000, milione:1_000_000, milioni:1_000_000 };
+const SPANISH_NUMBER_SCALES: Record<string, number> = { cien:100, ciento:100, mil:1_000, millón:1_000_000, millones:1_000_000, billón:1_000_000_000, billones:1_000_000_000 };
 const NUMBER_LEXICONS: Record<string, { values: Record<string, number>; scales: Record<string, number>; joiners: Set<string>; units: Set<string> }> = {
   en: { values:ENGLISH_NUMBER_VALUES, scales:ENGLISH_NUMBER_SCALES, joiners:new Set(['and']), units:ENGLISH_QUANTITY_UNITS },
   fr: { values:FRENCH_NUMBER_VALUES, scales:FRENCH_NUMBER_SCALES, joiners:new Set(['et']), units:new Set(['pouce','pouces','pied','pieds','mille','milles','mètre','mètres','centimètre','centimètres','kilomètre','kilomètres','seconde','secondes','minute','minutes','heure','heures','jour','jours','semaine','semaines','mois','an','ans','année','années','degré','degrés','livre','livres','kilogramme','kilogrammes','gramme','grammes','litre','litres']) },
   de: { values:GERMAN_NUMBER_VALUES, scales:GERMAN_NUMBER_SCALES, joiners:new Set(['und']), units:new Set(['zoll','fuß','meile','meilen','meter','metern','zentimeter','millimeter','kilometer','sekunde','sekunden','minute','minuten','stunde','stunden','tag','tage','woche','wochen','monat','monate','jahr','jahre','grad','pfund','kilogramm','gramm','liter']) },
   it: { values:ITALIAN_NUMBER_VALUES, scales:ITALIAN_NUMBER_SCALES, joiners:new Set(['e']), units:new Set(['pollice','pollici','piede','piedi','miglio','miglia','metro','metri','centimetro','centimetri','chilometro','chilometri','secondo','secondi','minuto','minuti','ora','ore','giorno','giorni','settimana','settimane','mese','mesi','anno','anni','grado','gradi','libbra','libbre','chilogrammo','chilogrammi','grammo','grammi','litro','litri']) },
+  es: { values:SPANISH_NUMBER_VALUES, scales:SPANISH_NUMBER_SCALES, joiners:new Set(['y']), units:new Set(['pulgada','pulgadas','pie','pies','milla','millas','centímetro','centímetros','milímetro','milímetros','kilómetro','kilómetros','metro','metros','segundo','segundos','minuto','minutos','hora','horas','día','días','semana','semanas','mes','meses','año','años','grado','grados','libra','libras','kilogramo','kilogramos','gramo','gramos','litro','litros','persona','personas']) },
 };
 const CHINESE_MEASURE_UNIT = /^(?:英寸|寸|英尺|尺|厘米|毫米|米|公里|千米|小时|分钟|秒钟|秒|天|周|星期|个月|月|年|岁|公斤|千克|克|升|毫升|度|百分比|百分之|インチ|フィート|マイル|センチメートル|ミリメートル|キロメートル|メートル|時間|週間|週|ヶ月|か月|キログラム|グラム|リットル)/u;
 const CHINESE_COUNT_UNIT = /^(?:个|只|件|位|本|支|张|颗|条|头|匹|座|扇|间|辆|名|次|人|回|遍|边|つ|人|匹|冊|本|個|台|枚)/u;
@@ -103,13 +115,16 @@ function normalizeAuditLanguage(value: string, sampleText = ''): string {
   const aliases: Record<string, string> = {
     english:'en',eng:'en',french:'fr',français:'fr',fra:'fr',fre:'fr',
     german:'de',deutsch:'de',deu:'de',ger:'de',italian:'it',italiano:'it',ita:'it',
+    spanish:'es',español:'es',espanol:'es',castellano:'es',spa:'es',
     japanese:'ja',日本語:'ja',jpn:'ja',chinese:'zh',中文:'zh',zho:'zh',
   };
   if (aliases[raw] || aliases[primary]) return aliases[raw] || aliases[primary]!;
   if (!raw || ['auto','unknown','und'].includes(primary)) {
     if (/[\p{Script=Hiragana}\p{Script=Katakana}]/u.test(sampleText)) return 'ja';
     const sample = sampleText.toLocaleLowerCase();
+    if (/[ñ¿¡]/u.test(sample)) return 'es';
     const scores: Record<string, number> = {
+      es: (sample.match(/\b(?:el|los|las|una|unos|unas|y|que|con|para|por|pero|porque|del|al|se|es|son|está|están|fue|dijo|ella|ellos|nosotros|usted|muy|también|años|cada|todo)\b/gu) || []).length,
       fr: (sample.match(/\b(?:le|la|les|une|des|est|et|que|qui|avec|dans|pour|pas|mais|je|elle|vous|nous)\b/gu) || []).length,
       de: (sample.match(/\b(?:der|die|das|ein|eine|und|ist|mit|nicht|ich|war|hat|zu|von|dem|den|er|sie|drei|zwei|vier|fünf)\b/gu) || []).length,
       it: (sample.match(/\b(?:il|lo|gli|sono|che|non|una|per|con|della|era|dove|ma|voi|noi)\b/gu) || []).length,
@@ -208,7 +223,14 @@ const QUANTITY_UNIT_CANONICAL: Record<string, string> = {
   second:'time:second', seconds:'time:second', 秒:'time:second', 秒钟:'time:second', seconde:'time:second', secondes:'time:second', sekunde:'time:second', sekunden:'time:second', secondo:'time:second', secondi:'time:second',
   day:'time:day', days:'time:day', 天:'time:day', jour:'time:day', jours:'time:day', tag:'time:day', tage:'time:day', giorno:'time:day', giorni:'time:day', 日:'time:day',
   week:'time:week', weeks:'time:week', 周:'time:week', 星期:'time:week', semaine:'time:week', semaines:'time:week', woche:'time:week', wochen:'time:week', settimana:'time:week', settimane:'time:week', 週:'time:week',
-  month:'time:month', months:'time:month', 月:'time:month', '个月':'time:month', mois:'time:month', monat:'time:month', monate:'time:month', mese:'time:month', mesi:'time:month',
+  month:'time:month', months:'time:month', 月:'time:month', '个月':'time:month', mois:'time:month', monat:'time:month', monate:'time:month', mese:'time:month', mesi:'time:month', mes:'time:month', meses:'time:month',
+  pulgada:'length:inch', pulgadas:'length:inch', pie:'length:foot', pies:'length:foot', milla:'length:mile', millas:'length:mile',
+  'centímetro':'length:centimeter', 'centímetros':'length:centimeter', 'milímetro':'length:millimeter', 'milímetros':'length:millimeter',
+  'kilómetro':'length:kilometer', 'kilómetros':'length:kilometer', metro:'length:meter', metros:'length:meter',
+  segundo:'time:second', segundos:'time:second', minuto:'time:minute', minutos:'time:minute', hora:'time:hour', horas:'time:hour',
+  día:'time:day', días:'time:day', semana:'time:week', semanas:'time:week', año:'time:year', años:'time:year',
+  grado:'angle:degree', grados:'angle:degree', libra:'weight:pound', libras:'weight:pound', kilogramo:'weight:kilogram', kilogramos:'weight:kilogram',
+  gramo:'weight:gram', gramos:'weight:gram', litro:'volume:liter', litros:'volume:liter',
   year:'time:year', years:'time:year', 年:'time:year', 岁:'time:year', an:'time:year', ans:'time:year', jahr:'time:year', jahre:'time:year', anno:'time:year', anni:'time:year',
   degree:'angle:degree', degrees:'angle:degree', 度:'angle:degree', degré:'angle:degree', degrés:'angle:degree', grad:'angle:degree', grado:'angle:degree', gradi:'angle:degree',
   pound:'weight:pound', pounds:'weight:pound', livre:'weight:pound', livres:'weight:pound', pfund:'weight:pound', libbra:'weight:pound', libbre:'weight:pound',
@@ -221,6 +243,7 @@ const LOCALIZED_QUANTITY_UNIT_PATTERNS: Record<string, RegExp> = {
   fr: /(?:\d+(?:[,.]\d+)*|zéro|un|une|deux|trois|quatre|cinq|six|sept|huit|neuf|dix|onze|douze|treize|quatorze|quinze|seize|vingt|trente|quarante|cinquante|soixante|cent|mille)(?:[\s-]+(?:et[\s-]+)?(?:un|une|deux|trois|quatre|cinq|six|sept|huit|neuf|dix|onze|douze|treize|quatorze|quinze|seize|vingt|trente|cent|mille))*[\s-]+([\p{Script=Latin}\p{M}]+)/giu,
   de: /(?:\d+(?:[,.]\d+)*|null|ein|eine|eins|zwei|drei|vier|fünf|sechs|sieben|acht|neun|zehn|elf|zwölf|zwanzig|dreißig|vierzig|fünfzig|sechzig|siebzig|achtzig|neunzig|hundert|tausend)(?:[\s-]+(?:und[\s-]+)?(?:ein|eine|eins|zwei|drei|vier|fünf|sechs|sieben|acht|neun|zehn|elf|zwölf|zwanzig|hundert|tausend))*[\s-]+([\p{Script=Latin}\p{M}]+)/giu,
   it: /(?:\d+(?:[,.]\d+)*|zero|uno|una|un|due|tre|quattro|cinque|sei|sette|otto|nove|dieci|undici|dodici|tredici|quattordici|quindici|sedici|venti|trenta|quaranta|cinquanta|sessanta|settanta|ottanta|novanta|cento|mille)(?:[\s-]+(?:e[\s-]+)?(?:uno|una|due|tre|quattro|cinque|sei|sette|otto|nove|dieci|venti|trenta|cento|mille))*[\s-]+([\p{Script=Latin}\p{M}]+)/giu,
+  es: /(?:\d+(?:[,.]\d+)*|cero|un|uno|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce|trece|catorce|quince|dieciséis|dieciseis|diecisiete|dieciocho|diecinueve|veinte|veintiuno|veintiún|veintiun|veintiuna|veintidós|veintidos|veintitrés|veintitres|veinticuatro|veinticinco|veintiséis|veintiseis|veintisiete|veintiocho|veintinueve|treinta|cuarenta|cincuenta|sesenta|setenta|ochenta|noventa|cien|ciento|mil|millón|millones)(?:[\s-]+(?:y[\s-]+)?(?:un|uno|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce|trece|catorce|quince|veinte|veintidós|veintidos|veintitrés|veintitres|treinta|cuarenta|cincuenta|sesenta|setenta|ochenta|noventa|cien|ciento|mil|millón|millones))*[\s-]+([\p{Script=Latin}\p{M}]+)/giu,
   ja: /(?:\d+(?:[,.]\d+)*|[零〇一二两三四五六七八九十百千万億]+)\s*([\p{Script=Katakana}ー]+)/gu,
 };
 function numericQuantityUnits(value: unknown, sourceLang = 'en'): string[] {
@@ -703,6 +726,7 @@ const RESIDUE_WORDS_BY_SOURCE_LANG: Record<string, Set<string>> = {
   fr: new Set(['déjà','était','étaient','encore','alors','pourtant','toujours','jamais','peut-être','bonjour','bonsoir','merci','salut','oui','non','voilà','ainsi','très','mais','donc','parce','pourquoi']),
   de: new Set(['schön','schon','nicht','doch','auch','aber','oder','und','der','die','das','ein','eine','ich','du','er','sie','wir','ihr','ja','nein','danke','hallo','ach','also','noch','schon','wieder','immer','nie','weil','wenn','dass','was','wie']),
   it: new Set(['allora','perché','perche','però','pero','già','gia','ancora','sempre','mai','ciao','grazie','buongiorno','buonasera','salve','sì','si','no','non','che','come','dunque','quindi','anche','molto','era','sono']),
+  es: new Set(['todavía','todavia','aunque','entonces','porque','porqué','quizá','quizás','siempre','nunca','ahora','pero','además','ademas','también','tambien','después','despues','antes','bien','hola','adiós','adios','gracias','buenos','buenas','días','dias','tardes','noches','señor','señora','qué','quién','cómo','dónde','cuándo','sí','si','no']),
   ja: new Set(),
 };
 const FUNCTION_WORDS_BY_SOURCE_LANG: Record<string, Set<string>> = {
@@ -710,6 +734,7 @@ const FUNCTION_WORDS_BY_SOURCE_LANG: Record<string, Set<string>> = {
   fr: new Set(['je','tu','il','elle','nous','vous','ils','elles','le','la','les','un','une','des','de','du','et','mais','pas','ne','que','qui','dans','pour','avec','est','sont','était','était']),
   de: new Set(['ich','du','er','sie','es','wir','ihr','der','die','das','ein','eine','und','oder','aber','nicht','mit','von','zu','ist','war','sind','hat','haben','dass','weil','wenn','was','wie']),
   it: new Set(['io','tu','lui','lei','noi','voi','loro','il','lo','la','i','gli','le','un','una','di','da','e','ma','non','che','per','con','è','era','sono','ha']),
+  es: new Set(['yo','tú','él','ella','ellos','ellas','nosotros','nosotras','ustedes','vosotros','vosotras','el','la','los','las','un','una','unos','unas','de','del','al','y','o','pero','porque','por','para','con','sin','en','sobre','entre','que','quien','quién','quienes','quiénes','como','cómo','cuando','cuándo','donde','dónde','no','sí','si','es','son','está','están','era','fue','ser','estar','se','me','te','nos','os','lo','le','les','mi','mis','su','sus','muy','más','menos','también','todo','cada']),
 };
 function englishResidueFindings(
   segments: Array<{ id: string; text: string; contextPath: string }>,
