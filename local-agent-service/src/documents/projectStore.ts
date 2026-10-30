@@ -2049,6 +2049,58 @@ export class DocumentProjectStore {
     return this.saveCandidates(projectId, runId, [], findings);
   }
 
+  /**
+   * Mark source-blind Chinese editing proposals only after the corresponding bilingual
+   * accuracy review has returned a complete result. The final verified candidate replaces
+   * the pre-review proposal so the user never applies a stale intermediate edit.
+   */
+  markChineseEditorialFindingsReviewed(
+    projectId: string,
+    runId: string,
+    results: Array<{ segmentId: string; status: 'verified' | 'corrected'; proposedTranslation: string }>,
+  ): boolean {
+    if (!Array.isArray(results) || results.length > 1000) {
+      throw Object.assign(new Error('中文编辑复核结果必须是最多 1000 条记录的数组'), { status: 400 });
+    }
+    const normalized = results.flatMap((item) => {
+      const segmentId = typeof item?.segmentId === 'string' ? item.segmentId.trim() : '';
+      const proposedTranslation = typeof item?.proposedTranslation === 'string' ? item.proposedTranslation.trim() : '';
+      if (!segmentId || !proposedTranslation || proposedTranslation.length > 20000 ||
+          !['verified', 'corrected'].includes(item.status)) return [];
+      return [{ segmentId, status: item.status, proposedTranslation }];
+    });
+    if (!normalized.length) return true;
+    const { db } = this.getProjectContext(projectId);
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      const run = db.prepare('SELECT status FROM translation_runs WHERE run_id = ?').get(runId) as { status?: string } | undefined;
+      if (!run) throw Object.assign(new Error('找不到翻译运行：' + runId), { status: 404 });
+      if (!['queued', 'running'].includes(String(run.status))) {
+        db.exec('ROLLBACK');
+        return false;
+      }
+      const select = db.prepare(
+        "SELECT finding_id, finding_json FROM review_findings WHERE run_id = ? AND segment_id = ? AND category = 'style' AND status = 'pending'",
+      );
+      const update = db.prepare('UPDATE review_findings SET finding_json = ? WHERE finding_id = ?');
+      for (const item of normalized) {
+        const rows = select.all(runId, item.segmentId) as Array<{ finding_id: number; finding_json: string }>;
+        for (const row of rows) {
+          const finding = parseJson<any>(row.finding_json, {});
+          if (finding.editorialMode !== 'chinese-monolingual') continue;
+          finding.bilingualReviewStatus = item.status;
+          finding.proposedTranslation = item.proposedTranslation;
+          update.run(JSON.stringify(finding), row.finding_id);
+        }
+      }
+      db.exec('COMMIT');
+      return true;
+    } catch (error) {
+      try { db.exec('ROLLBACK'); } catch { /* already rolled back */ }
+      throw error;
+    }
+  }
+
   saveFinding(projectId: string, runId: string, segmentId: string, finding: any): void {
     const committed = this.saveFindings(projectId, runId, [{ segmentId, finding }]);
     if (!committed) {
@@ -2089,6 +2141,10 @@ export class DocumentProjectStore {
         throw Object.assign(new Error('这条审校建议属于旧原文版本，不能应用到当前文档'), { status: 409 });
       }
       const finding = parseJson<any>(row.finding_json, {});
+      if (action === 'apply' && finding.editorialMode === 'chinese-monolingual' &&
+          !['verified', 'corrected'].includes(String(finding.bilingualReviewStatus || ''))) {
+        throw Object.assign(new Error('中文编辑建议尚未完成双语忠实度复核，暂时不能采纳。'), { status: 409 });
+      }
 
       if (action === 'apply' && row.finding_status === 'applied' && finding.applicationStatus === 'applied' && finding.appliedResultId) {
         const saved = db.prepare(
