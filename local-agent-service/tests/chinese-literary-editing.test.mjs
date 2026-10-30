@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildChineseLiteraryEditingPrompt, buildChineseTargetOnlyVoiceContext, buildLiteraryReviewPrompt } from '../src/literary.ts';
+import { buildChineseLiteraryEditingPrompt, buildChineseTargetOnlyVoiceContext, buildLiteraryReviewPrompt, isChineseLiteraryFindingGrounded } from '../src/literary.ts';
 
 const base = {
   body: { target: 'zh-CN', chapterTitle: 'Chapter 1' },
@@ -110,6 +110,8 @@ test('target-only voice projection removes source identity, quotations, summarie
 test('Chinese literary editing findings require a quoted target excerpt and do not permit source-based evidence', () => {
   const draft = '而我的身体，我躺着的那一侧，忠实地从过去保存着一种印象。';
   const targetExcerpt = '忠实地从过去保存着一种印象';
-  assert.ok(draft.includes(targetExcerpt));
-  assert.equal(draft.includes('This is an invented English source quote.'), false);
+  assert.equal(isChineseLiteraryFindingGrounded(draft, targetExcerpt), true);
+  assert.equal(isChineseLiteraryFindingGrounded(draft, 'This is an invented English source quote.'), false);
+  assert.equal(isChineseLiteraryFindingGrounded(draft, 'x'), false);
+  assert.equal(isChineseLiteraryFindingGrounded(draft, ''), false);
 });
