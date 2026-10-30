@@ -1540,6 +1540,7 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
         return;
       }
       const reviewedItems = batch.filter((item) => translations.has(item.id));
+      const initialDrafts = new Map(reviewedItems.map((item) => [item.id, translations.get(item.id)!]));
       if (!reviewedItems.length) {
         store.appendEvent(projectId, runId, 'batch.completed', {
           batchIndex, batchCount: batches.length, candidateCount: translations.size,
@@ -1707,6 +1708,7 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
           reviewFocus: 'accuracy',
           segments: reviewedItems.map((item) => ({
             id: item.id, source: item.text, draft: translations.get(item.id)!,
+            initialDraft: initialDrafts.get(item.id),
             kind: item.kind, contextPath: item.contextPath,
           })),
         }, runId + '-review-' + batchIndex, reviewScope);
