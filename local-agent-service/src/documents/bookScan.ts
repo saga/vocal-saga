@@ -87,6 +87,7 @@ const NAME_STOP_WORDS = new Set([
   'doch','mit','für','von','zu','zum','zur','im','am','auf','aus','bei','nach','vor','über','unter','zwischen',
   'ist','war','sind','waren','wird','werden','hat','haben','ich','du','er','es','wir','ihr','man','wie','was',
   'wer','wann','wo','wenn','weil','dass','denn','sagte','fragte','hallo','danke','nein','ja','ach','so',
+  'frau','mann','stadt','zeit','haus','weg','hand','auge','tag','nacht','welt','zimmer','straße','strasse','kind','kinder','leute','mensch',
   'il','lo','i','gli','uno','una','di','da','del','della','dei','degli','delle','e','o','ma','anche',
   'non','che','chi','cui','per','con','su','tra','fra','è','era','sono','sei','ha','hanno','io','tu',
   'lui','lei','noi','voi','loro','questo','quella','quello','ciao','grazie','signore','signora','sì',
