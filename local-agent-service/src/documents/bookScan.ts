@@ -123,7 +123,19 @@ function sourceLanguageCode(value: string | undefined, text = ''): string {
     japanese:'ja',日本語:'ja',jpn:'ja',chinese:'zh',中文:'zh',zho:'zh',
   };
   if (!raw || ['auto','unknown','und'].includes(raw)) {
-    return /[\p{Script=Hiragana}\p{Script=Katakana}]/u.test(text) ? 'ja' : 'en';
+    if (/[\p{Script=Hiragana}\p{Script=Katakana}]/u.test(text)) return 'ja';
+    const sample = text.toLocaleLowerCase();
+    const scores: Record<string, number> = {
+      fr: (sample.match(/\b(?:le|la|les|une|des|est|et|que|qui|avec|dans|pour|pas|mais|je|elle|vous|nous)\b/gu) || []).length,
+      de: (sample.match(/\b(?:der|die|das|ein|eine|und|ist|mit|nicht|ich|war|hat|zu|von|dem|den)\b/gu) || []).length,
+      it: (sample.match(/\b(?:il|lo|gli|sono|che|non|una|per|con|della|era|dove|ma|voi|noi)\b/gu) || []).length,
+    };
+    const ranked = Object.entries(scores).sort((a,b)=>b[1]-a[1]);
+    if (ranked[0] && ranked[0][1] >= 2 && ranked[0][1] > (ranked[1]?.[1] || 0)) return ranked[0][0]!;
+    if (/[ßäöü]/u.test(sample)) return 'de';
+    if (/[çœ]/u.test(sample)) return 'fr';
+    if (/[òì]/u.test(sample)) return 'it';
+    return 'en';
   }
   return aliases[raw] || aliases[primary] || primary;
 }
