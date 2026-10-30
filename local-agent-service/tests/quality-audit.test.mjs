@@ -836,3 +836,69 @@ test('short French and Italian greetings are flagged as possible source-language
     assert.ok(report.findings.some((finding) => finding.type === 'english-residue' && finding.segmentIds.includes(id) && finding.residueExamples.includes(item.residue)), item.sourceLang + ' short greeting residue should be surfaced for review');
   }
 });
+
+test('Spanish numeric audit handles written numbers, inflections, regional aliases and auto detection', () => {
+  const store = getDocumentProjectStore();
+  const cases = [
+    { sourceLang: 'es', source: 'Él caminó tres metros.', translation: '他走了三米。' },
+    { sourceLang: 'es-ES', source: 'Recorrió treinta y dos kilómetros.', translation: '他走了三十二公里。' },
+    { sourceLang: 'español', source: 'Tenía veintiún años.', translation: '他二十一岁。' },
+    { sourceLang: 'auto', source: '¿Caminó tres metros antes de regresar?', translation: '他回来前走了三米。' },
+  ];
+  for (const [index, item] of cases.entries()) {
+    const id = 'spanish-number-' + index;
+    const project = store.createProject({
+      title: 'Spanish Numeric Audit ' + item.sourceLang,
+      format: 'txt',
+      sourceFileName: 'spanish-numeric-' + index + '.txt',
+      prompt: { translationMode: 'literary', sourceLang: item.sourceLang, targetLang: 'zh' },
+      segments: [{ id, text: item.source, kind: 'paragraph', contextPath: 'Capítulo 1' }],
+    });
+    store.saveManualEdit(project.projectId, id, item.translation);
+    ensureTestContextGraph(store, project);
+    const report = runProjectQualityAudit(project.projectId);
+    assert.equal(report.findings.some((finding) =>
+      finding.type === 'numeric-token-mismatch' && finding.segmentIds.includes(id)),
+    false, item.sourceLang + ' correct Spanish quantity should not be reported as a mismatch');
+  }
+
+  const incorrect = store.createProject({
+    title: 'Spanish Numeric Mismatch',
+    format: 'txt',
+    sourceFileName: 'spanish-numeric-mismatch.txt',
+    prompt: { translationMode: 'literary', sourceLang: 'es', targetLang: 'zh' },
+    segments: [{ id: 'es-incorrect-number', text: 'La puerta mide tres metros.', kind: 'paragraph', contextPath: 'Capítulo 1' }],
+  });
+  store.saveManualEdit(incorrect.projectId, 'es-incorrect-number', '这扇门高四米。');
+  ensureTestContextGraph(store, incorrect);
+  const incorrectReport = runProjectQualityAudit(incorrect.projectId);
+  assert.ok(incorrectReport.findings.some((finding) =>
+    finding.type === 'numeric-token-mismatch' && finding.segmentIds.includes('es-incorrect-number')),
+  'a real Spanish number mismatch must remain visible to the audit');
+});
+
+test('Spanish source-language residue audit flags short untranslated phrases in Chinese output', () => {
+  const store = getDocumentProjectStore();
+  const cases = [
+    { sourceLang: 'es', source: 'El hombre sonrió antes de salir.', translation: '他离开前仍然说了 todavía。', residue: 'todavía' },
+    { sourceLang: 'es-MX', source: 'La mujer abrió la puerta.', translation: '她轻声说了 buenos días。', residue: 'buenos' },
+  ];
+  for (const [index, item] of cases.entries()) {
+    const id = 'spanish-residue-' + index;
+    const project = store.createProject({
+      title: 'Spanish Residue Audit ' + item.sourceLang,
+      format: 'txt',
+      sourceFileName: 'spanish-residue-' + index + '.txt',
+      prompt: { translationMode: 'literary', sourceLang: item.sourceLang, targetLang: 'zh' },
+      segments: [{ id, text: item.source, kind: 'paragraph', contextPath: 'Capítulo 1' }],
+    });
+    store.saveManualEdit(project.projectId, id, item.translation);
+    ensureTestContextGraph(store, project);
+    const report = runProjectQualityAudit(project.projectId);
+    assert.ok(report.findings.some((finding) =>
+      finding.type === 'english-residue' && finding.segmentIds.includes(id) &&
+      finding.residueExamples.includes(item.residue)),
+    item.sourceLang + ' Spanish residue should be surfaced for manual review');
+  }
+});
+
