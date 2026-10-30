@@ -700,9 +700,9 @@ const ENGLISH_FUNCTION_WORDS = new Set([
   'what','when','where','which','who','will','with','you','your',
 ]);
 const RESIDUE_WORDS_BY_SOURCE_LANG: Record<string, Set<string>> = {
-  fr: new Set(['déjà','était','étaient','encore','alors','pourtant','toujours','jamais','peut-être','bonjour','bonsoir','merci','oui','non','voilà','ainsi','très','mais','donc','parce','pourquoi']),
+  fr: new Set(['déjà','était','étaient','encore','alors','pourtant','toujours','jamais','peut-être','bonjour','bonsoir','merci','salut','oui','non','voilà','ainsi','très','mais','donc','parce','pourquoi']),
   de: new Set(['schön','schon','nicht','doch','auch','aber','oder','und','der','die','das','ein','eine','ich','du','er','sie','wir','ihr','ja','nein','danke','hallo','ach','also','noch','schon','wieder','immer','nie','weil','wenn','dass','was','wie']),
-  it: new Set(['allora','perché','perche','però','pero','già','gia','ancora','sempre','mai','ciao','grazie','sì','si','no','non','che','come','dunque','quindi','anche','molto','era','sono']),
+  it: new Set(['allora','perché','perche','però','pero','già','gia','ancora','sempre','mai','ciao','grazie','buongiorno','buonasera','salve','sì','si','no','non','che','come','dunque','quindi','anche','molto','era','sono']),
   ja: new Set(),
 };
 const FUNCTION_WORDS_BY_SOURCE_LANG: Record<string, Set<string>> = {
