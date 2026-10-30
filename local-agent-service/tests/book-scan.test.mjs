@@ -178,3 +178,67 @@ test('worker-parallel book scan is byte-for-byte equivalent to serial scan and p
   const parallel = await scanBookSegmentsConcurrent(segments, options, 3);
   assert.deepEqual(parallel, serial);
 });
+
+
+test('French, German and Italian book scans identify localized dialogue and names', () => {
+  const french = scanBookSegments([
+    { id: 'fr-1', ordinal: 0, contextPath: 'Chapitre 1', text: 'Émile ouvrit la porte et sourit.' },
+    { id: 'fr-2', ordinal: 1, contextPath: 'Chapitre 1', text: 'Émile regarda la fenêtre.' },
+    { id: 'fr-3', ordinal: 2, contextPath: 'Chapitre 2', text: 'Émile revint avant la nuit.' },
+    { id: 'fr-4', ordinal: 3, contextPath: 'Chapitre 2', text: '«Bonsoir», dit Émile.' },
+  ], { sourceLang: 'fr' });
+  assert.ok(french.nameCandidates.some((candidate) => candidate.name === 'Émile' && candidate.mentions >= 4));
+  assert.ok(french.dialogueIndex.some((item) => item.segmentId === 'fr-4' && item.isDialogue));
+  assert.ok(!french.nameCandidates.some((candidate) => candidate.name === 'Bonsoir'));
+
+  const german = scanBookSegments([
+    { id: 'de-1', ordinal: 0, contextPath: 'Kapitel 1', text: 'Herr Müller kam durch die Stadt.' },
+    { id: 'de-2', ordinal: 1, contextPath: 'Kapitel 2', text: 'Herr Müller ging später nach Hause.' },
+    { id: 'de-3', ordinal: 2, contextPath: 'Kapitel 2', text: '„Guten Tag“, sagte er.' },
+    { id: 'de-4', ordinal: 3, contextPath: 'Kapitel 3', text: '— ich weiß nicht, antwortete Müller.' },
+  ], { sourceLang: 'de' });
+  assert.ok(german.nameCandidates.some((candidate) => candidate.name.includes('Müller')));
+  assert.ok(!german.nameCandidates.some((candidate) => ['Stadt', 'Mann', 'Frau', 'Haus'].includes(candidate.name)));
+  assert.ok(german.dialogueIndex.some((item) => item.segmentId === 'de-3' && item.isDialogue));
+  assert.ok(german.dialogueIndex.some((item) => item.segmentId === 'de-4' && item.isDialogue));
+
+  const italian = scanBookSegments([
+    { id: 'it-1', ordinal: 0, contextPath: 'Capitolo 1', text: '«Buongiorno», disse Marco.' },
+  ], { sourceLang: 'it' });
+  assert.ok(italian.dialogueIndex[0].isDialogue);
+});
+
+test('Japanese source scan indexes honorific name candidates and Japanese dialogue marks', () => {
+  const scan = scanBookSegments([
+    { id: 'ja-1', ordinal: 0, contextPath: '第一章', text: '田中さんは静かに部屋へ入った。' },
+    { id: 'ja-2', ordinal: 1, contextPath: '第一章', text: '田中さんは窓のそばに立った。' },
+    { id: 'ja-3', ordinal: 2, contextPath: '第二章', text: '「田中さん、聞こえますか」と彼女は尋ねた。' },
+  ], { sourceLang: 'ja' });
+  assert.ok(scan.nameCandidates.some((candidate) => candidate.name === '田中'));
+  assert.ok(scan.dialogueIndex.some((item) => item.segmentId === 'ja-3' && item.isDialogue));
+});
+
+test('localized quantity feature extraction covers French German Italian and Japanese', () => {
+  const cases = [
+    { sourceLang: 'fr', text: 'Il marcha trois mètres.' },
+    { sourceLang: 'de', text: 'Er ging drei Meter.' },
+    { sourceLang: 'it', text: 'Camminò tre metri.' },
+    { sourceLang: 'ja', text: '三メートル歩いた。' },
+  ];
+  for (const [index, item] of cases.entries()) {
+    const scan = scanBookSegments([{ id: 'quantity-' + index, ordinal: 0, text: item.text }], { sourceLang: item.sourceLang });
+    assert.ok(scan.quantityMentions.some((mention) => mention.unit === 'meter'), item.sourceLang + ' quantity should be indexed');
+  }
+});
+
+test('parallel worker scan receives source language and matches serial output', async () => {
+  const segments = [
+    { id: 'worker-fr-1', ordinal: 0, text: 'Émile ouvrit la porte. «Bonjour», dit Émile.' },
+    { id: 'worker-fr-2', ordinal: 1, text: 'Émile revint après trois mètres.' },
+  ];
+  const options = { sourceLang: 'fr' };
+  assert.deepEqual(
+    await scanBookSegmentsConcurrent(segments, options, 2),
+    scanBookSegments(segments, options),
+  );
+});
