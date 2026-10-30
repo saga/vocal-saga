@@ -111,7 +111,7 @@ function normalizeAuditLanguage(value: string, sampleText = ''): string {
     const sample = sampleText.toLocaleLowerCase();
     const scores: Record<string, number> = {
       fr: (sample.match(/\b(?:le|la|les|une|des|est|et|que|qui|avec|dans|pour|pas|mais|je|elle|vous|nous)\b/gu) || []).length,
-      de: (sample.match(/\b(?:der|die|das|ein|eine|und|ist|mit|nicht|ich|war|hat|zu|von|dem|den)\b/gu) || []).length,
+      de: (sample.match(/\b(?:der|die|das|ein|eine|und|ist|mit|nicht|ich|war|hat|zu|von|dem|den|er|sie|drei|zwei|vier|fünf)\b/gu) || []).length,
       it: (sample.match(/\b(?:il|lo|gli|sono|che|non|una|per|con|della|era|dove|ma|voi|noi)\b/gu) || []).length,
     };
     const ranked = Object.entries(scores).sort((a,b)=>b[1]-a[1]);
