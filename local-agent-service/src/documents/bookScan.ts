@@ -162,7 +162,7 @@ function normalizePhrase(value: string): string {
 function chapterTitle(segment: BookScanSegment): string {
   return (segment.contextPath || '').trim() || '正文';
 }
-function getChapters(segments: BookScanSegment[]): BookScanChapter[] {
+function getChapters(segments: BookScanSegment[], sourceLang = 'en'): BookScanChapter[] {
   const grouped = new Map<string, BookScanSegment[]>();
   for (const segment of segments) {
     const key = chapterTitle(segment);
@@ -174,7 +174,7 @@ function getChapters(segments: BookScanSegment[]): BookScanChapter[] {
     key, title: key, order,
     segmentCount: items.length,
     charCount: items.reduce((sum, item) => sum + item.text.length, 0),
-    dialogueSegmentCount: items.filter(isDialogueSegment).length,
+    dialogueSegmentCount: items.filter((item) => isDialogueSegment(item, sourceLang)).length,
     firstSegmentId: items[0]!.id,
     middleSegmentId: items[Math.floor((items.length - 1) / 2)]!.id,
     lastSegmentId: items[items.length - 1]!.id,
@@ -183,7 +183,7 @@ function getChapters(segments: BookScanSegment[]): BookScanChapter[] {
 function quoteSpans(text: string): Array<{ start: number; end: number }> {
   const patterns = [
     /“([^”]{1,2000})”/gu, /"([^"]{1,2000})"/gu, /「([^」]{1,2000})」/gu, /『([^』]{1,2000})』/gu,
-    /‘([^’]{8,2000})’/gu, /'([^']{8,2000})'/gu,
+    /‘([^’]{8,2000})’/gu, /'([^']{8,2000})'/gu, /«([^»]{1,2000})»/gu, /„([^“”]{1,2000})[“”"]/gu,
   ];
   const spans: Array<{ start: number; end: number }> = [];
   const seenSpans = new Set<string>();
@@ -198,11 +198,13 @@ function quoteSpans(text: string): Array<{ start: number; end: number }> {
   }
   return spans.sort((a, b) => a.start - b.start || a.end - b.end);
 }
-export function isDialogueSegment(segment: Pick<BookScanSegment, 'text'>): boolean {
+export function isDialogueSegment(segment: Pick<BookScanSegment, 'text'>, sourceLang = 'en'): boolean {
   const text = segment.text || '';
-  const quoteCount = (text.match(/[“”「」『』"]/g) || []).length;
-  const emDashDialogue = /(?:^|\s)[—–]\s*\p{Lu}/u.test(text);
-  return quoteCount >= 2 || emDashDialogue || SPEECH_VERBS.test(text);
+  const language = sourceLanguageCode(sourceLang, text);
+  const quoteCount = (text.match(/[“”„«»「」『』"]/gu) || []).length;
+  const emDashDialogue = /(?:^|\s)[—–]\s*\p{L}/u.test(text);
+  const speechVerbs = SPEECH_VERBS_BY_LANGUAGE[language] || SPEECH_VERBS_BY_LANGUAGE.en!;
+  return quoteCount >= 2 || emDashDialogue || speechVerbs.test(text);
 }
 function stripNamePrefix(name: string): string {
   const words = name.trim().split(/\s+/);
@@ -216,26 +218,33 @@ function stripNamePrefix(name: string): string {
   while (words.length > 1 && TITLE_PREFIX_WORDS.has(words[0]!.replace(/[.]/g, '').toLocaleLowerCase())) words.shift();
   return words.join(' ');
 }
-function isNameCandidateAllowed(name: string, kind: BookEntityMention['kind']): boolean {
+function isNameCandidateAllowed(name: string, kind: BookEntityMention['kind'], sourceLang = 'en'): boolean {
+  const language = sourceLanguageCode(sourceLang, name);
   const core = stripNamePrefix(name);
   const parts = core.split(/\s+/).filter(Boolean);
   if (!parts.length || parts.some((part) => NAME_STOP_WORDS.has(part.replace(/[.]/g, '').toLocaleLowerCase()))) return false;
-  if (parts.every((part) => part.length < 3)) return false;
-  return kind !== 'single-name' || (normalizeText(core).length >= 3 && !NAME_STOP_WORDS.has(normalizeText(core)));
+  const japaneseName = language === 'ja' && /^[\p{Script=Han}\p{Script=Katakana}ー]{2,}$/u.test(core);
+  if (!japaneseName && parts.every((part) => Array.from(part).length < 3)) return false;
+  // German capitalizes common nouns; single capitalized tokens are too noisy to sample as people.
+  if (language === 'de' && kind === 'single-name') return false;
+  return kind !== 'single-name' || japaneseName ||
+    (normalizeText(core).length >= 3 && !NAME_STOP_WORDS.has(normalizeText(core)));
 }
-function collectEntityMentions(segments: BookScanSegment[]): { mentions: BookEntityMention[]; discovered: number } {
+function collectEntityMentions(segments: BookScanSegment[], sourceLang = 'en'): { mentions: BookEntityMention[]; discovered: number } {
   const mentions: BookEntityMention[] = [];
   let discovered = 0;
-  const add = (segment: BookScanSegment, start: number, end: number, surface: string, kind: BookEntityMention['kind']) => {
-    if (!surface || !isNameCandidateAllowed(surface, kind)) return;
+  const add = (segment: BookScanSegment, start: number, end: number, surface: string, kind: BookEntityMention['kind'], language: string) => {
+    if (!surface || !isNameCandidateAllowed(surface, kind, language)) return;
     discovered++;
     if (mentions.length >= MAX_ENTITY_MENTIONS) return;
     mentions.push({
       segmentId: segment.id, ordinal: segment.ordinal, chapterKey: chapterTitle(segment),
-      surface, normalized: normalizeText(surface), start, end, kind, dialogue: isDialogueSegment(segment),
+      surface, normalized: normalizeText(surface), start, end, kind,
+      dialogue: isDialogueSegment(segment, language),
     });
   };
   for (const segment of segments) {
+    const language = sourceLanguageCode(sourceLang, segment.text);
     const matches = new Map<string, {start:number;end:number;surface:string;kind:BookEntityMention['kind']}>();
     for (const match of segment.text.matchAll(TITLED_NAME_PATTERN)) {
       const surface = match[0].trim(), start = match.index ?? 0, end = start + match[0].length;
@@ -249,7 +258,17 @@ function collectEntityMentions(segments: BookScanSegment[]): { mentions: BookEnt
       const surface = match[0].trim(), start = match.index ?? 0, end = start + match[0].length;
       matches.set(String(start)+':'+String(end)+':'+normalizeText(surface), {start,end,surface,kind:'single-name'});
     }
-    for (const item of Array.from(matches.values()).sort((a,b)=>a.start-b.start || b.end-a.end)) add(segment,item.start,item.end,item.surface,item.kind);
+    if (language === 'ja') {
+      for (const pattern of [JAPANESE_NAME_PATTERN, JAPANESE_KATAKANA_NAME_PATTERN]) {
+        for (const match of segment.text.matchAll(pattern)) {
+          const surface = match[0].trim(), start = match.index ?? 0, end = start + match[0].length;
+          matches.set(String(start)+':'+String(end)+':'+normalizeText(surface), {start,end,surface,kind:'single-name'});
+        }
+      }
+    }
+    for (const item of Array.from(matches.values()).sort((a,b)=>a.start-b.start || b.end-a.end)) {
+      add(segment,item.start,item.end,item.surface,item.kind,language);
+    }
   }
   return { mentions, discovered };
 }
