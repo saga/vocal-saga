@@ -97,7 +97,7 @@ const CHINESE_COUNT_UNIT = /^(?:个|只|件|位|本|支|张|颗|条|头|匹|座|
 const CHINESE_DIGITS: Record<string, number> = {
   零:0, 〇:0, 一:1, 二:2, 两:2, 三:3, 四:4, 五:5, 六:6, 七:7, 八:8, 九:9,
 };
-function normalizeAuditLanguage(value: string): string {
+function normalizeAuditLanguage(value: string, sampleText = ''): string {
   const raw = String(value || '').trim().toLocaleLowerCase();
   const primary = raw.split(/[-_]/u)[0] || '';
   const aliases: Record<string, string> = {
@@ -105,7 +105,23 @@ function normalizeAuditLanguage(value: string): string {
     german:'de',deutsch:'de',deu:'de',ger:'de',italian:'it',italiano:'it',ita:'it',
     japanese:'ja',日本語:'ja',jpn:'ja',chinese:'zh',中文:'zh',zho:'zh',
   };
-  return aliases[raw] || aliases[primary] || (['auto','unknown','und'].includes(primary) ? 'en' : primary) || 'en';
+  if (aliases[raw] || aliases[primary]) return aliases[raw] || aliases[primary]!;
+  if (!raw || ['auto','unknown','und'].includes(primary)) {
+    if (/[\p{Script=Hiragana}\p{Script=Katakana}]/u.test(sampleText)) return 'ja';
+    const sample = sampleText.toLocaleLowerCase();
+    const scores: Record<string, number> = {
+      fr: (sample.match(/\b(?:le|la|les|une|des|est|et|que|qui|avec|dans|pour|pas|mais|je|elle|vous|nous)\b/gu) || []).length,
+      de: (sample.match(/\b(?:der|die|das|ein|eine|und|ist|mit|nicht|ich|war|hat|zu|von|dem|den)\b/gu) || []).length,
+      it: (sample.match(/\b(?:il|lo|gli|sono|che|non|una|per|con|della|era|dove|ma|voi|noi)\b/gu) || []).length,
+    };
+    const ranked = Object.entries(scores).sort((a,b)=>b[1]-a[1]);
+    if (ranked[0] && ranked[0][1] >= 2 && ranked[0][1] > (ranked[1]?.[1] || 0)) return ranked[0][0]!;
+    if (/[ßäöü]/u.test(sample)) return 'de';
+    if (/[çœéèêëàâîïôùûüÿ]/u.test(sample)) return 'fr';
+    if (/[òì]/u.test(sample)) return 'it';
+    return 'en';
+  }
+  return primary || 'en';
 }
 function parseChineseNumber(value: string): number {
   let total=0, section=0, digit=0;
@@ -151,8 +167,8 @@ function parseLocalizedNumberRun(
 function numericTokens(value: unknown, allowImplicitChineseClassifierOne = true, sourceLang = 'en'): string[] {
   // Unsupported source-language words are not guessed. Only recognized numerals and explicit digits
   // are compared; an unrecognized number phrase must not be treated as a source value of zero.
-  const language=normalizeAuditLanguage(sourceLang);
   const source=String(value??'').normalize('NFKC').toLocaleLowerCase();
+  const language=normalizeAuditLanguage(sourceLang, source);
   const matches=Array.from(source.matchAll(/\d+(?:[,.]\d+)*|[零〇一二两三四五六七八九十百千万亿]+|[\p{Script=Latin}][\p{Script=Latin}\p{M}]*/giu),
     (match)=>({token:match[0]!,index:match.index??0}));
   const result:string[]=[];
@@ -221,7 +237,7 @@ function numericQuantityUnits(value: unknown, sourceLang = 'en'): string[] {
     const unit=QUANTITY_UNIT_CANONICAL[String(match[1]||'')];
     if(unit)found.push({index:match.index??0,unit});
   }
-  const language=normalizeAuditLanguage(sourceLang);
+  const language=normalizeAuditLanguage(sourceLang, source);
   const localized=LOCALIZED_QUANTITY_UNIT_PATTERNS[language];
   if(localized){
     localized.lastIndex=0;
@@ -238,15 +254,16 @@ function numericFindings(
   sourceLang = 'en',
 ) {
   const findings:any[]=[];
+  const resolvedSourceLang = normalizeAuditLanguage(sourceLang, segments.slice(0, 100).map((segment) => segment.text).join(' '));
   for(const segment of segments){
     const translation=translations.get(segment.id)||'';
     if(!translation.trim())continue;
-    const sourceNumbers=numericTokens(segment.text,false,sourceLang);
-    const sourceUnits=numericQuantityUnits(segment.text,sourceLang);
+    const sourceNumbers=numericTokens(segment.text,false,resolvedSourceLang);
+    const sourceUnits=numericQuantityUnits(segment.text,resolvedSourceLang);
     // Only compare when the source contains a number/quantity the selected lexical rules could
     // identify. Empty source evidence is "unknown", not a numeric value of zero.
     if(!sourceNumbers.length && !sourceUnits.length)continue;
-    const targetNumbers=numericTokens(translation,sourceNumbers.length>0,sourceLang);
+    const targetNumbers=numericTokens(translation,sourceNumbers.length>0,resolvedSourceLang);
     const targetUnits=numericQuantityUnits(translation,'zh');
     const numericValuesDiffer=sourceNumbers.length>0 && JSON.stringify(sourceNumbers)!==JSON.stringify(targetNumbers);
     const quantityUnitsDiffer=(sourceUnits.length>0||targetUnits.length>0) &&
@@ -696,7 +713,7 @@ function englishResidueFindings(
   sourceLang = 'en',
 ): any[] {
   if (!/^(?:zh(?:[-_].*)?|chinese|中文|简体中文|繁体中文)$/iu.test(String(targetLang || '').trim())) return [];
-  const language = normalizeAuditLanguage(sourceLang);
+  const language = normalizeAuditLanguage(sourceLang, segments.map((segment) => segment.text).join(' '));
   const residueWords = RESIDUE_WORDS_BY_SOURCE_LANG[language] || ENGLISH_RESIDUE_WORDS;
   const functionWords = FUNCTION_WORDS_BY_SOURCE_LANG[language] || ENGLISH_FUNCTION_WORDS;
   const phrasePattern = /(?<![\p{L}\p{M}])(?:[\p{Script=Latin}][\p{Script=Latin}\p{M}'’-]*\s+){1,}[\p{Script=Latin}][\p{Script=Latin}\p{M}'’-]*(?![\p{L}\p{M}])/gu;
