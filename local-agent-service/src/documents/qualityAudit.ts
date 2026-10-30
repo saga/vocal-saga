@@ -93,7 +93,7 @@ const NUMBER_LEXICONS: Record<string, { values: Record<string, number>; scales: 
   it: { values:ITALIAN_NUMBER_VALUES, scales:ITALIAN_NUMBER_SCALES, joiners:new Set(['e']), units:new Set(['pollice','pollici','piede','piedi','miglio','miglia','metro','metri','centimetro','centimetri','chilometro','chilometri','secondo','secondi','minuto','minuti','ora','ore','giorno','giorni','settimana','settimane','mese','mesi','anno','anni','grado','gradi','libbra','libbre','chilogrammo','chilogrammi','grammo','grammi','litro','litri']) },
 };
 const CHINESE_MEASURE_UNIT = /^(?:英寸|寸|英尺|尺|厘米|毫米|米|公里|千米|小时|分钟|秒钟|秒|天|周|星期|个月|月|年|岁|公斤|千克|克|升|毫升|度|百分比|百分之|インチ|フィート|マイル|センチメートル|ミリメートル|キロメートル|メートル|時間|週間|週|ヶ月|か月|キログラム|グラム|リットル)/u;
-const CHINESE_COUNT_UNIT = /^(?:个|只|件|位|本|支|张|颗|条|头|匹|座|扇|间|辆|名|次|人|回|遍|つ|人|匹|冊|本|個|台|枚)/u;
+const CHINESE_COUNT_UNIT = /^(?:个|只|件|位|本|支|张|颗|条|头|匹|座|扇|间|辆|名|次|人|回|遍|边|つ|人|匹|冊|本|個|台|枚)/u;
 const CHINESE_DIGITS: Record<string, number> = {
   零:0, 〇:0, 一:1, 二:2, 两:2, 三:3, 四:4, 五:5, 六:6, 七:7, 八:8, 九:9,
 };
@@ -246,7 +246,12 @@ function numericQuantityUnits(value: unknown, sourceLang = 'en'): string[] {
       if(unit)found.push({index:match.index??0,unit});
     }
   }
-  return found.sort((a,b)=>a.index-b.index).map((item)=>item.unit);
+  // The Japanese katakana scanner and the CJK unit scanner can match the same source span.
+  // De-duplicate only identical (offset, canonical unit) pairs; repeated quantities at different
+  // offsets remain separate so cardinality differences are still visible.
+  const unique = new Map<string, { index: number; unit: string }>();
+  for (const item of found) unique.set(item.index + ':' + item.unit, item);
+  return Array.from(unique.values()).sort((a,b)=>a.index-b.index).map((item)=>item.unit);
 }
 function numericFindings(
   segments: Array<{ id: string; text: string; contextPath: string }>,
