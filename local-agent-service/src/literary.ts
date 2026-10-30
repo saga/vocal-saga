@@ -520,7 +520,7 @@ export function buildChineseLiteraryEditingPrompt(input: {
     '人物声音资料只作为已建立的中文表达参考。证据不足时不推断说话人，不创造口头禅、方言、粗口或人物标签。',
     '对每个输入 id 返回完整 editedText。没有必要修改时 decision=unchanged 且 editedText 必须与 draft 完全一致。',
     '每条 finding 必须引用 draft 中逐字连续、可定位的 targetExcerpt，并说明具体问题及修改方向。纯粹个人偏好、无法证明改善的表达不得产生 finding。',
-    '仅返回严格 JSON：{"results":[{"id":"...","decision":"edited|unchanged|needs_human_review","editedText":"完整中文文本","findings":[{"editingAspect":"pronoun|particle|syntax|translationese|redundancy|diction|rhythm|register","targetExcerpt":"中文初稿中的连续原文","reason":"具体问题","suggestion":"编辑方向"}]}]}。',
+    '仅返回严格 JSON：{"results":[{"id":"...","decision":"edited|unchanged|needs_human_review","editedText":"完整中文文本","findings":[{"category":"style","editingAspect":"pronoun|particle|syntax|translationese|redundancy|diction|rhythm|register","targetExcerpt":"中文初稿中的连续原文","reason":"具体问题","suggestion":"编辑方向"}]}]}。每条 finding 的 category 必须是 style。',
   ].join('\n');
   const targetSegments = input.segments.map((segment: any) => ({
     id: segment.id,
