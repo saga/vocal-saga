@@ -188,7 +188,7 @@ function normalizeNumericLiteralToken(value: string, language: string): string {
       const fraction = value.slice(separator + 1).replace(/[.,]/g, '');
       return integer + '.' + fraction;
     }
-    if (/^\\d{1,3}(?:\\.\\d{3})+$/u.test(value)) return value.replace(/\\./g, '');
+    if (/^\d{1,3}(?:\.\d{3})+$/u.test(value)) return value.replace(/\./g, '');
   }
   return value.replace(/,/g, '');
 }
