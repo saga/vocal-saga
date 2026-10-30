@@ -1584,7 +1584,8 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
         const styleStartedAt = Date.now();
         try {
           store.appendEvent(projectId, runId, 'stage.started', {
-            stage: 'style-review', batchIndex, label: '人物声音与文风审校',
+            stage: 'style-review', batchIndex, label: /^zh(?:[-_]|$)/i.test(String(batchContext.run.targetLang || ''))
+              ? '中文单语文学编辑' : '人物声音与文风审校',
           });
           const styleScope = buildDocumentBatchSessionScope({
             projectId,
@@ -1608,6 +1609,7 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
             voiceContext: reviewVoiceContext,
             translationBrief: translationBrief || undefined,
             reviewFocus: 'style',
+            chineseMonolingualEdit: /^zh(?:[-_]|$)/i.test(String(batchContext.run.targetLang || '')),
             segments: reviewedItems.map((item) => ({
               id: item.id, source: item.text, draft: translations.get(item.id)!,
               kind: item.kind, contextPath: item.contextPath,
@@ -1630,6 +1632,16 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
               findingCount: styleFindings.length,
             });
             return;
+          }
+          // For Chinese literary runs, the source-blind editor's candidate becomes the input
+          // to the following bilingual accuracy/terminology review. It remains a pending style
+          // finding; this in-memory handoff does not overwrite the persisted translation.
+          if (styleReview.editorialMode === 'chinese-monolingual') {
+            for (const [id, edited] of Object.entries(styleReview.translations || {})) {
+              if (typeof edited === 'string' && edited.trim() && reviewedItems.some((item) => item.id === id)) {
+                translations.set(id, edited);
+              }
+            }
           }
           store.appendEvent(projectId, runId, 'stage.completed', {
             stage: 'style-review', batchIndex,
@@ -1664,6 +1676,11 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
           }
         }
       };
+
+      const chineseMonolingualEdit = /^zh(?:[-_]|$)/i.test(String(batchContext.run.targetLang || ''));
+      // Chinese editing must happen before bilingual review: the latter verifies the edited
+      // Chinese candidate against source. Other target languages retain their existing order.
+      if (chineseMonolingualEdit) await runStyleReview();
 
       try {
         const reviewScope = buildDocumentBatchSessionScope({
@@ -1748,7 +1765,7 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
           });
         }
 
-        await runStyleReview();
+        if (!chineseMonolingualEdit) await runStyleReview();
     } catch (error) {
         // Review is a quality improvement, not a gate on translation progress.
         try {
