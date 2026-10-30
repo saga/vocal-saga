@@ -842,6 +842,8 @@ test('Spanish numeric audit handles written numbers, inflections, regional alias
   const cases = [
     { sourceLang: 'es', source: 'Él caminó tres metros.', translation: '他走了三米。' },
     { sourceLang: 'es-ES', source: 'Recorrió treinta y dos kilómetros.', translation: '他走了三十二公里。' },
+    { sourceLang: 'es', source: 'La cuerda mide 1,5 metros.', translation: '这根绳子长1.5米。' },
+    { sourceLang: 'es', source: 'La montaña tiene 1.250 metros de altura.', translation: '这座山高1,250米。' },
     { sourceLang: 'español', source: 'Tenía veintiún años.', translation: '他二十一岁。' },
     { sourceLang: 'auto', source: '¿Caminó tres metros antes de regresar?', translation: '他回来前走了三米。' },
   ];
