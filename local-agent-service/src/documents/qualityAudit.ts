@@ -105,7 +105,7 @@ function normalizeAuditLanguage(value: string): string {
     german:'de',deutsch:'de',deu:'de',ger:'de',italian:'it',italiano:'it',ita:'it',
     japanese:'ja',日本語:'ja',jpn:'ja',chinese:'zh',中文:'zh',zho:'zh',
   };
-  return aliases[raw] || aliases[primary] || primary || 'unknown';
+  return aliases[raw] || aliases[primary] || (['auto','unknown','und'].includes(primary) ? 'en' : primary) || 'en';
 }
 function parseChineseNumber(value: string): number {
   let total=0, section=0, digit=0;
@@ -248,7 +248,7 @@ function numericFindings(
     if(!sourceNumbers.length && !sourceUnits.length)continue;
     const targetNumbers=numericTokens(translation,sourceNumbers.length>0,sourceLang);
     const targetUnits=numericQuantityUnits(translation,'zh');
-    const numericValuesDiffer=JSON.stringify(sourceNumbers)!==JSON.stringify(targetNumbers);
+    const numericValuesDiffer=sourceNumbers.length>0 && JSON.stringify(sourceNumbers)!==JSON.stringify(targetNumbers);
     const quantityUnitsDiffer=(sourceUnits.length>0||targetUnits.length>0) &&
       JSON.stringify(sourceUnits)!==JSON.stringify(targetUnits);
     if(!numericValuesDiffer&&!quantityUnitsDiffer)continue;
@@ -517,11 +517,11 @@ function isGenericCanonicalName(value: unknown): boolean {
 
 function canonicalIdentityTokens(value: string): string[] {
   return normalizedCanonicalName(value).replace(/['’]s\b/g, '')
-    .match(/[a-z0-9]+/g)?.filter((token) => !CANONICAL_NAME_STOPWORDS.has(token)) || [];
+    .match(/[\p{Script=Latin}\p{M}\p{N}]+/gu)?.filter((token) => !CANONICAL_NAME_STOPWORDS.has(token)) || [];
 }
 
 function isCompatibleCanonicalAlias(source: string, alias: string): boolean {
-  if (!/^[a-z0-9 ._'’-]+$/iu.test(source) || !/^[a-z0-9 ._'’-]+$/iu.test(alias)) return true;
+  if (!/^[\p{Script=Latin}\p{M}\p{N} ._'’-]+$/u.test(source) || !/^[\p{Script=Latin}\p{M}\p{N} ._'’-]+$/u.test(alias)) return true;
   const sourceTokens = canonicalIdentityTokens(source);
   const aliasTokens = canonicalIdentityTokens(alias);
   if (!aliasTokens.length) return false;
@@ -1219,11 +1219,12 @@ function runMetrics(projectId: string, runId: string): any {
   const entities = terminologyFindings(
     normalizedSegments, translationById, auditMemory, mappingConflictAudit.conflictedSources,
   ).filter((item) => item.category === 'terminology');
-  const residues = englishResidueFindings(normalizedSegments, translationById, String(context.run.targetLang || ''));
-  const numbers = numericFindings(normalizedSegments, translationById);
+  const sourceLang = String(context.run.sourceLang || 'auto');
+  const residues = englishResidueFindings(normalizedSegments, translationById, String(context.run.targetLang || ''), sourceLang);
+  const numbers = numericFindings(normalizedSegments, translationById, sourceLang);
   const scopedIds = new Set(segments.map((item) => item.id));
-  ensureSourceFeatureIndex(projectId, currentSourceRevisionId);
-  const storedSourceIndex = readSourceFeatureIndex(db, currentSourceRevisionId);
+  ensureSourceFeatureIndex(projectId, currentSourceRevisionId, sourceLang);
+  const storedSourceIndex = readSourceFeatureIndex(db, currentSourceRevisionId, sourceLang);
   const repeated = repeatedExpressionFindings(normalizedSegments, translationById, scopedIds, storedSourceIndex);
   const findings = db.prepare('SELECT category, finding_json FROM review_findings WHERE run_id = ?').all(runId) as any[];
   const styleFindings = findings.filter((row) => row.category === 'style').length;
@@ -1304,6 +1305,19 @@ function auditTargetLanguage(db: any, runId?: string): string {
   return 'zh';
 }
 
+function auditSourceLanguage(db: any, runId?: string): string {
+  if (runId) {
+    const row = db.prepare('SELECT source_lang AS sourceLang FROM translation_runs WHERE run_id = ?').get(runId) as any;
+    if (typeof row?.sourceLang === 'string' && row.sourceLang.trim()) return row.sourceLang.trim();
+  }
+  const row = db.prepare('SELECT config_json FROM prompt_revisions ORDER BY created_at DESC, rowid DESC LIMIT 1').get() as any;
+  try {
+    const config = row?.config_json ? JSON.parse(row.config_json) : {};
+    if (typeof config?.sourceLang === 'string' && config.sourceLang.trim()) return config.sourceLang.trim();
+  } catch { /* malformed historical config: use product auto-detection */ }
+  return 'auto';
+}
+
 /**
  * 对当前来源版本执行全书确定性质量审计，并合并相关 Reviewer/上下文漂移发现。
  * 可选择叠加一个已结束 Run 的候选译文；审计只产出 finding/metric，不自动修改或采纳译文。
@@ -1335,7 +1349,8 @@ export function runProjectQualityAudit(projectId: string, runId?: string): Recor
   const memory = loadMemory(projectId, runId);
   const mappingConflictAudit = canonicalNameMappingConflictFindings(segments, memory);
   const termFindings = terminologyFindings(segments, translations, memory, mappingConflictAudit.conflictedSources);
-  const residueFindings = englishResidueFindings(segments, translations, auditTargetLanguage(context.db, runId));
+  const sourceLang = auditSourceLanguage(context.db, runId);
+  const residueFindings = englishResidueFindings(segments, translations, auditTargetLanguage(context.db, runId), sourceLang);
   const missing = segments.filter((segment) => !translations.get(segment.id)?.trim()).map((segment) => ({
     findingId: stableFindingId('missing-translation', [segment.id], context.currentSourceRevisionId),
     type: 'missing-translation',
@@ -1347,9 +1362,9 @@ export function runProjectQualityAudit(projectId: string, runId?: string): Recor
     sourceExcerpt: segment.text.slice(0, 240),
     explanation: '该来源片段没有当前可用的已采纳译文或本次运行候选译文。',
   }));
-  const numberFindings = numericFindings(segments, translations);
-  ensureSourceFeatureIndex(projectId, context.currentSourceRevisionId);
-  const storedSourceIndex = readSourceFeatureIndex(context.db, context.currentSourceRevisionId);
+  const numberFindings = numericFindings(segments, translations, sourceLang);
+  ensureSourceFeatureIndex(projectId, context.currentSourceRevisionId, sourceLang);
+  const storedSourceIndex = readSourceFeatureIndex(context.db, context.currentSourceRevisionId, sourceLang);
   const repeatedFindings = repeatedExpressionFindings(segments, translations, undefined, storedSourceIndex);
   const presentIds = new Set(segments.map((segment) => segment.id));
   const outputFindings = translationOutputValidationFindings(context.db, runId, presentIds);
