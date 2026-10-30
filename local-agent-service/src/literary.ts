@@ -605,7 +605,7 @@ export async function runLiteraryReview(body: any, requestId: string, sessionSco
       for (const item of raw.findings.slice(0, 12)) {
         // 准确性/实体错误必须修复；具体文风问题作为可选的受控修订依据。
         if (!item || (reviewFocus === 'style'
-          ? (!chineseMonolingualEdit && item.category !== 'style')
+          ? item.category !== 'style'
           : !['accuracy', 'terminology'].includes(item.category))) continue;
         const sourceExcerpt = chineseMonolingualEdit ? '' :
           typeof item.sourceExcerpt === 'string' ? item.sourceExcerpt.trim().slice(0, 240) : '';
