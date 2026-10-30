@@ -907,7 +907,7 @@ LiTransProQA 的专业问题清单可以作为 rubric 设计参考，但需要�
 - API route manifest check
 - deterministic book-scan benchmark
 
-随后加入的 accepted Chinese examples target-only 投影也已在提交 `e6d6a8f` 的 Local Agent Service 工作流中通过。根仓库 CI 的另一个工作流还会执行 fanyi-extension 跨仓库测试；此前失败的用例位于 `.cross-sync/fanyi-extension`，涉及 page cache fingerprint 版本、source language 默认值及旧 URL 路由断言，与本次 local-agent-service 中文编辑改动无关。不要把该根 CI 失败误报为 local-agent-service 测试失败。
+随后加入的 accepted Chinese examples target-only 投影、用户编辑过的 styleGuide 保留逻辑，也已在提交 `958a41a` 的 Local Agent Service 工作流中通过。根仓库 CI 的另一个工作流还会执行 fanyi-extension 跨仓库测试；此前失败的用例位于 `.cross-sync/fanyi-extension`，涉及 page cache fingerprint 版本、source language 默认值及旧 URL 路由断言，与本次 local-agent-service 中文编辑改动无关。不要把该根 CI 失败误报为 local-agent-service 测试失败。
 
 ### 尚未完成的后续阶段
 
