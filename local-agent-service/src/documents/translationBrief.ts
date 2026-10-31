@@ -622,6 +622,12 @@ function buildTemporallyVisibleMemory(
     temporallyVisibleCharacterVoices: rawMemory.characterVoices.length,
     characterVoicesExcludedByBoundary: Math.max(0, initialMemoryCounts.characterVoices - rawMemory.characterVoices.length),
     acceptedExampleCandidates: scoredExamples.length,
+    acceptedExampleRowsRetrieved: acceptedExampleRows.length,
+    acceptedExampleManualCandidates: acceptedExampleRows.filter((row) => row.origin === 'manual').length,
+    acceptedExampleSameChapterCandidates: acceptedExampleRows.filter((row) => currentChapters.has(String(row.chapter || ''))).length,
+    acceptedExampleRecentWindowCandidates: acceptedExampleRows.filter((row) => Number(row.ordinal) >= recentOrdinalBoundary).length,
+    acceptedExampleCandidateTermCount: candidateTerms.length,
+    acceptedExampleSourceTokenCount: currentTokens.size,
     selectedAcceptedExamples: retrievedExamples.length,
   };
   return rawMemory;
@@ -1035,7 +1041,7 @@ export function buildTranslationBrief(
 
   // Size attribution is metadata-only: it lets diagnostics identify which retrieved
   // component dominates a prompt without exporting source, translation, or memory text.
-  const jsonChars = (value: unknown) => JSON.stringify(value ?? null).length;
+  const jsonChars = (value: unknown) => JSON.stringify(value ?? null)?.length || 0;
   const sectionStats = (value: unknown) => {
     const chars = jsonChars(value);
     if (!Array.isArray(value)) return { chars, count: value && typeof value === 'object' ? Object.keys(value as object).length : 0 };
