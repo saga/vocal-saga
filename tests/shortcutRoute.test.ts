@@ -92,7 +92,7 @@ describe('GET /s/<domain-or-shorthand> — shorthand URL expansion', () => {
     const call = (translateUrl as any).mock.calls[0][0];
     expect(call.target).toBe('zh');
     expect(call.mode).toBe('bilingual');
-    expect(call.source).toBeUndefined();
+    expect(call.source).toBe('auto');
   });
 
   it('passes through source and target, forces bilingual', async () => {
