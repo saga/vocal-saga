@@ -6,6 +6,7 @@
 import type { Request, Response } from 'express';
 import { getDocumentProjectStore, MAX_DOCUMENT_SOURCE_BYTES } from './projectStore.ts';
 import { startProjectTranslationRun, isProjectRunActive } from './translationAgent.ts';
+import { scheduleChineseEditorialProfileRefresh } from './chineseEditorialProfile.ts';
 import { sendApiError, sendJson } from '../middleware.ts';
 import { parseDocumentFile } from './ingest.ts';
 import { startContextGraphAnalysis, getContextGraph, getContextGraphStatus, reviewContextGraphItem } from './contextGraph.ts';
@@ -361,6 +362,42 @@ export async function handleDocumentProjectRequest(req: Request, res: Response, 
       sendJson(res, 201, { ...saved, current: store.getCurrentLiteraryMemory(projectId) });
       return true;
     }
+    if (pathParts.length === 7 && pathParts[4] === 'literary-memory' &&
+        pathParts[5] === 'chinese-editorial-profile' && pathParts[6] === 'review' && method === 'POST') {
+      const body = bodyObject(req.body || {});
+      if (body.action !== 'confirm' && body.action !== 'reject') {
+        throw Object.assign(new Error('action 必须是 confirm 或 reject'), { status: 400 });
+      }
+      const current = store.getCurrentLiteraryMemory(projectId);
+      const profile = current.memory.chineseEditorialProfile;
+      const projectContext = store.getProjectContext(projectId);
+      if (!profile || profile.sourceRevisionId !== projectContext.currentSourceRevisionId ||
+          !Array.isArray(profile.evidenceRefs) ||
+          new Set(profile.evidenceRefs.map((item: any) => String(item.segmentId || '')).filter(Boolean)).size < 3) {
+        throw Object.assign(new Error('当前来源版本没有可确认的中文编辑档案，或档案证据已失效。'), { status: 409 });
+      }
+      if (body.action === 'confirm' && profile.status === 'rejected') {
+        throw Object.assign(new Error('已拒绝的编辑档案不能直接确认，请先重新分析生成新候选。'), { status: 409 });
+      }
+      const nextMemory = {
+        ...current.memory,
+        chineseEditorialProfile: {
+          ...profile,
+          status: body.action === 'confirm' ? 'confirmed' : 'rejected',
+          ...(body.action === 'confirm'
+            ? { confirmationSource: 'user-confirmed', confirmedAt: new Date().toISOString() }
+            : { confirmationSource: undefined, confirmedAt: undefined }),
+        },
+      };
+      const saved = store.saveLiteraryMemory(projectId, nextMemory);
+      store.appendEvent(projectId, null, 'chinese-editorial-profile.user-reviewed', {
+        action: body.action,
+        memoryRevisionId: saved.memoryRevisionId,
+        sourceRevisionId: profile.sourceRevisionId,
+      });
+      sendJson(res, 200, { ...saved, current: store.getCurrentLiteraryMemory(projectId) });
+      return true;
+    }
     if (pathParts.length === 7 && pathParts[4] === 'runs' && pathParts[6] === 'translation-briefs' && method === 'GET') {
       const runId = pathParts[5]!;
       // includeContent is explicit here because the API user is requesting this run's auditable retrieval snapshot.
@@ -435,6 +472,7 @@ export async function handleDocumentProjectRequest(req: Request, res: Response, 
     if (pathParts.length === 7 && pathParts[4] === 'runs' && pathParts[6] === 'accept' && method === 'POST') {
       const body = bodyObject(req.body || {});
       const run = store.acceptCandidates(projectId, pathParts[5]!, Array.isArray(body.segmentIds) ? body.segmentIds.map(String) : undefined);
+      scheduleChineseEditorialProfileRefresh(projectId, pathParts[5]!);
       sendJson(res, 200, { run });
       return true;
     }
@@ -448,6 +486,7 @@ export async function handleDocumentProjectRequest(req: Request, res: Response, 
         throw Object.assign(new Error('findingId 必须是正整数'), { status: 400 });
       }
       const result = store.setReviewFindingDisposition(projectId, pathParts[5]!, findingId, body.action);
+      if (body.action === 'apply') scheduleChineseEditorialProfileRefresh(projectId, pathParts[5]!);
       sendJson(res, 200, { result, run: store.getRun(projectId, pathParts[5]!) });
       return true;
     }
