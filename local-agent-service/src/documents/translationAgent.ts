@@ -2365,8 +2365,9 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
       scheduleChineseEditorialProfileRefresh(projectId, runId);
     }
 
-    // 完整/部分运行结束后自动检查全书；只自动返工确定性缺译，最多一轮。
-    // 启发式英文残留、数字差异、重复表达和规范名冲突留给有界 Reviewer/非阻塞报告处理。
+    // 完整/部分运行结束后仍执行全书质量审计；但自动补译只允许覆盖父 Run 实际包含的片段，最多一轮。
+    // 局部 Run 不得因全书其它位置缺译而扩大执行范围；启发式英文残留、数字差异、重复表达和规范名冲突
+    // 留给有界 Reviewer/非阻塞报告处理。
     if (['completed', 'partial'].includes(finishedRun.status)) {
       try {
         const audit = runProjectQualityAudit(projectId);
