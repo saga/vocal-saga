@@ -152,11 +152,26 @@ test('Chinese literary edits require explicit bilingual coverage and otherwise f
     { segmentId: 'verified-corrected', text: '双语审校修订乙。' },
     { segmentId: 'verified-unchanged', text: '中文编辑甲。' },
   ]);
+  assert.deepEqual(result.verified, [
+    { segmentId: 'verified-unchanged', text: '中文编辑甲。' },
+    { segmentId: 'verified-corrected', text: '双语审校修订乙。' },
+  ]);
   assert.deepEqual(result.fallbacks, [
     { segmentId: 'missing', text: '初译丙。' },
     { segmentId: 'retry-failed', text: '初译丁。' },
     { segmentId: 'malformed', text: '初译戊。' },
   ]);
+
+  const revertedByBilingualReview = resolveBilingualVerifiedChineseEdits(
+    new Map([['s1', '第一道初译。']]),
+    new Map([['s1', '中文单语编辑。']]),
+    { reviewedIds: ['s1'], missingIds: [], translations: { s1: '第一道初译。' } },
+  );
+  assert.deepEqual(revertedByBilingualReview.verified, [
+    { segmentId: 's1', text: '第一道初译。' },
+  ]);
+  assert.deepEqual(revertedByBilingualReview.candidates, [],
+    'a bilingual reviewer may reject the Chinese edit by returning the first-pass translation');
 
   const failed = resolveBilingualVerifiedChineseEdits(initial, edits, {
     reviewedIds: [], missingIds: [...edits.keys()], translations: {},
