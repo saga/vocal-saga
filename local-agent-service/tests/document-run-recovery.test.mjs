@@ -120,7 +120,10 @@ test('startup recovery marks orphaned runs failed and appends terminal events at
 
   const normalizedSegments = db.prepare(
     'SELECT segment_id, status FROM run_segments WHERE run_id = ? ORDER BY segment_id',
-  ).all(translationRun.runId);
+  ).all(translationRun.runId).map((row) => ({
+    segment_id: row.segment_id,
+    status: row.status,
+  }));
   assert.deepEqual(normalizedSegments, [
     { segment_id: 's1', status: 'candidate' },
     { segment_id: 's2', status: 'pending' },
