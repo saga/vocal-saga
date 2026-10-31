@@ -2397,7 +2397,7 @@ export function buildProjectContextGraphBundle(
       evidenceBacked: true,
       explicitBookSpecificMeaning: attributes.bookSpecificMeaning === true,
       // This preflight choice is deterministic within this Run but is not persisted as user-confirmed.
-      sourceStatus: 'confirmed',
+      sourceStatus: explicitUserConfirmation ? 'confirmed' : 'run-canonical',
       confirmationSource: explicitUserConfirmation ? 'user-confirmed' : 'model-default',
     }];
   });
