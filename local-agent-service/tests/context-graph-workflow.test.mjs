@@ -143,6 +143,10 @@ test('literary translation requires a complete, current full-book preprocessing 
   assert.equal(isContextGraphReadyForTranslationRun({ ...ready, styleGuideReady: false }, run), false);
   assert.equal(isContextGraphReadyForTranslationRun({
     ...ready,
+    progress: { ...ready.progress, strategy: undefined },
+  }, run), false);
+  assert.equal(isContextGraphReadyForTranslationRun({
+    ...ready,
     progress: { ...ready.progress, completedStages: ['style', 'characters', 'entities', 'relationships'] },
   }, run), false);
   assert.equal(isContextGraphReadyForTranslationRun({
