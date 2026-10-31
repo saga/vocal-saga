@@ -192,11 +192,12 @@ test('TranslationBrief is revision-pinned, bounded and hashes the source selecti
 
 test('historical accepted examples are bounded and never duplicate preceding segments', () => {
   const store = getDocumentProjectStore();
+  const variants = ['amber', 'blue', 'copper', 'distant', 'evening', 'frost', 'golden', 'harbor', 'ivory', 'jade', 'kindred', 'lilac'];
   const segments = Array.from({ length: 13 }, (_, index) => ({
     id: 'bounded-example-' + index,
     text: index === 12
       ? 'Mara archive lantern secret. The current passage needs consistent terminology.'
-      : 'Mara archive lantern secret. ' + ('distinctive passage detail ' + index + ' ').repeat(35),
+      : 'Mara archive lantern secret. ' + ('distinctive passage detail variant' + variants[index] + ' ').repeat(35),
     kind: 'paragraph',
     contextPath: 'Chapter 1',
   }));
