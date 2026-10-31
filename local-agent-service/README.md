@@ -360,3 +360,8 @@ Following the Runtime / Workflow / Skill / Tool / Human separation used in agent
 
 The project Agent uses bounded parallel batch workers for recoverability and throughput. Each translation batch and each literary review batch gets an independent Workbuddy Session scope; every request still carries explicit source context, glossary/Prompt and voiceContext, so correctness does not depend on previous turns in a shared transcript. Initial translation candidates are persisted immediately, reviews run in a separate bounded worker budget and may overlap later translations, and a run does not enter its terminal state until scheduled reviews settle. Cancellation discards in-flight model results. OpenCode retains its one-shot CLI semantics while workflow concurrency remains bounded. OCR for scanned PDF and layout reconstruction from original EPUB/PDF remain in the extension and are outside the project Agent's current input contract.
 
+
+
+## Chinese literary editing benchmark
+
+For a blinded A/B comparison of Chinese monolingual editors on 100–200 public-domain, user-owned or licensed segments, see [the benchmark protocol](benchmarks/chinese-literary-editing/README.md). Run it with `npm run benchmark:chinese-literary`. The runner creates a blinded human-review packet, a separate model mapping, bilingual fidelity screening results and a CSV review template. It does not upload local benchmark data.
