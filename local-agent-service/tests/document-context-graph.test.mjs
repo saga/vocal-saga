@@ -16,6 +16,7 @@ const {
   getContextGraphStatus,
   buildProjectContextGraphBundle,
   reviewContextGraphItem,
+  reviewContextGraphItems,
   clearReplaceableModelGeneratedContextGraphItems,
   startContextGraphAnalysis,
   persistSourceFeatureIndex,
@@ -202,6 +203,39 @@ test('a prior alias cannot reveal a canonical identity whose name appears only l
   const mapping = bundle?.nameMappings.find((item) => item.source === 'The King');
   assert.equal(mapping, undefined,
     'a generated alias must not reveal a canonical identity before its formal name appears in the source');
+});
+
+test('Context Graph batch review is atomic when any requested item is missing', () => {
+  const store = getDocumentProjectStore();
+  const project = store.createProject({
+    title: 'Context Graph Atomic Review',
+    format: 'txt',
+    sourceFileName: 'context-graph-atomic-review.txt',
+    prompt: { translationMode: 'literary' },
+    segments: [{ id: 'atomic-source', text: 'Alice trusts Bob.', kind: 'paragraph', contextPath: 'Chapter 1' }],
+  });
+  const { db, currentSourceRevisionId } = store.getProjectContext(project.projectId);
+  getContextGraph(project.projectId);
+  const now = new Date().toISOString();
+  db.prepare(
+    'INSERT INTO context_graph_nodes(node_id, source_revision_id, kind, name, normalized_name, attributes_json, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+  ).run('atomic-alice', currentSourceRevisionId, 'character', 'Alice', 'alice',
+    JSON.stringify({ adoptionSource: 'model-default' }), 'confirmed', now, now);
+  db.prepare(
+    'INSERT INTO context_graph_evidence(source_revision_id, node_id, edge_id, segment_id, quote, role, created_at) VALUES (?, ?, NULL, ?, ?, ?, ?)',
+  ).run(currentSourceRevisionId, 'atomic-alice', 'atomic-source', 'Alice trusts Bob.', 'character', now);
+
+  assert.throws(() => reviewContextGraphItems(project.projectId, [
+    { type: 'node', id: 'atomic-alice', status: 'rejected' },
+    { type: 'edge', id: 'missing-edge', status: 'rejected' },
+  ]), /找不到当前来源版本中的 Context Graph 项/);
+
+  const row = db.prepare(
+    'SELECT status, attributes_json FROM context_graph_nodes WHERE node_id = ? AND source_revision_id = ?',
+  ).get('atomic-alice', currentSourceRevisionId);
+  assert.equal(row.status, 'confirmed');
+  assert.equal(JSON.parse(row.attributes_json).adoptionSource, 'model-default',
+    'the valid first item must roll back when a later item in the batch is invalid');
 });
 
 test('Context Graph changes are rejected while a translation run is active', () => {
