@@ -1066,8 +1066,8 @@ export class DocumentProjectStore {
     });
     memory.voiceAnchors = memory.voiceAnchors.map((anchor: any) => {
       const sourceValid = validEvidence(anchor.segmentId, anchor.source);
-      const attributionValid = validEvidence(anchor.segmentId, anchor.attributionEvidence) &&
-        Number.isFinite(Number(anchor.attributionConfidence)) && Number(anchor.attributionConfidence) >= 0.7;
+      const attributionValid = !anchor.attributionEvidence ||
+        validEvidence(anchor.segmentId, anchor.attributionEvidence);
       const speakerConfirmed = memory.characterVoices.some((profile: any) =>
         profile.characterId === anchor.speakerId && profile.status === 'confirmed');
       const accepted = latestAccepted.get(anchor.segmentId);
@@ -1078,7 +1078,7 @@ export class DocumentProjectStore {
         accepted.sourceHash === currentSource.source_hash &&
         !!accepted.translation.trim() &&
         normalize(accepted.translation).includes(normalize(anchor.target));
-      const approved = anchor.status === 'approved' && sourceValid && attributionValid && speakerConfirmed && targetValid;
+      const approved = anchor.status !== 'rejected' && sourceValid && attributionValid && speakerConfirmed && targetValid;
       const status = anchor.status === 'rejected' ? 'rejected' : approved ? 'approved' : 'candidate';
       return {
         ...anchor,
@@ -1096,13 +1096,14 @@ export class DocumentProjectStore {
       });
       const evidenceSegmentCount = new Set(evidenceRefs.map((ref: any) => String(ref.segmentId))).size;
       const revisionMatches = profile.sourceRevisionId === currentSourceRevisionId;
-      const canRemainConfirmed = revisionMatches && evidenceSegmentCount >= 3 &&
-        profile.status === 'confirmed' && profile.confirmationSource === 'user-confirmed';
+      const canRemainActive = revisionMatches && profile.status !== 'rejected';
       memory.chineseEditorialProfile = {
         ...profile,
         evidenceRefs,
-        status: profile.status === 'rejected' ? 'rejected' : canRemainConfirmed ? 'confirmed' : 'candidate',
-        ...(canRemainConfirmed ? { confirmationSource: 'user-confirmed' } : { confirmationSource: undefined, confirmedAt: undefined }),
+        status: profile.status === 'rejected' ? 'rejected' : canRemainActive ? 'confirmed' : 'candidate',
+        ...(canRemainActive
+          ? { confirmationSource: profile.confirmationSource || 'model-default' }
+          : { confirmationSource: undefined, confirmedAt: undefined }),
       };
     }
     const confirmedVoicesAfter = memory.characterVoices.filter((p: any) => p.status === 'confirmed').length;
