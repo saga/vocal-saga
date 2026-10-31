@@ -792,6 +792,8 @@ export function buildTranslationBrief(
   const graphRetrievalDiagnostics = (graph as any)?.retrievalDiagnostics &&
     typeof (graph as any).retrievalDiagnostics === 'object'
     ? { ...(graph as any).retrievalDiagnostics } : {};
+  let graphMappingCandidatesBeforeBatchFilter = 0;
+  let graphMappingsExcludedNotMentioned = 0;
   if (graph && Object.prototype.hasOwnProperty.call(graph, 'retrievalDiagnostics')) {
     delete (graph as any).retrievalDiagnostics;
   }
@@ -993,20 +995,31 @@ export function buildTranslationBrief(
       graph.nameMappings = graph.nameMappings.filter((mapping: any) => !matches(mapping));
       graph.nameMappings.unshift({ ...incoming, aliases: mergedAliases });
     }
+    const isVisibleInBatch = (name: unknown) => typeof name === 'string' && !!name.trim() &&
+      [...visiblePrecedingSegments, ...items].some((item) => sourceNameMatches(item.text, name));
+    graphMappingCandidatesBeforeBatchFilter = graph.nameMappings.length;
+    graph.nameMappings = graph.nameMappings.flatMap((mapping: any) => {
+      const source = typeof mapping?.source === 'string' ? mapping.source.trim() : '';
+      const aliases = safeCanonicalSourceAliases(source, mapping?.aliases).filter(isVisibleInBatch);
+      if (!isVisibleInBatch(source) && !aliases.length) return [];
+      return [{ ...mapping, aliases }];
+    });
+    graphMappingsExcludedNotMentioned = graphMappingCandidatesBeforeBatchFilter - graph.nameMappings.length;
     graph.nameMappings.sort((a: any, b: any) => {
       const rank = (mapping: any) => {
-        const statusRank = ['confirmed', 'confirmed-memory'].includes(String(mapping?.sourceStatus || '')) ? 5 :
-          mapping?.sourceStatus === 'auto' ? 4 : mapping?.sourceStatus === 'run-canonical' ? 3 : 1;
-        const names = [mapping?.source, ...(Array.isArray(mapping?.aliases) ? mapping.aliases : [])];
+        const names = [mapping.source, ...(Array.isArray(mapping.aliases) ? mapping.aliases : [])];
         const inCurrent = names.some((name: unknown) => items.some((item) => sourceNameMatches(item.text, name))) ? 2 : 0;
         const inPreceding = names.some((name: unknown) => visiblePrecedingSegments.some((item) =>
           sourceNameMatches(item.text, name))) ? 1 : 0;
+        const statusRank = ['confirmed', 'confirmed-memory'].includes(String(mapping.sourceStatus)) ? 5 :
+          mapping.sourceStatus === 'auto' ? 4 : mapping.sourceStatus === 'run-canonical' ? 3 : 1;
         return statusRank + inCurrent + inPreceding;
       };
       return rank(b) - rank(a);
     });
-    // Keep every source-visible mapping; relevance ordering is useful, but a fixed count can
-    // discard a confirmed name needed later in the same batch.
+    // Retain every mapping actually mentioned in this batch or its visible preceding context.
+    // A mapping for an unrelated person mentioned hundreds of pages earlier is retrieved again
+    // when that name becomes relevant; it does not need to inflate every intervening request.
     if (characterProfileMappingConflictCount) {
       logInfo('translation-brief', 'confirmed character profile mapping conflicts=' + characterProfileMappingConflictCount);
     }
@@ -1095,6 +1108,8 @@ export function buildTranslationBrief(
         ? (temporalMemory as any).__translationBriefDiagnostics : {}),
       ...graphRetrievalDiagnostics,
       characterProfileMappingConflictCount,
+      graphMappingCandidatesBeforeBatchFilter,
+      graphMappingsExcludedNotMentioned,
       precedingContextAvailable: precedingSegments.length,
       precedingContextConfigured: strategy.precedingContextSegments,
       precedingContextInjected: visiblePrecedingSegments.length,
