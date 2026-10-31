@@ -12,9 +12,9 @@
 ## Context Graph 与文学 Run 的准备阶段
 
 - Context Graph 节点、关系、章节摘要和原文证据只在 local-agent-service 的项目 SQLite 中保存与检索。扩展的常规状态轮询应调用 GET /context-graph/status，不得复制完整图谱到 LiteraryMemory。
-- 扩展可以提交文学翻译 Run，而不要求预先存在 completed Context Graph。服务端先持久化 Run 为 queued，由 executeRun 校验原文版本、分析版本和语言方向；需要时自动启动或等待预处理，在检查通过前不开始翻译。
-- 扩展 readiness 仅作状态说明，不是安全或工作流边界。服务端不可用时要明确报错；不能将远端 fallback 的结果误当成已经写入 Local Agent 项目的规范分析数据。
-- 显式重新分析仍可由扩展提供操作，但操作只是向服务端提交命令并展示持久化状态，不得在浏览器里持有长时间分析状态机。
+- 正常扩展路径必须先读取服务端的轻量 Context Graph readiness 投影；只有当前 source revision、分析版本、语言方向、样本、文风和必需阶段全部通过，才允许创建文学翻译 Run。状态未知或读取失败时 fail closed。
+- 新项目/从未分析的当前来源版本由扩展自动触发一次预处理并轮询状态；失败、过期或语言不匹配时不无限自动重试，用户通过“人物与预处理”显式重新分析。扩展不在浏览器运行分析算法，也不复制图谱节点/证据。
+- executeRun 保留服务端最终门禁。旧客户端或直接 API 调用可以先创建 queued Run；服务端自动启动/等待匹配预处理，但在 readiness 通过前不进入 running、不调用翻译模型、不写候选。服务端不可用时要明确报错；不能将远端 fallback 的结果误当成 Local Agent 项目的规范分析数据。
 
 ## API
 
