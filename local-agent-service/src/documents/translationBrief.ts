@@ -9,7 +9,7 @@ import { buildProjectContextGraphBundle, CONTEXT_GRAPH_ANALYSIS_VERSION } from '
 import { getDocumentProjectStore, normalizeDocumentTranslationStrategy } from './projectStore.ts';
 import { isWorthCanonicalEntityMapping, normalizeCanonicalEntityKind, validateCanonicalTarget } from './canonicalEntityPolicy.ts';
 
-export const TRANSLATION_BRIEF_POLICY_VERSION = 'translation-brief-v8-default-adoption';
+export const TRANSLATION_BRIEF_POLICY_VERSION = 'translation-brief-v9-batch-scoped-mappings';
 // Safety ceiling only; this is not a retrieval target. Prefer complete relevant context over silent pruning.
 export const MAX_TRANSLATION_BRIEF_CHARS = 1_000_000;
 
