@@ -68,7 +68,7 @@ npm run diagnose:bundle -- --analyze
 npm run diagnose:bundle -- --out /tmp/vocal-saga-diagnostics
 ```
 
-脚本按文档项目目录中的 `catalog.sqlite`，以 `updated_at DESC` 选择最近更新的两个未归档文档项目，不按小时筛日志。每个文档导出原文片段、来源版本、全部翻译 Run、批次状态、译文候选与采纳记录、Reviewer findings、TranslationBrief、上下文增量、质量审计/评估记录及完整项目事件时间线。CodeBuddy 分析使用这两个文档的 Run 摘要、事件时间线和 Reviewer/质量审计信号，不扫描其他项目或通用 SDK transcript。
+脚本按文档项目目录中的 `catalog.sqlite`，以 `updated_at DESC` 选择最近更新的两个未归档文档项目，不按小时筛日志。每个文档导出原文片段、来源版本、Context Graph 分析元数据/人物实体/关系/证据/章节摘要/分析 Run、全部翻译 Run、批次状态、译文候选与采纳记录、Reviewer findings、TranslationBrief、上下文增量、质量审计/评估记录及完整项目事件时间线。CodeBuddy 分析使用这两个文档的 Context Graph 结果、Run 摘要、事件时间线和 Reviewer/质量审计信号，不扫描其他项目或通用 SDK transcript。
 
 诊断包默认写入 `~/.vocal-saga-local-agent/diagnostic-bundles/`。**注意：为了分析翻译质量，文档 JSON 会包含原文片段、译文、持久化 Prompt 和复核记录。** 不包含原始 EPUB/PDF 二进制文件、其他文档项目、通用 request_history 数据库记录或 CodeBuddy/OpenCode 会话 transcript。上传 ChatGPT 前请先检查两个文档 JSON，确认可以分享其中的书稿内容和译文。
 
