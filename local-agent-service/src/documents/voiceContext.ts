@@ -245,9 +245,11 @@ export function sanitizeProjectLiteraryMemory(input: unknown): Record<string, an
   };
   const styleGuideStatus = raw.styleGuideAutoDisabled === true ? 'candidate' : Object.keys(styleGuide).length ? 'confirmed' : 'candidate';
   const styleGuideConfirmationSource = styleGuideStatus === 'confirmed'
-    ? (raw.styleGuideStatus === 'confirmed'
-      ? (raw.styleGuideConfirmationSource ? confirmationSource(raw.styleGuideConfirmationSource, true) : 'legacy-unknown')
-      : 'model-default') : undefined;
+    ? (rawStyleGuideOrigin === 'user-edited' ? 'user-modified'
+      : rawStyleGuideOrigin === 'user-confirmed' ? 'user-confirmed'
+      : raw.styleGuideStatus === 'confirmed'
+        ? (raw.styleGuideConfirmationSource ? confirmationSource(raw.styleGuideConfirmationSource, true) : 'legacy-unknown')
+        : 'model-default') : undefined;
   const rawStyleGuideOrigin = raw.styleGuideOrigin;
   const styleGuideOrigin = ['context-graph', 'user-edited', 'user-confirmed', 'legacy-unknown'].includes(String(rawStyleGuideOrigin))
     ? String(rawStyleGuideOrigin)
