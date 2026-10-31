@@ -654,6 +654,11 @@ function buildTemporallyVisibleMemory(
     acceptedExampleCandidateTermCount: candidateTerms.length,
     acceptedExampleSourceTokenCount: currentTokens.size,
     selectedAcceptedExamples: retrievedExamples.length,
+    acceptedExamplesInjected: retrievedExamples.length,
+    acceptedExamplesExcludedAsPreceding,
+    acceptedExamplesTrimmedByBudget,
+    acceptedExampleChars: retrievedExampleChars,
+    acceptedExampleBudgetChars: Math.max(0, exampleBudgetChars),
   };
   return rawMemory;
 }
