@@ -766,9 +766,10 @@ export function buildProjectVoiceContext(
   // remove character profiles, evidence, anchors, relationships, or chapter summaries.
   // Emit per-section sizes (never content) so unusually large context can be attributed
   // without exporting book text, character names, or translated examples into service logs.
-  const sectionChars = Object.fromEntries(Object.entries(result).map(([key, value]) => [
-    key, JSON.stringify(value ?? null)?.length || 0,
-  ]).sort((a, b) => Number(b[1]) - Number(a[1])));
+  const sectionChars: Record<string, number> = {};
+  for (const [key, value] of Object.entries(result)) {
+    sectionChars[key] = JSON.stringify(value ?? null)?.length || 0;
+  }
   const largestSections = Object.entries(sectionChars).slice(0, 6)
     .map(([key, chars]) => key + ':' + chars).join(',');
   const exampleOrigins = (Array.isArray(result.recentExamples) ? result.recentExamples : [])
