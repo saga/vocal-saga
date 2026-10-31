@@ -430,7 +430,7 @@ function buildTemporallyVisibleMemory(
     };
     const exampleChars = JSON.stringify(example).length;
     if (retrievedExamples.length >= MAX_ACCEPTED_EXAMPLES ||
-        retrievedExampleChars + exampleChars > Math.max(0, exampleBudgetChars)) {
+        retrievedExampleChars + exampleChars + (retrievedExamples.length ? 1 : 2) > Math.max(0, exampleBudgetChars)) {
       acceptedExamplesTrimmedByBudget++;
       continue;
     }
@@ -777,10 +777,8 @@ export function buildTranslationBrief(
       });
     }
   }
-  // strategy.contextBudgetChars remains a legacy preference, not a hard ceiling. Context must not
-  // be silently discarded just to satisfy an arbitrary character budget; provider limits are handled
-  // by the runtime/model request layer, which can report a genuine provider rejection explicitly.
-  const maxBriefChars = MAX_TRANSLATION_BRIEF_CHARS;
+  // The configured soft budget controls optional historical style examples. Core source context,
+  // glossary entries, visible canonical mappings and evidence-backed voice data are not discarded.
   const glossary = filterGlossaryForBatch(context, items);
   const exampleBudgetChars = Math.min(MAX_ACCEPTED_EXAMPLE_CHARS,
     Math.max(1_000, Math.floor(strategy.contextBudgetChars * 0.25)));
