@@ -424,6 +424,9 @@ function buildTemporallyVisibleMemory(
     selectedExampleTokens.push(tokens);
   }
   rawMemory.entities = (Array.isArray(rawMemory.entities) ? rawMemory.entities : []).flatMap((entity: any) => {
+    // A durable user rejection must remove the entity from every downstream TranslationBrief
+    // projection, not merely from the visible voiceContext field.
+    if (!entity || entity.reviewStatus === 'rejected') return [];
     const aliases = Array.isArray(entity?.aliases) ? entity.aliases : [];
     const evidenceRefs = Array.isArray(entity.evidenceRefs) ? entity.evidenceRefs : [];
     const userConfirmedMapping = entity?.reviewStatus === 'confirmed' && ['user-confirmed', 'user-modified'].includes(String(entity?.confirmationSource || ''));
