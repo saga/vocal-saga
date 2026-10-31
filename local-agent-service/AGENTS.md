@@ -28,7 +28,7 @@
 
 统一的是调度、持久化、恢复、结构验证、候选译文、审校、事件与质量审计边界，不是把文学、技术文档和短文本强行使用同一份 Prompt。任务差异必须表达为同一管线中的明确策略/Prompt 配置，而不是按入口分叉。阅读页（截图中的“继续翻译下一待译页/强制重译当前页”）也必须通过项目 API 创建或恢复 Run；不允许仅 Agent Workspace 才享有 TranslationBrief、上下文增量或质量检查。
 
-文学初译的统一响应包含 `translations` 和有界 `context_delta`。服务端独立验收两部分：译文按 segment ID 校验和保存；上下文增量只有在引用当前批次真实 segment ID、连续原文引文可验证，且译文提及的 target surface 确实存在时才接受。上下文增量在同一波次冻结，不得影响同波其他批次；波次完成后按原文 ordinal 合并，下一波才可读到候选。所有模型新增内容保持 suggested/candidate，不能自称 confirmed，也不能覆盖人工确认记忆或被采纳的译文。详细契约见 [本地统一翻译 Pipeline 架构](../docs/TRANSLATION_PIPELINE.md) 和 [ADR-0001](../docs/adr/0001-unified-local-translation-context-delta.md)。
+文学初译的统一响应包含 `translations` 和有界 `context_delta`。服务端独立验收两部分：译文按 segment ID 校验和保存；上下文增量只有在引用当前批次真实 segment ID、连续原文引文可验证，且译文提及的 target surface 确实存在时才接受。上下文增量在同一波次冻结，不得影响同波其他批次；波次完成后按原文 ordinal 合并，下一波才可读到候选。模型新增内容通过来源/结构校验后以 `model-default` 默认采纳并参与后续翻译；低置信度观察作为弱提示，不得伪装成用户确认，也不得覆盖 `user-modified`、`user-confirmed` 或 `user-rejected` 决定及人工译文。详细契约见 [本地统一翻译 Pipeline 架构](../docs/TRANSLATION_PIPELINE.md) 和 [ADR-0001](../docs/adr/0001-unified-local-translation-context-delta.md)。
 
 任务路由应明确表达用户需求，而不是只按输入长度选择同一套通用流程。
 
@@ -49,7 +49,7 @@
 - EPUB/DOCX/PDF 等原始文件的解析和预处理必须位于 local-agent-service，不得要求 fanyi-extension 先将整本书拆成片段；本机服务提供独立 CLI/API 入口。本约束不意味着可以顺带修改扩展，本项目任务若明确要求不动扩展，就只提交服务端变更。
 - 支持纯文本 EPUB、DOCX、TXT、Markdown、HTML，以及带文本层的 PDF。PDF 通过 Poppler `pdftotext` 做文字提取；当前不实现 OCR，也不能把“未提取到文字”静默视作成功。
 - EPUB 按 OPF manifest/spine 顺序读取，保留章节/内容路径、标题与稳定片段 ID。解析必须有文件大小、解压大小、片段数、超时及路径安全边界；不得将 ZIP 条目解压到用户可控的任意路径。
-- Context Graph 是来源版本级的持久化状态，SQLite 为事实来源。模型生成的人物、别名、实体、关系与摘要先作为候选；证据必须包含稳定 segment ID 和能在对应原文片段中验证的连续引文。模型自称“确认”不能代替证据校验或人工确认。
+- Context Graph 是来源版本级的持久化状态，SQLite 为事实来源。模型生成的人物、别名、实体、关系与摘要先经过服务端来源证据校验；校验通过后默认以 `model-default` 生效，证据强度决定置信度和使用范围。证据必须包含稳定 segment ID 和能在对应原文片段中验证的连续引文；模型自称“确认”不能代替证据校验，机器默认采纳也不能伪装成人工确认。
 - 全书图谱、原文证据、章节摘要与人物/关系候选必须留在服务端；不得复制到扩展 LiteraryMemory。扩展轮询使用轻量 /context-graph/status 投影，不轮询完整节点/证据载荷。
 - 文学翻译必须先完成当前来源版本的全书预处理，再开始翻译模型调用。扩展通过轻量 /context-graph/status 投影做正常 UI 前置检查：未 ready、版本/语言不匹配或状态未知时不创建文学翻译 Run；新项目首次分析自动启动，失败/过期由用户显式重分析。服务端 executeRun 在进入 running 前保留最终门禁；旧客户端或直接 API 创建的 queued Run 可以等待/自动准备 Context Graph，但 readiness 通过前绝不调用翻译模型。扩展不得复制图谱或实现第二套分析算法。详见 ADR-0005。
 - 抽样不得只取开头、章节标题或最近章节。长文档至少覆盖开头/中部/结尾、分布式章节样本以及对白或专名较密集的片段；其余章节可以先生成抽取式摘要，再逐步补充模型摘要。
