@@ -217,7 +217,7 @@ M1 的确定性质量检查包括三项：
 
 - `tests/translation-context-delta.test.mjs`：当前批次证据约束、伪造/越界引文拒绝、译文表面形式核验、已确认译名保护、冲突候选的确定性合并。
 - `tests/document-agent-prompt.test.mjs` 与 `tests/translation-brief.test.mjs`：检查 TranslationBrief 的时间边界、共享快照、Prompt payload，以及 dynamic entity evidence 不得向早期 segment 泄漏。
-- `tests/quality-audit.test.mjs`：全书缺译、确认术语漂移、人物角色/声音单独维护的规范译名、规范名冲突、英文残留和重复表达审计；所有修订仍通过窄范围候选 Run 供人工采纳。
+- `tests/quality-audit.test.mjs`：全书缺译、确认术语漂移、人物角色/声音单独维护的规范译名、规范名冲突、英文残留和重复表达审计；修订通过窄范围候选 Run 持久化，符合条件的候选在 Run 最终化时自动采纳。
 - `npm test`：运行本地服务完整回归集；`npm run quality:fiction-baseline`：运行小说质量控制样本。
 
 测试夹具证明确定性验证和边界行为，不代表真实模型翻译质量已经提高。质量收益仍需在同一 source revision、语言方向和相同 segment 集合上进行 before/after 对照，并结合人工检查人物身份、称谓和声音是否稳定。
@@ -227,7 +227,7 @@ M1 的确定性质量检查包括三项：
 - 不在 Cloudflare Worker 内执行书籍级多阶段 Agent 或持久化 Context Graph。
 - 不在 `fanyi-extension` 里复制 `context_delta` 校验、实体合并和持久化逻辑。
 - 不做跨全文本字符串替换，不因自动建议而改写已采纳译文。
-- 不把模型生成的人物身份、关系、别名或译名直接标为 confirmed。
+- 不把模型生成的人物身份、关系、别名或译名伪装成 `user-confirmed`；机器默认采纳必须保留 `model-default` provenance，低置信度关系仅作弱提示。
 - 不让同波批次相互观察尚未完成的增量，也不把后文证据注入早期原文片段。
 
 
@@ -249,6 +249,9 @@ M1 的确定性质量检查包括三项：
 - 模型产生的当前最佳结果在通过来源/结构完整性校验后默认参与后续翻译；不得要求用户逐项确认人物、实体、关系、声音、文风或普通审校发现。
 - `model-default` 是机器默认采纳，不是用户确认。用户修改、确认和拒绝必须分别记录；`user-modified` 与 `user-confirmed` 均优先于机器默认结果。
 - 用户拒绝/删除必须持久化，重新分析、记忆刷新、TranslationBrief 合并不得自动恢复。不得仅删除 UI 或 LiteraryMemory 投影而让 Context Graph 原记录继续注入。
+- 删除实体/关系必须保留隐藏 `rejectedItems` tombstone；服务端/扩展 sanitize、merge、TranslationBrief 和 context_delta merge 都必须以 tombstone 为否决依据，只有用户明确重新编辑该项才可清除。
+- Run 创建在 SQLite 写锁内校验 source/Prompt/LiteraryMemory revision；Run 保持 running 直到 context delta 事务完成，再自动采纳。awaiting_acceptance 阻止新 Run，服务重启自动恢复 pending finalization。
+- 候选采纳校验当前 source revision，并保护同一 source hash 上所有更新的 accepted result，不能只保护人工译文。
 - 证据不完整只影响置信度、可用范围和约束强度，不得仅因文风字段、画像维度、关系证据覆盖不完整而阻断翻译。
 - 保留原文版本、语言方向、来源绑定、未来章节隔离、译文写回位置和数据完整性等硬约束。只有缺少不可替代输入、数据损坏或执行无法继续等技术异常才暂停。
 - 自动应用必须保留来源与版本记录，且不得覆盖用户修改；用户可以事后修改或拒绝。
