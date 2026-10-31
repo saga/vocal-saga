@@ -1439,6 +1439,20 @@ export class DocumentProjectStore {
     const createdAt = isoNow();
     db.exec('BEGIN IMMEDIATE');
     try {
+      // The immutable Run snapshot was assembled before acquiring the write lock. Revalidate
+      // its source/memory (and the implicit latest Prompt) under the lock so a concurrent edit
+      // cannot make a newly-created Run silently pin stale project state.
+      const lockedSource = db.prepare("SELECT value FROM project_meta WHERE key = 'current_source_revision_id'").get() as { value?: string } | undefined;
+      const lockedMemory = db.prepare("SELECT value FROM project_meta WHERE key = 'current_literary_memory_revision_id'").get() as { value?: string } | undefined;
+      if (lockedSource?.value !== sourceRevisionId || (lockedMemory?.value || null) !== literaryMemoryRevisionId) {
+        throw Object.assign(new Error('创建运行期间原文或文学记忆已更新；请基于最新项目状态重新提交运行。'), { status: 409 });
+      }
+      if (!input.prompt && !input.promptRevisionId) {
+        const lockedPrompt = db.prepare('SELECT prompt_revision_id FROM prompt_revisions ORDER BY created_at DESC, rowid DESC LIMIT 1').get() as { prompt_revision_id?: string } | undefined;
+        if (lockedPrompt?.prompt_revision_id !== promptRow.prompt_revision_id) {
+          throw Object.assign(new Error('创建运行期间 Prompt 已更新；请基于最新 Prompt 重新提交运行。'), { status: 409 });
+        }
+      }
       // 一个 workspace 同时只允许一个 queued/running run，防止阅读页与 Agent Tab 并发修改同一组候选。
       const inFlight = db.prepare("SELECT run_id FROM translation_runs WHERE status IN ('queued','running') LIMIT 1").get() as { run_id?: string } | undefined;
       if (inFlight?.run_id) {
