@@ -923,8 +923,8 @@ export function buildTranslationBrief(
       return statusRank + inCurrent + inPreceding;
     };
     graph.nameMappings.sort((a: any, b: any) => mappingRelevance(b) - mappingRelevance(a));
-    // Keep every source-visible mapping; relevance ordering is useful, but a fixed count can
-    // discard a confirmed name needed later in the same batch.
+    // Do not apply a count cap here. A later batch-scoped pass, after pinned profiles are
+    // merged, removes mappings not mentioned in this batch or its configured preceding context.
   }
   const voiceContext = context?.run?.translationMode === 'literary'
     ? buildProjectVoiceContext(
