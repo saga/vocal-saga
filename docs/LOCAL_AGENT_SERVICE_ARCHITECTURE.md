@@ -49,11 +49,31 @@ sequenceDiagram
     participant Brief as TranslationBrief
     participant Model as Agent Runner / Provider
     participant DB as Project SQLite
+    opt 文学模式：扩展正常路径前置检查
+        UI->>HTTP: GET /context-graph/status
+        HTTP-->>UI: 轻量 readiness/status DTO
+        alt 首次分析且尚未启动
+            UI->>HTTP: POST /context-graph/analyze
+            HTTP-->>UI: accepted / runId
+            UI->>HTTP: 轮询状态直到 ready 或 failed
+        else 失败、过期或语言不匹配
+            UI->>UI: 禁止创建 Run，等待用户显式重新分析
+        else 已 ready
+            UI->>UI: 开放文学翻译入口
+        end
+    end
     UI->>HTTP: 创建 Run 或恢复 Run
     HTTP->>Store: createRun / 校验当前 source revision
     Store->>DB: 固化 source、prompt、memory revision 和选中片段
     HTTP->>Agent: startProjectTranslationRun(projectId, runId)
-    Agent->>Store: getRunContext + getRunSegmentsForExecution
+    Agent->>Store: getRunContext
+    Agent->>Agent: ensureLiteraryPreprocessingBeforeRun（服务端最终门禁）
+    alt readiness 未通过（旧客户端/直接 API）
+        Agent->>Store: 记录 gate 事件；Run 保持 queued，等待或失败
+    else readiness 通过
+        Agent->>Store: setRunStatus(running)
+    end
+    Agent->>Store: getRunSegmentsForExecution
     Agent->>Agent: buildBatches + 计算并发预算
     loop 每个 batch / wave
         Agent->>Store: getPrecedingSegments
