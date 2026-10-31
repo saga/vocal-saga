@@ -1454,9 +1454,9 @@ export class DocumentProjectStore {
         }
       }
       // 一个 workspace 同时只允许一个 queued/running run，防止阅读页与 Agent Tab 并发修改同一组候选。
-      const inFlight = db.prepare("SELECT run_id FROM translation_runs WHERE status IN ('queued','running') LIMIT 1").get() as { run_id?: string } | undefined;
+      const inFlight = db.prepare("SELECT run_id FROM translation_runs WHERE status IN ('queued','running','awaiting_acceptance') LIMIT 1").get() as { run_id?: string } | undefined;
       if (inFlight?.run_id) {
-        throw Object.assign(new Error('当前文档已有运行中的翻译任务：' + inFlight.run_id), { status: 409 });
+        throw Object.assign(new Error('当前文档已有尚未完成最终化的翻译任务：' + inFlight.run_id), { status: 409 });
       }
       db.prepare('INSERT INTO translation_runs(run_id, source_revision_id, prompt_revision_id, literary_memory_revision_id, status, scope_json, run_fingerprint, provider, model, source_lang, target_lang, translation_mode, review_enabled, parent_run_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
         .run(runId, sourceRevisionId, promptRow.prompt_revision_id, literaryMemoryRevisionId, selected.length ? 'queued' : 'completed', JSON.stringify({ ...scope, type: scopeType }), runFingerprint,
