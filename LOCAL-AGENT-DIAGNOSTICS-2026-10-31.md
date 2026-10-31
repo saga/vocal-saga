@@ -9,7 +9,7 @@
 
 当前看到的主要问题不是 EPUB 解析或 Context Graph 全面失效，而是**长任务的运行连续性、Reviewer 超时，以及自动质量修复的范围控制**。
 
-1. **服务至少两次重启中断了 Proust 项目的持久化任务。** 一次 Context Graph 分析在五个阶段中完成三个后中断；两次自动质量修复 Run 也因 service restart 进入 failed。中断后的候选译文仍留在数据库，但没有进入 accepted 状态。
+1. **Proust 项目出现至少三条由进程中断/服务重启恢复逻辑生成的失败记录（两条翻译 Run、一条 Context Graph Run）。** 一次 Context Graph 分析在五个阶段中完成三个后中断；两次自动质量修复 Run 也因 service restart 进入 failed。中断后的候选译文仍留在数据库，但没有进入 accepted 状态。
 2. **局部翻译 Run 会触发全书缺译审计，并自动扩展为最多 100 段的补译 Run。** Proust 的两次普通 Run 分别只翻译 11 段和 21 段，结束后却各自启动了 100 段自动返工。若用户选择的是局部章节/片段，这会越过原 Run 的选择范围。
 3. **Workbuddy Reviewer 多次达到 180 秒超时。** Proust 项目记录到 5 次 review.audit.failed / stage.warning；初译结果被保留，但对应批次没有完成审校。
 4. **重启恢复事件中的计数不准确。** 恢复代码把失败 Run 的 candidate/accepted/failed/total 全部写成 0，但数据库中对应 Run 实际还保留 100 个 candidate，或 78 个 candidate 加 22 个 pending。事件时间线因此无法真实反映恢复前的工作量。
