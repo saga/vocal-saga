@@ -650,6 +650,7 @@ prepareHtmlForServer 时在 clone 上把 `link[rel=stylesheet]` 替换为
 5. 暂停/取消后不得继续分配新批次；取消期间返回的迟到翻译或审校结果不得写回候选、finding 或完成状态。调度发生致命错误时，已启动任务先收束，残留 `running` 片段改为可显式重试的 `failed`。
 6. 自动保存的是候选译文；审校 finding 需要单独保存。审校失败应保留有效初译并产生 warning，不应丢弃整批成功的初译。UI 不应把 `batch.translation.completed` 当成审校完成。
 7. CI 仅验证类型、调度/状态回归和接口契约，不调用真实模型，不证明线上耗时或翻译质量。性能结论必须标为估算，除非使用至少 60 段、重复 3 次的实时模型实验，并将跨模式差异与同模式重复噪声比较。
+8. 全书预处理就绪判定里的源语言比较必须把 `auto` 当作「由模型判断」而不是语言值：记录里存的是分析当时使用的具体语言（如 `en`），而扩展默认发 `auto`，按字面比较会让没改过任何设置的翻译每次都重跑整本分析。三处判定共用同一语义——扩展 `src/entrypoints/document/documentPreprocessing.ts` 的 `sourceLanguageMatches`、服务端 `isContextGraphReadyForTranslationRun` 与创建 Run 时的 409 校验（后两者共用 `local-agent-service/src/documents/languageMatch.ts`）。目标语言始终是显式值，换目标语言必须重新分析。
 
 关键实现与测试：
 - 服务端：`local-agent-service/src/documents/translationAgent.ts`、`projectStore.ts`、`projectRoutes.ts`。

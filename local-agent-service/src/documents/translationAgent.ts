@@ -14,6 +14,7 @@ import { addTurnUsage, summarizeTurnUsage, type TurnUsage } from '../agents/usag
 import { getCodeBuddyTaskProfile } from '../agents/taskProfiles.ts';
 import { runLiteraryReview } from '../literary.ts';
 import { getDocumentProjectStore, normalizeDocumentTranslationStrategy, type DocumentTranslationStrategy } from './projectStore.ts';
+import { sourceLanguageMatches, sourceLanguagePromptLabel } from './languageMatch.ts';
 import { buildProjectVoiceContext, sanitizeProjectLiteraryMemory } from './voiceContext.ts';
 import { buildTranslationBrief, summarizeTranslationBrief, type TranslationBrief } from './translationBrief.ts';
 import { runProjectQualityAudit, createQualityRepairRun, englishResidueFindings, numericFindings, terminologyFindings } from './qualityAudit.ts';
@@ -942,7 +943,7 @@ export function buildUserPrompt(template: string, items: TranslationItem[], cont
   if (template.includes('{{CONTENT_JSON}}')) return template.replaceAll('{{CONTENT_JSON}}', payload);
   if (template.trim()) return template + '\n\n请处理以下 JSON 数据：\n' + payload;
   return [
-    '请翻译下面 JSON 中的 segments。源语言：' + context.run.sourceLang + '；目标语言：' + context.run.targetLang + '。',
+    '请翻译下面 JSON 中的 segments。源语言：' + sourceLanguagePromptLabel(context.run.sourceLang) + '；目标语言：' + context.run.targetLang + '。',
     '保持每个片段独立，完整保留专名、数字、否定、时态、指代和段落语义。',
     payload,
   ].join('\n\n');
@@ -1522,7 +1523,7 @@ export function isContextGraphReadyForTranslationRun(
   }
   return String(graph.sourceRevisionId || '') === String(run.sourceRevisionId || '') &&
     progress.analysisVersion === CONTEXT_GRAPH_ANALYSIS_VERSION &&
-    String(progress.sourceLang || 'auto') === String(run.sourceLang || 'auto') &&
+    sourceLanguageMatches(progress.sourceLang, run.sourceLang) &&
     String(progress.targetLang || 'zh') === String(run.targetLang || 'zh');
 }
 

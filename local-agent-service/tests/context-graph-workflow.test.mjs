@@ -267,3 +267,37 @@ test('literary translation requires a complete, current full-book preprocessing 
     progress: { ...ready.progress, sampleCount: 0 },
   }, run), false);
 });
+
+test('auto source language reuses a graph recorded with a concrete detected language', () => {
+  const run = { sourceRevisionId: 'source-1', sourceLang: 'en', targetLang: 'zh' };
+  const ready = {
+    status: 'completed',
+    styleGuideReady: true,
+    sourceRevisionId: 'source-1',
+    progress: {
+      strategy: 'B',
+      sampleCount: 80,
+      analysisVersion: CONTEXT_GRAPH_ANALYSIS_VERSION,
+      // 预处理记录里写的是分析当时使用的语言，客户端默认发 auto。
+      sourceLang: 'en',
+      targetLang: 'zh',
+      completedStages: ['style', 'characters', 'entities', 'relationships', 'chapters'],
+    },
+  };
+  assert.equal(isContextGraphReadyForTranslationRun(ready, { ...run, sourceLang: 'auto' }), true);
+  assert.equal(isContextGraphReadyForTranslationRun(ready, { ...run, sourceLang: 'EN' }), true);
+  // 记录侧是 auto 时不构成冲突，也不会被误判为语言不一致。
+  assert.equal(isContextGraphReadyForTranslationRun({
+    ...ready,
+    progress: { ...ready.progress, sourceLang: 'auto' },
+  }, run), true);
+  // 目标语言是显式值，换了就必须重新分析。
+  assert.equal(isContextGraphReadyForTranslationRun(ready, { ...run, targetLang: 'ja' }), false);
+});
+
+test('auto source language is described to the model as a decision, not a language code', async () => {
+  const { sourceLanguagePromptLabel } = await import('../src/documents/languageMatch.ts');
+  assert.match(sourceLanguagePromptLabel('auto'), /自动判断/);
+  assert.match(sourceLanguagePromptLabel(''), /自动判断/);
+  assert.equal(sourceLanguagePromptLabel('en'), 'en');
+});

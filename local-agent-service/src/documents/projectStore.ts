@@ -14,6 +14,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { DATA_DIR } from '../config.ts';
 import { sanitizeProjectLiteraryMemory } from './voiceContext.ts';
 import { mergeTranslationContextDeltasIntoMemory } from './translationContextDelta.ts';
+import { sourceLanguageMatches } from './languageMatch.ts';
 import { normalizeCodeBuddyTaskProfiles } from '../agents/taskProfiles.ts';
 import { formatLogLine, logError, logInfo, logWarn } from '../log.ts';
 
@@ -1470,7 +1471,8 @@ export class DocumentProjectStore {
     }
     const expectedSourceLang = sourceLang || 'auto';
     const expectedTargetLang = targetLang || 'zh';
-    if (preprocessingProgress.sourceLang !== expectedSourceLang || preprocessingProgress.targetLang !== expectedTargetLang) {
+    if (!sourceLanguageMatches(preprocessingProgress.sourceLang, expectedSourceLang) ||
+        preprocessingProgress.targetLang !== expectedTargetLang) {
       throw Object.assign(new Error(
         '全书预处理语言与当前翻译配置不一致（预处理 ' +
         (preprocessingProgress.sourceLang || 'auto') + '→' + (preprocessingProgress.targetLang || 'zh') +
