@@ -100,7 +100,7 @@ describe('GET /translate/<target> — path parsing', () => {
     const call = (translateUrl as any).mock.calls[0][0];
     expect(call.target).toBe('zh');
     expect(call.mode).toBe('bilingual');
-    expect(call.source).toBeUndefined();
+    expect(call.source).toBe('auto');
   });
 
 });
