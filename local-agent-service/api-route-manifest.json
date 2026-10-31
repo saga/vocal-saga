@@ -337,6 +337,12 @@
       "path": "/api/documents/projects/{projectId}/runs/{runId}",
       "source": "src/documents/projectRoutes.ts",
       "signature": "pathParts.length === 6 && pathParts[4] === 'runs' && method === 'GET'"
+    },
+    {
+      "method": "POST",
+      "path": "/api/documents/projects/{projectId}/literary-memory/chinese-editorial-profile/review",
+      "source": "src/documents/projectRoutes.ts",
+      "signature": "pathParts[5] === 'chinese-editorial-profile' && pathParts[6] === 'review' && method === 'POST'"
     }
   ]
 }
