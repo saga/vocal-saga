@@ -365,33 +365,80 @@ export async function handleDocumentProjectRequest(req: Request, res: Response, 
     if (pathParts.length === 7 && pathParts[4] === 'literary-memory' &&
         pathParts[5] === 'chinese-editorial-profile' && pathParts[6] === 'review' && method === 'POST') {
       const body = bodyObject(req.body || {});
-      if (body.action !== 'confirm' && body.action !== 'reject') {
-        throw Object.assign(new Error('action 必须是 confirm 或 reject'), { status: 400 });
+      const action = String(body.action || '');
+      if (!['confirm', 'reject', 'accept-update', 'reject-update'].includes(action)) {
+        throw Object.assign(new Error('action 必须是 confirm、reject、accept-update 或 reject-update'), { status: 400 });
       }
       const current = store.getCurrentLiteraryMemory(projectId);
       const profile = current.memory.chineseEditorialProfile;
       const projectContext = store.getProjectContext(projectId);
-      if (!profile || profile.sourceRevisionId !== projectContext.currentSourceRevisionId ||
-          !Array.isArray(profile.evidenceRefs) ||
-          new Set(profile.evidenceRefs.map((item: any) => String(item.segmentId || '')).filter(Boolean)).size < 3) {
+      const evidenceIsValid = (candidate: any) =>
+        candidate && candidate.sourceRevisionId === projectContext.currentSourceRevisionId &&
+        Array.isArray(candidate.evidenceRefs) &&
+        new Set(candidate.evidenceRefs.map((item: any) => String(item.segmentId || '')).filter(Boolean)).size >= 3;
+
+      if (action === 'accept-update' || action === 'reject-update') {
+        const pending = profile?.pendingUpdate;
+        if (profile?.status !== 'confirmed' || !evidenceIsValid(pending)) {
+          throw Object.assign(new Error('没有当前来源版本下可处理的中文编辑档案更新，或更新证据已失效。'), { status: 409 });
+        }
+        if (pending.basedOnFingerprint && pending.basedOnFingerprint !== profile.sampleFingerprint) {
+          throw Object.assign(new Error('待更新档案的基准版本已变化，请重新生成更新候选。'), { status: 409 });
+        }
+        const now = new Date().toISOString();
+        const nextProfile = action === 'accept-update'
+          ? {
+              ...pending,
+              status: 'confirmed',
+              confirmationSource: 'user-confirmed',
+              confirmedAt: now,
+              profileVersion: Math.max(1, Number(profile.profileVersion) || 1) + 1,
+              previousFingerprint: profile.sampleFingerprint || null,
+              acceptedUpdateAt: now,
+            }
+          : {
+              ...profile,
+              pendingUpdate: undefined,
+              lastRejectedUpdate: {
+                sampleFingerprint: pending.sampleFingerprint,
+                rejectedAt: now,
+              },
+            };
+        const saved = store.saveLiteraryMemory(projectId, {
+          ...current.memory,
+          chineseEditorialProfile: nextProfile,
+        });
+        store.appendEvent(projectId, null, 'chinese-editorial-profile.update.user-reviewed', {
+          action,
+          memoryRevisionId: saved.memoryRevisionId,
+          sourceRevisionId: profile.sourceRevisionId,
+          previousFingerprint: profile.sampleFingerprint || null,
+          updateFingerprint: pending.sampleFingerprint,
+          profileVersion: action === 'accept-update' ? nextProfile.profileVersion : profile.profileVersion || 1,
+        });
+        sendJson(res, 200, { ...saved, current: store.getCurrentLiteraryMemory(projectId) });
+        return true;
+      }
+
+      if (!evidenceIsValid(profile)) {
         throw Object.assign(new Error('当前来源版本没有可确认的中文编辑档案，或档案证据已失效。'), { status: 409 });
       }
-      if (body.action === 'confirm' && profile.status === 'rejected') {
+      if (action === 'confirm' && profile.status === 'rejected') {
         throw Object.assign(new Error('已拒绝的编辑档案不能直接确认，请先重新分析生成新候选。'), { status: 409 });
       }
       const nextMemory = {
         ...current.memory,
         chineseEditorialProfile: {
           ...profile,
-          status: body.action === 'confirm' ? 'confirmed' : 'rejected',
-          ...(body.action === 'confirm'
+          status: action === 'confirm' ? 'confirmed' : 'rejected',
+          ...(action === 'confirm'
             ? { confirmationSource: 'user-confirmed', confirmedAt: new Date().toISOString() }
             : { confirmationSource: undefined, confirmedAt: undefined }),
         },
       };
       const saved = store.saveLiteraryMemory(projectId, nextMemory);
       store.appendEvent(projectId, null, 'chinese-editorial-profile.user-reviewed', {
-        action: body.action,
+        action,
         memoryRevisionId: saved.memoryRevisionId,
         sourceRevisionId: profile.sourceRevisionId,
       });
