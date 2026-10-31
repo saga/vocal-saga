@@ -76,3 +76,9 @@ When there is no reliable character-voice evidence, prefer a faithful, natural t
 
 - Chinese literary quality audits expose separate counts for reviewed, edited, unchanged and uncovered segments; bilingual verification states; and user apply/dismiss decisions. Never interpret an absent review as a successful unchanged review.
 - Treat `manuallyOverriddenAfterApplyCount` as a subsequent manual override signal, not a definitive over-edit/error label.
+
+
+## Benchmarking
+
+- Use the local Chinese Literary Editing Benchmark harness for model A/B comparisons on 100–200 public-domain, user-owned or explicitly licensed segments. The source text is used for bilingual fidelity screening and human review; the Chinese monolingual editor prompt receives only the Chinese draft and target-only context.
+- Keep blind-review-packet.json separate from blind-mapping.json until human ratings are locked. Use the same bilingual reviewer model for both candidate sets and do not use an LLM judge as the sole winner selector.
