@@ -243,14 +243,16 @@ export function sanitizeProjectLiteraryMemory(input: unknown): Record<string, an
     ...(list(style.rules, 24, 240).length ? { rules: list(style.rules, 24, 240) } : {}),
     ...(list(style.avoid, 16, 240).length ? { avoid: list(style.avoid, 16, 240) } : {}),
   };
-  const styleGuideStatus = raw.styleGuideAutoDisabled === true ? 'candidate' : Object.keys(styleGuide).length ? 'confirmed' : 'candidate';
+  const rawStyleGuideOrigin = raw.styleGuideOrigin;
+  const styleGuideStatus = raw.styleGuideAutoDisabled === true ? 'candidate'
+    : Object.keys(styleGuide).length && ['context-graph', 'user-edited', 'user-confirmed'].includes(String(rawStyleGuideOrigin))
+      ? 'confirmed' : 'candidate';
   const styleGuideConfirmationSource = styleGuideStatus === 'confirmed'
     ? (rawStyleGuideOrigin === 'user-edited' ? 'user-modified'
       : rawStyleGuideOrigin === 'user-confirmed' ? 'user-confirmed'
       : raw.styleGuideStatus === 'confirmed'
         ? (raw.styleGuideConfirmationSource ? confirmationSource(raw.styleGuideConfirmationSource, true) : 'legacy-unknown')
         : 'model-default') : undefined;
-  const rawStyleGuideOrigin = raw.styleGuideOrigin;
   const styleGuideOrigin = ['context-graph', 'user-edited', 'user-confirmed', 'legacy-unknown'].includes(String(rawStyleGuideOrigin))
     ? String(rawStyleGuideOrigin)
     : styleGuideConfirmationSource === 'user-confirmed' ? 'user-confirmed' : 'legacy-unknown';
