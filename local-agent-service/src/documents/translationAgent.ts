@@ -2372,11 +2372,18 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
           ? (context.run.scope as Record<string, any>).automation : undefined;
         const isAutomaticRepairPass = automationScope?.kind === 'quality-audit-repair' &&
           Number(automationScope.pass) >= 1;
-        const missingFindings = !isAutomaticRepairPass
-          ? (Array.isArray(audit.findings) ? audit.findings : [])
-              .filter((finding: any) => finding.type === 'missing-translation' && finding.repairable === true)
-              .slice(0, 100)
-          : [];
+
+        // A book-level audit is useful after any Run, but its missing-translation findings
+        // must not silently widen a selected/chapter/stale Run into unrelated book translation.
+        // Use the immutable run_segments membership, not a re-evaluation of the current scope.
+        const parentRunSegmentIds = new Set(store.getRunSegmentIds(projectId, runId));
+        const allMissingFindings = (Array.isArray(audit.findings) ? audit.findings : [])
+          .filter((finding: any) => finding.type === 'missing-translation' && finding.repairable === true);
+        const inScopeMissingFindings = allMissingFindings.filter((finding: any) =>
+          Array.isArray(finding.segmentIds) &&
+          finding.segmentIds.some((segmentId: unknown) => parentRunSegmentIds.has(String(segmentId))),
+        );
+        const missingFindings = !isAutomaticRepairPass ? inScopeMissingFindings.slice(0, 100) : [];
         if (missingFindings.length) {
           const repair = createQualityRepairRun(
             projectId,
@@ -2391,13 +2398,25 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
             segmentCount: repair.segmentIds.length,
             maximumAutomaticPasses: 1,
             findingType: 'missing-translation',
+            parentRunScopeSegmentCount: parentRunSegmentIds.size,
+            inScopeMissingTranslationCount: inScopeMissingFindings.length,
+            outOfScopeMissingTranslationCount: allMissingFindings.length - inScopeMissingFindings.length,
+            scopePolicy: 'automatic-repair-is-restricted-to-parent-run-segments',
           });
           startProjectTranslationRun(projectId, repair.run.runId);
         } else {
           store.appendEvent(projectId, runId, 'quality-audit.auto-disposition', {
             auditId: audit.auditId,
             findingCount: Array.isArray(audit.findings) ? audit.findings.length : 0,
-            automaticRepairSkipped: isAutomaticRepairPass ? 'automatic-repair-pass-limit' : 'no-deterministic-missing-translation',
+            inScopeMissingTranslationCount: inScopeMissingFindings.length,
+            outOfScopeMissingTranslationCount: allMissingFindings.length - inScopeMissingFindings.length,
+            automaticRepairSkipped: isAutomaticRepairPass
+              ? 'automatic-repair-pass-limit'
+              : inScopeMissingFindings.length
+                ? 'automatic-repair-batch-limit-reached'
+                : allMissingFindings.length
+                  ? 'no-in-scope-missing-translation'
+                  : 'no-deterministic-missing-translation',
             remainingFindingsAreNonBlocking: true,
           });
         }
