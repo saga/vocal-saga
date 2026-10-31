@@ -108,7 +108,7 @@ function hasName(source: string, name: string): boolean {
 /**
  * 独立校验初译返回的 context_delta，不让无效记忆元数据污染有效译文。
  * 每条声明必须引用当前输入 segments 中的原文 quote；target_surface 还必须能在对应译文中找到。
- * 输出保持 candidate/suggested 语义，不能由模型输出自行升级为人工确认事实。
+ * 输出是经过服务端证据校验的模型默认采纳建议；模型不能伪装成用户确认，置信度与证据范围单独记录。
  */
 export function validateTranslationContextDelta(
   raw: unknown,
@@ -407,8 +407,9 @@ function sameKind(a: unknown, b: unknown): boolean {
 
 /**
  * 按源顺序把已验证的 context_delta 合并为后续批次可见的记忆投影。
- * 已确认映射不可被候选覆盖；自动目标译名需要独立的实际译文证据。调用方应只传入当前 wave 结束后
- * 可见的增量，避免并发批次观察到彼此尚未提交的记忆。
+ * 有来源证据的新增事实默认以 model-default 生效；目标译名的置信度仍取决于实际译文证据，
+ * 不会因为默认采纳就升级为强制术语。用户确认/修改/拒绝优先，冲突不自动覆盖。调用方应只传入当前
+ * wave 结束后可见的增量，避免并发批次观察到彼此尚未提交的记忆。
  */
 export function mergeTranslationContextDeltasIntoMemory(
   memoryInput: unknown,
@@ -470,13 +471,16 @@ export function mergeTranslationContextDeltasIntoMemory(
           })),
           targetEvidenceRefs: newTargetEvidence,
           targetConfidence: targetConfidence(newTargetEvidence),
-          reviewStatus: 'suggested',
+          reviewStatus: 'confirmed',
+          confirmationSource: 'model-default',
         });
         memory.entities = memory.entities.slice(0, 120);
         summary.addedEntities++;
         continue;
       }
       const prior = matching[0]!.entity;
+      // A persisted user rejection is a durable decision; a later model observation must not revive it.
+      if (prior.reviewStatus === 'rejected') continue;
       if (normalizeName(prior.target) !== normalizeName(candidate.targetProposal)) {
         summary.entityTargetConflicts++;
         addQuestion('候选译名存在冲突：“' + candidate.canonicalSource + '”已有“' +
@@ -496,6 +500,10 @@ export function mergeTranslationContextDeltasIntoMemory(
       }
       prior.targetEvidenceRefs = Array.from(targetEvidenceBySegment.values()).slice(-8);
       prior.targetConfidence = targetConfidence(prior.targetEvidenceRefs);
+      if (prior.reviewStatus !== 'confirmed') {
+        prior.reviewStatus = 'confirmed';
+        prior.confirmationSource = 'model-default';
+      }
       if (!prior.evidence && candidate.evidence[0]?.sourceQuote) prior.evidence = candidate.evidence[0].sourceQuote;
       // Preserve source-positioned evidence for suggested entities, but don't let a later model
       // observation replace the provenance of a user-confirmed legacy mapping.
@@ -520,18 +528,22 @@ export function mergeTranslationContextDeltasIntoMemory(
           evidenceRefs: relation.evidence.slice(0, 4).map((item) => ({
             segmentId: item.segmentId, sourceQuote: item.sourceQuote,
           })),
-          reviewStatus: 'suggested',
+          reviewStatus: 'confirmed',
+          confirmationSource: 'model-default',
         });
         memory.relationships = memory.relationships.slice(0, 160);
         summary.addedRelationships++;
-      } else if (prior.reviewStatus !== 'confirmed' ||
-                 (Array.isArray(prior.evidenceRefs) && prior.evidenceRefs.length > 0)) {
+      } else if (prior.reviewStatus !== 'rejected') {
         const evidenceRefs = [
           ...(Array.isArray(prior.evidenceRefs) ? prior.evidenceRefs : []),
           ...relation.evidence.map((item) => ({ segmentId: item.segmentId, sourceQuote: item.sourceQuote })),
         ].filter((item, index, all) => all.findIndex((other) =>
           other.segmentId === item.segmentId && normalized(other.sourceQuote) === normalized(item.sourceQuote)) === index);
         if (evidenceRefs.length) prior.evidenceRefs = evidenceRefs.slice(0, 8);
+        if (prior.reviewStatus !== 'confirmed') {
+          prior.reviewStatus = 'confirmed';
+          prior.confirmationSource = 'model-default';
+        }
       }
     }
     for (const question of delta.openQuestions) {
