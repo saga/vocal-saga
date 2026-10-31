@@ -690,7 +690,7 @@ function saveNode(
   db.prepare(
     'INSERT INTO context_graph_nodes(node_id, source_revision_id, kind, name, normalized_name, attributes_json, status, created_at, updated_at) ' +
     'VALUES (?, ?, ?, ?, ?, ?, \'confirmed\', ?, ?) ON CONFLICT(node_id) DO UPDATE SET ' +
-    'attributes_json=CASE WHEN context_graph_nodes.status IN (\'confirmed\',\'rejected\') AND json_extract(context_graph_nodes.attributes_json, \'$.targetLang\') IS json_extract(excluded.attributes_json, \'$.targetLang\') THEN context_graph_nodes.attributes_json ELSE excluded.attributes_json END, ' +
+    'attributes_json=CASE WHEN (context_graph_nodes.status = \'rejected\' OR (context_graph_nodes.status = \'confirmed\' AND COALESCE(json_extract(context_graph_nodes.attributes_json, \'$.adoptionSource\'), \'\') <> \'model-default\')) AND json_extract(context_graph_nodes.attributes_json, \'$.targetLang\') IS json_extract(excluded.attributes_json, \'$.targetLang\') THEN context_graph_nodes.attributes_json ELSE excluded.attributes_json END, ' +
     'status=CASE WHEN context_graph_nodes.status = \'rejected\' THEN \'rejected\' ELSE \'confirmed\' END, updated_at=excluded.updated_at'
   ).run(id, revisionId, kind, safeText(name, 120), normalizedName, JSON.stringify({ ...attributes, adoptionSource: 'model-default' }), now, now);
   const insertEvidence = db.prepare(
@@ -714,7 +714,7 @@ function saveEdge(
   db.prepare(
     'INSERT INTO context_graph_edges(edge_id, source_revision_id, source_node_id, target_node_id, kind, attributes_json, status, created_at, updated_at) ' +
     'VALUES (?, ?, ?, ?, ?, ?, \'confirmed\', ?, ?) ON CONFLICT(edge_id) DO UPDATE SET ' +
-    'attributes_json=CASE WHEN context_graph_edges.status IN (\'confirmed\',\'rejected\') THEN context_graph_edges.attributes_json ELSE excluded.attributes_json END, ' +
+    'attributes_json=CASE WHEN context_graph_edges.status = \'rejected\' OR (context_graph_edges.status = \'confirmed\' AND COALESCE(json_extract(context_graph_edges.attributes_json, \'$.adoptionSource\'), \'\') <> \'model-default\') THEN context_graph_edges.attributes_json ELSE excluded.attributes_json END, ' +
     'status=CASE WHEN context_graph_edges.status = \'rejected\' THEN \'rejected\' ELSE \'confirmed\' END, updated_at=excluded.updated_at'
   ).run(id, revisionId, fromId, toId, kind, JSON.stringify({ ...attributes, adoptionSource: 'model-default' }), now, now);
   const insertEvidence = db.prepare(
