@@ -627,6 +627,9 @@ export function buildProjectVoiceContext(
     styleGuide: memory.styleGuideStatus === 'confirmed' || memory.styleGuideOrigin === 'user-edited' ? memory.styleGuide : {},
     styleGuideStatus: memory.styleGuideStatus,
     styleGuideOrigin: memory.styleGuideOrigin,
+    chineseEditorialProfile: memory.chineseEditorialProfile?.status === 'confirmed' &&
+      memory.chineseEditorialProfile?.confirmationSource === 'user-confirmed'
+      ? memory.chineseEditorialProfile.profile : {},
     chapterSummaries,
     scene: {
       ...(chapterTitle ? { chapterTitle: text(chapterTitle, 160) } : {}),
