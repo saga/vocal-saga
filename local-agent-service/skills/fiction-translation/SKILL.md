@@ -19,6 +19,14 @@ Use this skill only for literary documents (novels, stories, memoir, dialogue-he
 7. **Gate changes.** Accuracy and terminology findings may follow the existing must-fix workflow. Style and character-voice revisions remain candidate proposals until explicitly accepted. Model output cannot mark a profile or anchor as user-approved.
 8. **Persist evidence and outcome.** Save candidates, findings, source/Prompt/memory revision IDs, run events, and explicit user acceptance in the document project. Do not overwrite a confirmed profile or approved anchor when new chapter analysis disagrees.
 
+## Chinese target-voice profile
+
+- A book-level `chineseEditorialProfile` is distinct from the source-side Context Graph style description. It is derived only from user-accepted Chinese translations.
+- The service may use source segments locally for BookScan sample selection, but the profile-analysis model receives only Chinese accepted target text and opaque segment IDs. Never pass source text, source quotes, source names, glossary entries or Context Graph payloads to this profile-analysis task.
+- Generated profiles remain `candidate` until the user explicitly confirms them through the Project Store review endpoint. Candidates are never injected into translation or editing prompts.
+- Confirmation is bound to the current source revision and at least three accepted target-evidence excerpts. A stale source revision or invalid target evidence downgrades the profile to candidate.
+- Only the confirmed profile's concise style fields are injected; sample excerpts and plot-bearing text are not injected. Do not use this profile as evidence about source meaning or character facts.
+
 ## Chinese monolingual editing contract
 
 - Chinese literary runs execute Style Review as a source-blind Chinese editor before bilingual accuracy/terminology review. This reuses the existing styleReview and accuracyReview task profiles; it does not create another agent or another parallel pipeline.
