@@ -61,61 +61,16 @@ function fingerprint(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex');
 }
 
-export type ChineseEditorialProfileReviewAction = 'confirm' | 'reject' | 'accept-update' | 'reject-update';
+export type ChineseEditorialProfileReviewAction = 'reject';
 
 export function applyChineseEditorialProfileReview(
   profile: Record<string, any> | null | undefined,
   action: ChineseEditorialProfileReviewAction,
-  currentSourceRevisionId: string,
-  now = new Date().toISOString(),
+  _currentSourceRevisionId: string,
+  _now = new Date().toISOString(),
 ): Record<string, any> {
-  const hasEvidence = (candidate: any) => candidate &&
-    candidate.sourceRevisionId === currentSourceRevisionId &&
-    Array.isArray(candidate.evidenceRefs);
-  // Explicit rejection is always available; it must not be blocked by evidence thresholds.
-  if (action === 'reject') {
-    return { ...profile, status: 'rejected', confirmationSource: undefined, confirmedAt: undefined };
-  }
-  if (action === 'reject-update') {
-    return { ...profile, pendingUpdate: undefined };
-  }
-  if (action === 'accept-update') {
-    const pending = profile?.pendingUpdate;
-    if (profile?.status !== 'confirmed' || !hasEvidence(pending)) {
-      throw Object.assign(new Error('没有当前来源版本下可处理的中文编辑档案更新，或更新证据已失效。'), { status: 409 });
-    }
-    if (pending.basedOnFingerprint && pending.basedOnFingerprint !== profile.sampleFingerprint) {
-      throw Object.assign(new Error('待更新档案的基准版本已变化，请重新生成更新候选。'), { status: 409 });
-    }
-    return action === 'accept-update'
-      ? {
-          ...pending,
-          status: 'confirmed',
-          confirmationSource: 'user-confirmed',
-          confirmedAt: now,
-          profileVersion: Math.max(1, Number(profile.profileVersion) || 1) + 1,
-          previousFingerprint: profile.sampleFingerprint || null,
-          acceptedUpdateAt: now,
-        }
-      : {
-          ...profile,
-          pendingUpdate: undefined,
-          lastRejectedUpdate: { sampleFingerprint: pending.sampleFingerprint, rejectedAt: now },
-        };
-  }
-  if (!hasEvidence(profile)) {
-    throw Object.assign(new Error('当前来源版本没有可确认的中文编辑档案，或档案证据已失效。'), { status: 409 });
-  }
-  if (action === 'confirm' && profile.status === 'rejected') {
-    throw Object.assign(new Error('已拒绝的编辑档案不能直接确认，请先重新分析生成新候选。'), { status: 409 });
-  }
-  return {
-    ...profile,
-    status: action === 'confirm' ? 'confirmed' : 'rejected',
-    ...(action === 'confirm'
-      ? { confirmationSource: 'user-confirmed', confirmedAt: now }
-      : { confirmationSource: undefined, confirmedAt: undefined }),
-  };
+  if (action !== 'reject') throw new Error('中文文学编辑档案默认启用；只允许明确停用/拒绝，不需要确认。');
+  return { ...profile, status: 'rejected', confirmationSource: undefined, confirmedAt: undefined };
 }
 
 /**
