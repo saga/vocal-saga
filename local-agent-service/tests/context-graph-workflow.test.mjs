@@ -120,6 +120,53 @@ test('CodeBuddy workflow turns can resume a persisted SDK session', () => {
 });
 
 
+test('Chinese literary edits require explicit bilingual coverage and otherwise fall back to first-pass drafts', async () => {
+  const { resolveBilingualVerifiedChineseEdits } = await import('../src/documents/translationAgent.ts');
+  const initial = new Map([
+    ['verified-unchanged', '初译甲。'],
+    ['verified-corrected', '初译乙。'],
+    ['missing', '初译丙。'],
+    ['retry-failed', '初译丁。'],
+    ['malformed', '初译戊。'],
+  ]);
+  const edits = new Map([
+    ['verified-unchanged', '中文编辑甲。'],
+    ['verified-corrected', '中文编辑乙。'],
+    ['missing', '中文编辑丙。'],
+    ['retry-failed', '中文编辑丁。'],
+    ['malformed', '中文编辑戊。'],
+  ]);
+  const result = resolveBilingualVerifiedChineseEdits(initial, edits, {
+    reviewedIds: ['verified-unchanged', 'verified-corrected'],
+    missingIds: ['missing', 'retry-failed', 'malformed'],
+    translations: {
+      'verified-unchanged': '中文编辑甲。',
+      'verified-corrected': '双语审校修订乙。',
+      missing: '中文编辑丙。',
+      'retry-failed': '中文编辑丁。',
+      malformed: '',
+    },
+    retryError: 'missing-segment retry failed',
+  });
+  assert.deepEqual(result.candidates, [
+    { segmentId: 'verified-corrected', text: '双语审校修订乙。' },
+    { segmentId: 'verified-unchanged', text: '中文编辑甲。' },
+  ]);
+  assert.deepEqual(result.fallbacks, [
+    { segmentId: 'missing', text: '初译丙。' },
+    { segmentId: 'retry-failed', text: '初译丁。' },
+    { segmentId: 'malformed', text: '初译戊。' },
+  ]);
+
+  const failed = resolveBilingualVerifiedChineseEdits(initial, edits, {
+    reviewedIds: [], missingIds: [...edits.keys()], translations: {},
+    retryError: 'bilingual reviewer unavailable',
+  });
+  assert.deepEqual(failed.candidates, []);
+  assert.equal(failed.fallbacks.length, edits.size,
+    'a failed bilingual review must restore every provisional Chinese edit to the first-pass draft');
+});
+
 test('source-grounded style review revisions become automatic Run candidates', async () => {
   const { selectVerifiedStyleReviewCandidates } = await import('../src/documents/translationAgent.ts');
   const drafts = new Map([['s1', '她推开了旧门。'], ['s2', '他走进房间。']]);
