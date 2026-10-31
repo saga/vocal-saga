@@ -209,3 +209,17 @@
 - [ ] source revision 改变后旧档案不得继续作为 confirmed Profile 注入；旧 Run 的 Brief 不被新 revision 改写。
 - [ ] 新增 accepted translations 触发档案刷新时，不覆盖用户已确认的档案；相同样本 fingerprint 不重复调用模型。
 - [ ] 模型调用失败、JSON 不合规、证据不足或持久化失败均不影响已经采纳的译文。
+
+
+## 中文文学编辑质量闭环专项检查
+
+主要检查：`translationAgent.ts`、`qualityAudit.ts`、`projectStore.ts`。
+
+- [ ] 每个中文单语编辑批次都记录 reviewed、edited、unchanged、uncovered 和 finding 数；事件必须与实际输入 segment IDs 对应。
+- [ ] 全书审计能区分“编辑器检查过”“编辑器提出变化”“双语复核通过/修正”“用户采纳/拒绝”，不能将这些阶段合并成一个成功数。
+- [ ] Edit rate 与 unchanged rate 以 reviewed segment 为分母；没有执行编辑的 Run 显示 null/0 状态，不显示成 100% unchanged。
+- [ ] 双语复核 pending、verified、corrected 分开计数；缺失复核不得被当作 verified。
+- [ ] 用户 applied、dismissed、pending 分开统计；acceptance rate 只在已决策 finding 中计算。
+- [ ] 已采纳编辑建议随后被人工修改时记录为 manually overridden，不擅自将其等同于 over-edit 或翻译错误。
+- [ ] Quality Audit 报告 profile 的状态、source revision、analysis version、sample fingerprint 和证据数。
+- [ ] 审计选定 Run 与 source revision 固定；跨 Run 汇总不得把同一 segment 的重复尝试简单累加为独立样本。
