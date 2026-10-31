@@ -109,3 +109,46 @@
 - 未来章节隔离、来源绑定、译文写回位置和用户明确拒绝必须保留为硬约束。
 - UI 中的“删除”必须有持久化语义，不能只从一个展示投影中移除。
 - 所有自动应用必须保留来源、版本和可回滚记录；不静默覆盖用户修订。
+
+## 第二轮续做：全书记忆默认采纳与删除回归（2026-10-31）
+
+### 新发现
+
+此前代码只完成了译文候选自动采纳和部分人物声音档案的 model-default 支持，但 translationContextDelta.ts 合并实体/关系时仍将新增记录写成 suggested。这导致 UI/文档所述“默认采纳”与后续批次实际读取的记忆状态不一致。
+
+### 已提交修复
+
+1. **全书记忆实体/关系默认采纳：**
+   - 通过来源片段与引文校验的新增实体和关系，写入 reviewStatus='confirmed'、confirmationSource='model-default'。
+   - 目标译名置信度仍单独记录；单一片段证据仍是 candidate 置信度，不会因为默认采纳变成强制术语。
+   - 对已有的同名、同译名旧候选，提升为 model-default；已有用户确认/修改保持不变。
+   - 对用户明确拒绝的实体/关系不再追加别名或证据、不恢复状态，防止后续分析复活。
+   - Project Store 对 model-default 实体/关系增加来源证据存在性检查；缺少有效 evidenceRefs 时降级为 suggested。
+   - 更新 Run 完成事件的状态策略与注释，消除“模型记录仍是 suggested”的旧语义。
+   - 主要提交：4fe522372ba12898f78ca3e794ebbc9aa06d9813、76d2ca65ba3a0f47bd10ffc9fb0ccf38ffb7aeb1、324fa15edeb7d043cd4c0708a562626c4a1da403。
+
+2. **新增回归测试：**
+   - 实际译文只有一处目标表面时，实体仍默认采纳，但 targetConfidence 保持 candidate。
+   - 新关系默认采纳为 model-default。
+   - 用户拒绝的关系不因新 delta 复活。
+   - 已存在的旧 suggested 实体提升为 model-default。
+   - 用户拒绝的实体不因新 delta 复活。
+   - 测试文件：local-agent-service/tests/translation-context-delta.test.mjs。
+   - 提交：0e247cbb2bb0b7cd3f962fe63ad2c8028d49e4f5。
+
+3. **Extension 删除路径：**
+   - 人物删除现在等待 LiteraryMemory revision 写入完成，不再把持久化动作作为 fire-and-forget。
+   - 新增独立 Vitest 回归文件，覆盖实体删除同步拒绝节点和关联边、服务端拒绝时不删除本地实体、关系精确匹配、端点不明确时不按 predicate 宽泛拒绝。
+   - 提交：78b5e4cee00099c1bf15343257c2952206bd9e74、1b19323f6768b219157a97027b7a90acf61d2f2c。
+
+### CI 状态
+
+- fanyi-extension：新增删除回归测试的 GitHub Actions CI 已通过，run 41165321715。
+- vocal-saga：上述代码和测试提交已触发 CI；最后检查时仍在运行，尚不能宣称通过。
+- 上一轮 vocal-saga 基础 CI（run 41164972117）及 Local Agent Service CI（run 41164972116）均已通过。
+
+### 尚未完成
+
+- 等待本轮 vocal-saga 最新 CI 完成，若失败则根据日志修复。
+- 仍需端到端验证真实 Context Graph 的“拒绝 → 重新分析 → 不复活”，以及 LiteraryMemory 与图谱的跨存储一致性。
+- 仍需使用真实小说样本评估人物声音漂移、事实增删和过度润色；fixture 回归通过不等于真实文学质量达标。
