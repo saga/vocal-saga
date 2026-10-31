@@ -11,7 +11,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 
@@ -188,15 +187,6 @@ function collectLatestDocuments() {
     catalog.close();
   }
 }
-function run(command, commandArgs, timeout = 8000) {
-  const result = spawnSync(command, commandArgs, { cwd: serviceDir, encoding: 'utf8', timeout, maxBuffer: 1024 * 1024 });
-  return {
-    status: result.status,
-    stdout: redact((result.stdout || '').slice(0, 4000)),
-    stderr: redact((result.stderr || '').slice(0, 2000)),
-    error: result.error ? result.error.message : undefined,
-  };
-}
 async function runCodeBuddyAnalysis(summary) {
   const sdk = await import('@tencent-ai/agent-sdk');
   const analysisInput = {
@@ -238,22 +228,11 @@ async function runCodeBuddyAnalysis(summary) {
 
 const collection = collectLatestDocuments();
 const summary = {
-  generatedAt, selection: collection.selection || '最新两个未归档文档项目',
+  generatedAt,
+  selection: collection.selection || '最新两个未归档文档项目',
   selectedCount: collection.selectedCount || 0,
   documents: collection.documents || [],
   collectionError: collection.error || null,
-  host: {
-    platform: os.platform(), release: os.release(), arch: os.arch(),
-    node: process.version, totalMemoryBytes: os.totalmem(), freeMemoryBytes: os.freemem(),
-  },
-  service: {
-    package: JSON.parse(fs.readFileSync(path.join(serviceDir, 'package.json'), 'utf8')).name,
-    provider: process.env.LOCAL_AGENT_PROVIDER || 'workbuddy',
-    port: process.env.LOCAL_AGENT_PORT || '8789',
-  },
-  checks: {
-    health: run(process.execPath, ['-e', "fetch('http://127.0.0.1:'+(process.env.LOCAL_AGENT_PORT||8789)+'/health').then(async r=>{console.log('HTTP '+r.status);console.log((await r.text()).slice(0,500));}).catch(e=>{console.error(e.message);process.exitCode=1})"]),
-  },
 };
 writeJson('summary.json', summary);
 const readme = [
