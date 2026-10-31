@@ -126,9 +126,11 @@ flowchart TD
     G -- 文学 --> H[读取 Context Graph 状态投影]
     H --> I{当前来源/版本/语言/完整性 ready?}
     I -- 否：首次分析 --> J[自动启动全书预处理]
-    I -- 否：失败或过期 --> R[用户显式重新分析]
+    I -- 否：queued/running --> W[轮询当前预处理 run]
+    I -- 否：失败/过期/语言不匹配 --> R[用户显式重新分析]
     J --> K[scanBookSegmentsConcurrent + planBookSamples]
     R --> K
+    W --> H
     K --> L[runAgentStructured 生成图谱候选]
     L --> M[validateEvidence 对齐原文 segment / quote]
     M --> N[事务写入 nodes / edges / evidence / chapter snapshots]
