@@ -904,3 +904,67 @@ test('Spanish source-language residue audit flags short untranslated phrases in 
   }
 });
 
+
+
+test('book audit reports Chinese literary editing coverage, edit rate and bilingual/user decisions separately', () => {
+  const store = getDocumentProjectStore();
+  const project = store.createProject({
+    title: 'Chinese Editorial Metrics',
+    format: 'epub',
+    segments: [
+      { id: 'metric-p1', text: 'The room was quiet.', kind: 'paragraph', contextPath: 'Chapter 1' },
+      { id: 'metric-p2', text: 'She looked away.', kind: 'paragraph', contextPath: 'Chapter 1' },
+    ],
+    prompt: {
+      systemPrompt: 'Translate faithfully.',
+      sourceLang: 'en',
+      targetLang: 'zh-CN',
+      provider: 'workbuddy',
+      model: 'auto',
+      translationMode: 'literary',
+      literaryReview: true,
+    },
+  });
+  const run = store.createRun(project.projectId, { scope: { type: 'all' } });
+  store.saveCandidate(project.projectId, run.runId, 'metric-p1', '房间里很安静。');
+  store.saveCandidate(project.projectId, run.runId, 'metric-p2', '她移开了目光。');
+  store.saveFinding(project.projectId, run.runId, 'metric-p1', {
+    category: 'style',
+    priority: 'optional',
+    editorialMode: 'chinese-monolingual',
+    bilingualReviewStatus: 'pending',
+    applicationStatus: 'pending',
+    targetExcerpt: '房间里很安静',
+    proposedTranslation: '房间静悄悄的。',
+    reason: '目标语表达可以更自然。',
+    suggestion: '保留克制语气。',
+  });
+  store.appendEvent(project.projectId, run.runId, 'stage.completed', {
+    stage: 'style-review',
+    editorialMode: 'chinese-monolingual',
+    chineseEditorialMetrics: {
+      reviewedCount: 2,
+      editedCount: 1,
+      unchangedCount: 1,
+      uncoveredCount: 0,
+      findingCount: 1,
+    },
+  });
+  store.markChineseEditorialFindingsReviewed(project.projectId, run.runId, [{
+    segmentId: 'metric-p1',
+    status: 'verified',
+    proposedTranslation: '房间静悄悄的。',
+  }]);
+  store.finishRun(project.projectId, run.runId);
+
+  const report = runProjectQualityAudit(project.projectId, run.runId);
+  assert.equal(report.metrics.chineseEditorial.reviewedSegmentCount, 2);
+  assert.equal(report.metrics.chineseEditorial.editedSegmentCount, 1);
+  assert.equal(report.metrics.chineseEditorial.unchangedSegmentCount, 1);
+  assert.equal(report.metrics.chineseEditorial.editRatePercent, 50);
+  assert.equal(report.metrics.chineseEditorial.unchangedRatePercent, 50);
+  assert.equal(report.metrics.chineseEditorial.bilingualVerifiedFindingCount, 1);
+  assert.equal(report.metrics.chineseEditorial.bilingualPendingFindingCount, 0);
+  assert.equal(report.metrics.chineseEditorial.pendingUserDecisionFindingCount, 1);
+  assert.equal(report.metrics.chineseEditorial.userAppliedFindingCount, 0);
+});
