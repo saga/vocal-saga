@@ -68,7 +68,7 @@ npm run diagnose:bundle -- --analyze
 npm run diagnose:bundle -- --since-hours 12 --out /tmp/vocal-saga-diagnostics
 ```
 
-脚本会生成一个 `.tar.gz` 诊断包，包含服务日志、近期 CodeBuddy/OpenCode 日志（如存在）、Node/macOS 运行信息、服务健康检查、CLI 版本、SQLite 表结构与行数统计，以及简单的错误/超时/重试/排队信号计数。默认不导出 SQLite 行内容，不收集 prompt、原文或译文；`--analyze` 只把脱敏后的运行摘要和日志片段交给本机 CodeBuddy SDK，不会把数据库内容交给模型。诊断包会写入当前项目的 `diagnostic-bundles/`，请先检查包内日志是否含个人路径、书稿片段或未识别的凭据，再上传给 ChatGPT。脚本不会自动上传任何数据。
+脚本会生成一个 `.tar.gz` 诊断包，包含服务日志、本机服务日志（按时间窗口筛选）、Node/macOS 运行信息、服务健康检查、CLI 版本、SQLite 表结构与行数统计，以及简单的错误/超时/重试/排队信号计数。默认不导出 SQLite 行内容，并过滤日志中明显的 prompt、原文、译文和响应预览行；不会扫描 CodeBuddy/OpenCode 会话 transcript 目录，`--analyze` 只把脱敏后的运行摘要和日志片段交给本机 CodeBuddy SDK，不会把数据库内容交给模型。诊断包会写入当前项目的 `diagnostic-bundles/`，请先检查包内日志是否含个人路径、书稿片段或未识别的凭据，再上传给 ChatGPT。脚本不会自动上传任何数据。
 
 
 
