@@ -1718,12 +1718,18 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
             });
             return;
           }
+          const chineseEditorialMode = styleReview.editorialMode === 'chinese-monolingual';
           const styleFindings = (styleReview.findings || [])
             .filter((finding: any) => finding.category === 'style')
-            .map((finding: any) => ({ segmentId: finding.id, finding }));
+            .map((finding: any) => ({
+              segmentId: finding.id,
+              finding: {
+                ...finding,
+                ...(chineseEditorialMode ? { editorialMode: 'chinese-monolingual' } : {}),
+              },
+            }));
           // 中文单语编辑尚未经过原文对照，先只保存 finding；其他语言的 Reviewer 已同时
           // 对照原文，只有带有对应、已验证 style finding 的完整修订才自动写成新候选。
-          const chineseEditorialMode = styleReview.editorialMode === 'chinese-monolingual';
           const styleCandidates = selectVerifiedStyleReviewCandidates(
             styleReview,
             translations,
