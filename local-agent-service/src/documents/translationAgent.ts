@@ -1497,9 +1497,18 @@ export async function runLiteraryReviewWithMissingRetry(input: Record<string, an
       retryError: undefined,
     };
   } catch (error) {
+    const retryError = error instanceof Error ? error.message : String(error);
+    if (projectId && runId) store.appendEvent(projectId, runId, 'review.audit.retry-failed', {
+      stage: input.reviewType === 'style' ? 'style-review' : 'review',
+      requestId: requestId + '-missing-retry',
+      parentRequestId: requestId,
+      sessionScope,
+      missingIdCount: retrySegments.length,
+      error: retryError,
+    });
     return {
       ...initial,
-      retryError: error instanceof Error ? error.message : String(error),
+      retryError,
     };
   }
 }
