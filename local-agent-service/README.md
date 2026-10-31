@@ -66,11 +66,16 @@ npm run diagnose:bundle -- --analyze
 
 # 自定义诊断包输出目录
 npm run diagnose:bundle -- --out /tmp/vocal-saga-diagnostics
+
+# 完全不收集本机服务日志
+npm run diagnose:bundle -- --no-logs
 ```
 
-脚本按文档项目目录中的 `catalog.sqlite`，以 `updated_at DESC` 选择最近更新的两个未归档文档项目，不按小时筛日志。每个文档导出原文片段、来源版本、Context Graph 分析元数据/人物实体/关系/证据/章节摘要/分析 Run、全部翻译 Run、批次状态、译文候选与采纳记录、Reviewer findings、TranslationBrief、上下文增量、质量审计/评估记录及完整项目事件时间线。CodeBuddy 分析使用这两个文档的 Context Graph 结果、Run 摘要、事件时间线和 Reviewer/质量审计信号，不扫描其他项目或通用 SDK transcript。
+脚本按 `catalog.sqlite` 中 `document_projects.updated_at DESC` 选择最近更新的两个未归档项目。v2 只导出诊断所需的紧凑信息：来源版本与片段数量/长度、Prompt 和 LiteraryMemory 版本指纹、Run scope/status、run-segment 状态计数、译文记录数量/长度、Reviewer 分类、TranslationBrief 大小、Context Graph 统计与阶段耗时、质量审计指标和有界事件时间线。不会导出原文/译文正文、完整 Prompt、Context Graph Source Feature 行、原始 TranslationBrief、上下文增量、质量 finding 正文或完整事件 payload。
 
-诊断包默认写入 `~/.vocal-saga-local-agent/diagnostic-bundles/`。**注意：为了分析翻译质量，文档 JSON 会包含原文片段、译文、持久化 Prompt 和复核记录。** 不包含原始 EPUB/PDF 二进制文件、其他文档项目、通用 request_history 数据库记录或 CodeBuddy/OpenCode 会话 transcript。上传 ChatGPT 前请先检查两个文档 JSON，确认可以分享其中的书稿内容和译文。
+默认还会从 `LOCAL_AGENT_LOG_FILE`（未设置时为 `~/.vocal-saga-local-agent/logs/local-agent.log`）读取**末尾最多 512 KiB**，筛选至多 180 行服务生命周期、重启、异常和 Provider 超时相关日志；上传包前仍应检查这些错误信息。可使用 `--no-logs` 完全排除日志。脚本设置 `COPYFILE_DISABLE=1`，避免 macOS tar 将 `._*` AppleDouble 元数据附加到归档。`--analyze` 只把紧凑摘要和日志计数发送给本机 CodeBuddy，不会把书稿正文发送给分析模型。
+
+诊断包默认写入 `~/.vocal-saga-local-agent/diagnostic-bundles/`。压缩包仍会包含项目标题、片段 ID、时间戳、Provider/Model 名称和错误消息；分享前请检查 `README.txt`、`summary.json` 与 `service-log-excerpt.txt`。
 
 
 ### 小说人物/声音档案缺失诊断
