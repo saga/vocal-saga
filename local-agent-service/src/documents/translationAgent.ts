@@ -1647,8 +1647,26 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
               }
             }
           }
+          const styleReviewedIds = Array.isArray(styleReview.reviewedIds) ? styleReview.reviewedIds : [];
+          const chineseEditorialChangedIds = styleReview.editorialMode === 'chinese-monolingual'
+            ? styleReviewedIds.filter((id: string) =>
+                typeof styleReview.translations?.[id] === 'string' &&
+                styleReview.translations[id] !== initialDrafts.get(id))
+            : [];
+          const chineseEditorialUnchangedCount = styleReview.editorialMode === 'chinese-monolingual'
+            ? Math.max(0, styleReviewedIds.length - chineseEditorialChangedIds.length) : 0;
           store.appendEvent(projectId, runId, 'stage.completed', {
             stage: 'style-review', batchIndex,
+            editorialMode: styleReview.editorialMode || null,
+            ...(styleReview.editorialMode === 'chinese-monolingual' ? {
+              chineseEditorialMetrics: {
+                reviewedCount: styleReviewedIds.length,
+                editedCount: chineseEditorialChangedIds.length,
+                unchangedCount: chineseEditorialUnchangedCount,
+                uncoveredCount: Array.isArray(styleReview.missingIds) ? styleReview.missingIds.length : 0,
+                findingCount: (styleReview.findings || []).filter((item: any) => item.category === 'style').length,
+              },
+            } : {}),
             reviewedIds: styleReview.reviewedIds,
             missingIds: styleReview.missingIds,
             styleFindingCount: (styleReview.findings || []).filter((item: any) => item.category === 'style').length,
