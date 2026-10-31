@@ -1062,6 +1062,25 @@ export class DocumentProjectStore {
         ...(status === 'approved' ? {} : { confirmationSource: undefined }),
       };
     });
+    if (memory.chineseEditorialProfile) {
+      const profile = memory.chineseEditorialProfile;
+      const evidenceRefs = profile.evidenceRefs.filter((ref: any) => {
+        const source = sources.get(String(ref.segmentId || ''));
+        const accepted = latestAccepted.get(String(ref.segmentId || ''));
+        return !!source && !!accepted && accepted.sourceHash === source.source_hash &&
+          typeof ref.targetExcerpt === 'string' && normalize(accepted.translation).includes(normalize(ref.targetExcerpt));
+      });
+      const evidenceSegmentCount = new Set(evidenceRefs.map((ref: any) => String(ref.segmentId))).size;
+      const revisionMatches = profile.sourceRevisionId === currentSourceRevisionId;
+      const canRemainConfirmed = revisionMatches && evidenceSegmentCount >= 3 &&
+        profile.status === 'confirmed' && profile.confirmationSource === 'user-confirmed';
+      memory.chineseEditorialProfile = {
+        ...profile,
+        evidenceRefs,
+        status: profile.status === 'rejected' ? 'rejected' : canRemainConfirmed ? 'confirmed' : 'candidate',
+        ...(canRemainConfirmed ? { confirmationSource: 'user-confirmed' } : { confirmationSource: undefined, confirmedAt: undefined }),
+      };
+    }
     const confirmedVoicesAfter = memory.characterVoices.filter((p: any) => p.status === 'confirmed').length;
     logInfo('document-projects', 'literary memory validated · project=' + projectId +
       ' · voices ' + confirmedVoicesBefore + '→' + confirmedVoicesAfter + ' confirmed' +
