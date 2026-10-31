@@ -54,7 +54,7 @@ const DIAGNOSTIC_EVENT_TYPES = new Set([
   'run.partial', 'run.cancelled', 'run.paused', 'run.awaiting_acceptance',
   'stage.started', 'stage.completed', 'stage.warning', 'batch.started',
   'batch.completed', 'batch.translation.completed', 'model.call.failed',
-  'review.audit.failed', 'context-graph.phase', 'context-graph.failed',
+  'review.audit.failed', 'review.audit.retry-failed', 'context-graph.phase', 'context-graph.failed',
   'context-graph.completed', 'quality-audit.completed', 'quality-repair.planned',
   'quality-audit.auto-repair-scheduled', 'quality-audit.auto-disposition',
   'translations.accepted', 'translations.auto-accepted',
@@ -269,7 +269,7 @@ function summarizeBriefComposition(row) {
 function summarizeReviewEvents(events) {
   const types = new Set([
     'review.audit.input', 'review.audit.output', 'review.audit.failed',
-    'review.audit.retry-input', 'review.audit.retry-output',
+    'review.audit.retry-input', 'review.audit.retry-output', 'review.audit.retry-failed',
   ]);
   const selected = events.filter((event) => types.has(event.event_type));
   const compact = selected.slice(-160).map((event) => {
@@ -288,9 +288,10 @@ function summarizeReviewEvents(events) {
       inputSegmentCount: segments.length || null,
       returnedTranslationCount: translations.length || null,
       reviewedIdCount: Array.isArray(response.reviewedIds) ? response.reviewedIds.length : null,
-      missingIdCount: Array.isArray(response.missingIds) ? response.missingIds.length : null,
+      missingIdCount: Array.isArray(response.missingIds) ? response.missingIds.length :
+        Number.isFinite(Number(payload.missingIdCount)) ? Number(payload.missingIdCount) : null,
       findingCount: Array.isArray(response.findings) ? response.findings.length : null,
-      error: event.event_type === 'review.audit.failed'
+      error: ['review.audit.failed', 'review.audit.retry-failed'].includes(event.event_type)
         ? redact(payload.error || '').slice(0, 500) || null : null,
     };
   });
@@ -298,13 +299,14 @@ function summarizeReviewEvents(events) {
   for (const item of compact) {
     const key = String(item.runId || 'unknown') + '/' + String(item.stage || 'unknown');
     byRunStage[key] ||= {
-      inputCalls: 0, outputCalls: 0, failedCalls: 0, retryCalls: 0,
+      inputCalls: 0, outputCalls: 0, failedCalls: 0, retryFailedCalls: 0, retryCalls: 0,
       inputSegments: 0, returnedTranslations: 0, missingIds: 0, findings: 0,
     };
     const group = byRunStage[key];
     if (item.eventType.endsWith('input')) group.inputCalls++;
     if (item.eventType.endsWith('output')) group.outputCalls++;
-    if (item.eventType === 'review.audit.failed') group.failedCalls++;
+    if (item.eventType === 'review.audit.failed' || item.eventType === 'review.audit.retry-failed') group.failedCalls++;
+    if (item.eventType === 'review.audit.retry-failed') group.retryFailedCalls++;
     if (item.eventType === 'review.audit.retry-input') group.retryCalls++;
     group.inputSegments += Number(item.inputSegmentCount || 0);
     group.returnedTranslations += Number(item.returnedTranslationCount || 0);
