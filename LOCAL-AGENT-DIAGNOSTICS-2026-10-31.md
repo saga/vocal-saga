@@ -235,6 +235,8 @@ Proust 记录到 5 个 \`review.audit.failed\`，全部是：
 | 局部 Run 自动扩展到全书补译 | `translationAgent.ts` 只从全书审计结果中选取父 Run 成员的缺译段；新增 `getRunSegmentIds()` 读取不可变 Run 成员 | 局部 Run 不会因全书其它位置存在缺译而启动越界自动返工 |
 | 自动返工入口缺少范围/类型门禁 | `qualityAudit.ts` 再次验证父 Run、来源版本、父 Run 状态、finding 类型及 segment membership | 自动返工仅接受父 Run 范围内的 repairable `missing-translation`；不接受术语/文风等其它 finding |
 | 重启恢复事件计数写成 0 | `projectStore.ts` 在恢复时先把中断的 running segments 归为 pending，再按数据库实际状态汇总 counts | `run.finished` 的 total/candidate/accepted/failed/pending 等值与持久化状态一致 |
+此外，Reviewer deadline 同时传递给 Workbuddy SDK 与 OpenCode 子进程；OpenCode 仍保留它自己的 SIGTERM→SIGKILL 有界终止流程。
+
 | Reviewer 180 秒超时过短 | 新增 `LOCAL_AGENT_REVIEW_TIMEOUT_MS`，默认 300,000 ms；accuracy/style Reviewer 独立使用 | 普通 `LOCAL_AGENT_TIMEOUT_MS` 仍为 180,000 ms；Reviewer 超时仍会 interrupt 并丢弃不可信 Session，不会无限等待 |
 | 新超时值无法在压缩包中追踪 | `collect-diagnostics.mjs` 允许列表增加 `timeoutMs` | 下一次诊断包可按 Run Plan / Reviewer Stage 看到实际 deadline |
 
