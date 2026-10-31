@@ -1432,7 +1432,23 @@ async function ensureLiteraryPreprocessingBeforeRun(
     const status = String(graph.status || 'not-started');
     if (!['queued', 'running'].includes(status)) {
       if (analysisAttempts >= 2) {
-        throw new Error('服务端自动准备全书上下文连续失败。最后状态：' + status + (graph.error ? '；' + graph.error : ''));
+        const missingStyle = Array.isArray(graph.styleMissingFields) ? graph.styleMissingFields : [];
+        const progress = graph.progress && typeof graph.progress === 'object' ? graph.progress : {};
+        const requiredStages = ['style', 'characters', 'entities', 'relationships', 'chapters'];
+        const completedStages = Array.isArray(progress.completedStages) ? progress.completedStages : [];
+        const missingStages = progress.strategy === 'B'
+          ? requiredStages.filter((stage) => !completedStages.includes(stage))
+          : [];
+        const details = [
+          missingStyle.length ? '文风字段缺失：' + missingStyle.join('、') : '',
+          missingStages.length ? '未完成阶段：' + missingStages.join('、') : '',
+          graph.error ? String(graph.error) : '',
+        ].filter(Boolean);
+        store.appendEvent(projectId, runId, 'context-graph.gate.incomplete', {
+          status, missingStyleFields: missingStyle, missingStages, error: graph.error || null,
+        });
+        throw new Error('全书预处理未能形成完整可用的上下文，正式翻译未启动。最后状态：' +
+          status + (details.length ? '；' + details.join('；') : '；请查看 Context Graph 执行轨迹并重新分析。'));
       }
       const started = startContextGraphAnalysis(projectId, { ignoreQueuedRunId: runId });
       analysisAttempts += 1;
