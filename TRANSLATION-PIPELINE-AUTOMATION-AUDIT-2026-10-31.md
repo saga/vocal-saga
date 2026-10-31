@@ -275,4 +275,4 @@ ADR-0007 新增决策 14：双语复核成功覆盖的编辑保留；覆盖但�
 
 另外，双语复核可能明确将编辑改回第一道初译。此时不能只把译文回退而遗留 pending finding。现已增加 `reverted` 结果：事务内将候选恢复为初译、将 Finding 标记为 dismissed，并记录 `automatic-bilingual-review-reverted`；这代表机器依据原文自动否决该编辑，不伪装成人工点击。新增 Store 集成测试验证回退后 Finding 不再 pending，且候选仍是初译。
 
-新增代码回归覆盖了双语复核成功且不改动、成功并修订、审校改回初译、未覆盖、空结果、补审失败、整体审校失败，以及候选保存被取消/拒绝的分支。GitHub Actions 已确认 helper 回归和 Store 回退集成测试通过；完整 validate workflow 仍在运行，最终 CI 结论以其完成状态为准。
+新增代码回归覆盖了双语复核成功且不改动、成功并修订、审校改回初译、未覆盖、空结果、补审失败、整体审校失败，以及候选保存被取消/拒绝的分支。GitHub Actions 已确认 helper 回归和 Store 回退集成测试通过。包含本轮全部代码与文档的完整 validate workflow run 41170760281 已通过：shared translation modules、TypeScript typecheck、单元测试、Local Agent Service typecheck/测试、fiction quality regression fixtures 和 library build 全部成功。
