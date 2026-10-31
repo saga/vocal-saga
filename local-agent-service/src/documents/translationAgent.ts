@@ -2180,8 +2180,7 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
     let finishedRun = store.finishRun(projectId, runId);
 
     // 只把当前来源版本且通过证据校验的模型结果以 model-default 写入项目记忆；
-    // 不覆盖用户确认/修改/拒绝的人物、译名或关系。若来源版本已变化，则保留在本 Run 的增量账本中，
-    // 不把旧来源证据写入当前项目记忆。
+    // 在 Run 释放 awaiting_acceptance 状态前完成事务，避免下一轮 Run 捕获旧记忆快照。
     if (context.run.translationMode === 'literary' && ['awaiting_acceptance', 'completed', 'partial'].includes(finishedRun.status)) {
       try {
         const projectContext = store.getProjectContext(projectId);
@@ -2194,33 +2193,37 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
               reason: 'run-left-finalization-before-memory-commit',
               runStatus: lockedRunStatus,
             });
-          } else if (store.getProjectContext(projectId).currentSourceRevisionId !== context.run.sourceRevisionId) {
-          store.appendEvent(projectId, runId, 'translation.context-memory.skipped', {
-            reason: 'source-revision-changed',
-            runSourceRevisionId: context.run.sourceRevisionId,
-            currentSourceRevisionId: projectContext.currentSourceRevisionId,
-            retainedInRunLedger: true,
-          });
-        } else {
-          const runDeltas = store.listTranslationContextDeltas(projectId, runId)
-            .map((item: any) => item.delta as ValidatedTranslationContextDelta);
-          const currentMemory = store.getCurrentLiteraryMemory(projectId);
-          const merged = mergeTranslationContextDeltasIntoMemory(currentMemory.memory, runDeltas);
-          if (merged.changed) {
-            const saved = store.saveLiteraryMemory(projectId, merged.memory);
-            store.appendEvent(projectId, runId, 'translation.context-memory.persisted', {
-              memoryRevisionId: saved.memoryRevisionId,
-              fingerprint: saved.fingerprint,
-              sourceRevisionId: context.run.sourceRevisionId,
-              deltaBatchCount: runDeltas.length,
-              ...merged.summary,
-              statusPolicy: 'validated model-default records are active; user decisions are never overwritten; target confidence remains evidence-scoped',
-            });
           } else {
-            store.appendEvent(projectId, runId, 'translation.context-memory.unchanged', {
-              deltaBatchCount: runDeltas.length,
-              reason: 'no-new-candidates-or-context-changes',
-            });
+            const lockedProjectContext = store.getProjectContext(projectId);
+            if (lockedProjectContext.currentSourceRevisionId !== context.run.sourceRevisionId) {
+              store.appendEvent(projectId, runId, 'translation.context-memory.skipped', {
+                reason: 'source-revision-changed',
+                runSourceRevisionId: context.run.sourceRevisionId,
+                currentSourceRevisionId: lockedProjectContext.currentSourceRevisionId,
+                retainedInRunLedger: true,
+              });
+            } else {
+              const runDeltas = store.listTranslationContextDeltas(projectId, runId)
+                .map((item: any) => item.delta as ValidatedTranslationContextDelta);
+              const currentMemory = store.getCurrentLiteraryMemory(projectId);
+              const merged = mergeTranslationContextDeltasIntoMemory(currentMemory.memory, runDeltas);
+              if (merged.changed) {
+                const saved = store.saveLiteraryMemory(projectId, merged.memory);
+                store.appendEvent(projectId, runId, 'translation.context-memory.persisted', {
+                  memoryRevisionId: saved.memoryRevisionId,
+                  fingerprint: saved.fingerprint,
+                  sourceRevisionId: context.run.sourceRevisionId,
+                  deltaBatchCount: runDeltas.length,
+                  ...merged.summary,
+                  statusPolicy: 'validated model-default records are active; user decisions are never overwritten; target confidence remains evidence-scoped',
+                });
+              } else {
+                store.appendEvent(projectId, runId, 'translation.context-memory.unchanged', {
+                  deltaBatchCount: runDeltas.length,
+                  reason: 'no-new-candidates-or-context-changes',
+                });
+              }
+            }
           }
           db.exec('COMMIT');
         } catch (transactionError) {
