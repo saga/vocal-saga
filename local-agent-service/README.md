@@ -53,23 +53,24 @@ GET /api/codebuddy/config-options?model=deepseek-v4.1-flash
 
 每次模型请求都会在本机终端打印带 request ID 的开始、模型运行完成、成功/失败记录；记录 provider、model、endpoint、输入/输出字符数、耗时、HTTP 状态和失败堆栈，不会在普通成功日志里输出整段原文。模型返回无法解析的 JSON 时，会额外输出最多 600 字符的返回内容预览，方便判断是多余解释、代码围栏、截断还是错误响应。要隐藏该预览，在 `.env` 设置 `LOCAL_AGENT_LOG_RESPONSE_PREVIEW=false`。终端日志中的 request ID 可以与扩展错误里的 `local request` 对应，也可以查 `GET /api/history?limit=30` 的 SQLite 请求历史。
 
-### 一键收集诊断包
+### 一键收集最近两个文档的诊断包
 
-遇到翻译失败、任务卡住、CodeBuddy 无响应、批次没有完成或服务异常时，在 `local-agent-service` 目录运行：
+遇到翻译质量异常、分析结果缺失、批次失败、Reviewer 异常或任务未正常结束时，在 `local-agent-service` 目录运行：
 
 ```bash
-# 收集服务日志（主日志保留最近 12,000 行；轮转日志按最近 72 小时筛选）、运行环境、健康检查和 SQLite 结构/行数统计
+# 导出最近更新的两个未归档文档项目及其分析/翻译记录
 npm run diagnose:bundle
 
-# 收集后再调用本机已登录的 CodeBuddy SDK，对脱敏日志摘要做初步分析
+# 在导出后调用本机 CodeBuddy SDK，对这两个文档的执行轨迹做初步分析
 npm run diagnose:bundle -- --analyze
 
-# 自定义时间窗口和输出目录
-npm run diagnose:bundle -- --since-hours 12 --out /tmp/vocal-saga-diagnostics
+# 自定义诊断包输出目录
+npm run diagnose:bundle -- --out /tmp/vocal-saga-diagnostics
 ```
 
-脚本会生成一个 `.tar.gz` 诊断包，包含本机服务日志和最近时间窗口内的轮转日志、Node/macOS 运行信息、服务健康检查、CLI 版本、SQLite 表结构与行数统计，以及简单的错误/超时/重试/排队信号计数。默认不导出 SQLite 行内容，并过滤日志中明显的 prompt、原文、译文和响应预览行；不会扫描 CodeBuddy/OpenCode 会话 transcript 目录，`--analyze` 只把脱敏后的运行摘要和日志片段交给本机 CodeBuddy SDK，不会把数据库内容交给模型。诊断包默认写入 `~/.vocal-saga-local-agent/diagnostic-bundles/`，请先检查包内日志是否含个人路径、书稿片段或未识别的凭据，再上传给 ChatGPT。脚本不会自动上传任何数据。
+脚本按文档项目目录中的 `catalog.sqlite`，以 `updated_at DESC` 选择最近更新的两个未归档文档项目，不按小时筛日志。每个文档导出原文片段、来源版本、全部翻译 Run、批次状态、译文候选与采纳记录、Reviewer findings、TranslationBrief、上下文增量、质量审计/评估记录及完整项目事件时间线。CodeBuddy 分析使用这两个文档的 Run 摘要、事件时间线和 Reviewer/质量审计信号，不扫描其他项目或通用 SDK transcript。
 
+诊断包默认写入 `~/.vocal-saga-local-agent/diagnostic-bundles/`。**注意：为了分析翻译质量，文档 JSON 会包含原文片段、译文、持久化 Prompt 和复核记录。** 不包含原始 EPUB/PDF 二进制文件、其他文档项目、通用 request_history 数据库记录或 CodeBuddy/OpenCode 会话 transcript。上传 ChatGPT 前请先检查两个文档 JSON，确认可以分享其中的书稿内容和译文。
 
 
 ### 小说人物/声音档案缺失诊断
