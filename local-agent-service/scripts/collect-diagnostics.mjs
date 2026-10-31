@@ -224,7 +224,11 @@ function summarizeGraphProgress(row) {
 function summarizeBriefComposition(row) {
   const brief = parseJson(row.brief_json, null);
   if (!brief || typeof brief !== 'object') {
-    return { available: false, parseError: true, storedChars: Number(row.briefChars || 0) };
+    return {
+      available: false, parseError: true,
+      contextChars: Number(row.contextChars || 0),
+      storedJsonChars: Number(row.storedJsonChars || 0),
+    };
   }
   const measure = (value) => {
     const chars = JSON.stringify(value ?? null).length;
