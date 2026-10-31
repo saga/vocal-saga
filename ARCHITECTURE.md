@@ -795,5 +795,6 @@ CF Worker 共享 IP 易触发 429（多租户聚合使用），因此 OpenCode /
 
 - [Local Agent 文档/小说统一翻译 Pipeline](docs/TRANSLATION_PIPELINE.md)
 - [ADR-0001：统一本地翻译管线与初译上下文增量](docs/adr/0001-unified-local-translation-context-delta.md)
+- [ADR-0005：文学翻译必须先完成当前版本的全书预处理](docs/adr/0005-literary-preprocessing-before-translation.md)
 - [Local Agent Service AGENTS 约束](local-agent-service/AGENTS.md)
 
