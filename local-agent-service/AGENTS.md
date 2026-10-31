@@ -55,6 +55,7 @@
 - Run 创建必须在 SQLite 写锁内重新校验 source revision、Prompt revision 和 LiteraryMemory revision；快照准备期间任何一项变化都返回 409，不得静默绑定旧快照。
 - Run 必须保持 running 直到本轮 context delta 与 LiteraryMemory 的合并事务完成，再进入 awaiting_acceptance 并自动采纳。awaiting_acceptance 是未完成最终化状态，阻止创建下一 Run；服务重启时自动恢复 context-memory merge 与 candidate acceptance。
 - Candidate acceptance 必须验证 Run source revision 仍是当前版本，并保护同一 source hash 上所有更新的 accepted result（agent/imported/manual），不能只保护 manual。旧 Run 延迟恢复不得覆盖新 Run 的已采纳结果。
+- 中文单语文学编辑结果只能作为 provisional edit。必须由后续双语审校按 segment 明确覆盖并返回完整非空译文后，才可写入候选；以双语审校最终文本为准。未覆盖、missing、空/格式无效、retry 失败或审校调用异常的 segment 必须自动恢复初译，并确保 provisional edit 不进入候选、context delta 或 LiteraryMemory。部分覆盖按 segment 分别处理；不得要求用户点击确认。
 - 全书图谱、原文证据、章节摘要与人物/关系候选必须留在服务端；不得复制到扩展 LiteraryMemory。扩展轮询使用轻量 /context-graph/status 投影，不轮询完整节点/证据载荷。
 - 文学翻译必须先完成当前来源版本的全书预处理，再开始翻译模型调用。扩展通过轻量 /context-graph/status 投影做正常 UI 前置检查：未 ready、版本/语言不匹配或状态未知时不创建文学翻译 Run；新项目首次分析自动启动，失败/过期由用户显式重分析。服务端 executeRun 在进入 running 前保留最终门禁；旧客户端或直接 API 创建的 queued Run 可以等待/自动准备 Context Graph，但 readiness 通过前绝不调用翻译模型。扩展不得复制图谱或实现第二套分析算法。详见 ADR-0005。
 - 抽样不得只取开头、章节标题或最近章节。长文档至少覆盖开头/中部/结尾、分布式章节样本以及对白或专名较密集的片段；其余章节可以先生成抽取式摘要，再逐步补充模型摘要。
