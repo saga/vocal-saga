@@ -506,7 +506,9 @@ function currentReviewFindings(
     const row = db.prepare(
       'SELECT tr.run_id FROM translation_runs tr ' +
       'WHERE tr.source_revision_id = ? AND tr.review_enabled = 1 ' +
-      'AND EXISTS (SELECT 1 FROM review_findings rf WHERE rf.run_id = tr.run_id) ' +
+      'AND (EXISTS (SELECT 1 FROM review_findings rf WHERE rf.run_id = tr.run_id) ' +
+        'OR EXISTS (SELECT 1 FROM project_events pe WHERE pe.run_id = tr.run_id ' +
+          "AND pe.event_type = 'stage.completed' AND pe.payload_json LIKE '%\\\"stage\\\":\\\"style-review\\\"%')) " +
       'ORDER BY tr.finished_at DESC, tr.created_at DESC LIMIT 1'
     ).get(revisionId) as any;
     reviewRunId = row?.run_id || null;
@@ -542,6 +544,11 @@ function currentReviewFindings(
       status: String(row.status),
       dimension: typeof finding.dimension === 'string' ? finding.dimension : null,
       characterId: typeof finding.characterId === 'string' ? finding.characterId : null,
+      editorialMode: typeof finding.editorialMode === 'string' ? finding.editorialMode : null,
+      bilingualReviewStatus: typeof finding.bilingualReviewStatus === 'string' ? finding.bilingualReviewStatus : 'not-required',
+      applicationStatus: typeof finding.applicationStatus === 'string' ? finding.applicationStatus : 'pending',
+      appliedResultId: typeof finding.appliedResultId === 'string' ? finding.appliedResultId : null,
+      targetExcerpt: typeof finding.targetExcerpt === 'string' ? finding.targetExcerpt : null,
       sourceExcerpt: String(finding.sourceExcerpt || ''),
       draftExcerpt: String(finding.draftExcerpt || ''),
       evidenceSegmentIds: Array.isArray(finding.evidenceSegmentIds) ? finding.evidenceSegmentIds.filter((id: unknown) => typeof id === 'string').slice(0, 8) : [],
@@ -553,6 +560,38 @@ function currentReviewFindings(
     }];
   }).reverse();
   return { reviewRunId, findings };
+}
+
+function chineseEditorialStageMetrics(
+  db: any,
+  revisionId: string,
+  requestedRunId?: string,
+): { runId: string | null; reviewedCount: number; editedCount: number; unchangedCount: number; uncoveredCount: number; findingCount: number } {
+  let runId = requestedRunId || null;
+  if (!runId) {
+    const row = db.prepare(
+      'SELECT tr.run_id FROM translation_runs tr JOIN project_events pe ON pe.run_id = tr.run_id ' +
+      'WHERE tr.source_revision_id = ? AND pe.event_type = ? ' +
+      "AND pe.payload_json LIKE '%\\\"editorialMode\\\":\\\"chinese-monolingual\\\"%' " +
+      'ORDER BY tr.finished_at DESC, pe.event_id DESC LIMIT 1'
+    ).get(revisionId, 'stage.completed') as { run_id?: string } | undefined;
+    runId = row?.run_id || null;
+  }
+  if (!runId) return { runId: null, reviewedCount: 0, editedCount: 0, unchangedCount: 0, uncoveredCount: 0, findingCount: 0 };
+  const rows = db.prepare(
+    "SELECT payload_json FROM project_events WHERE run_id = ? AND event_type = 'stage.completed' ORDER BY event_id"
+  ).all(runId) as Array<{ payload_json: string }>;
+  const totals = { runId, reviewedCount: 0, editedCount: 0, unchangedCount: 0, uncoveredCount: 0, findingCount: 0 };
+  for (const row of rows) {
+    let payload: any = {};
+    try { payload = JSON.parse(row.payload_json); } catch { continue; }
+    if (payload.stage !== 'style-review' || payload.editorialMode !== 'chinese-monolingual') continue;
+    const metrics = payload.chineseEditorialMetrics || {};
+    for (const key of ['reviewedCount', 'editedCount', 'unchangedCount', 'uncoveredCount', 'findingCount'] as const) {
+      totals[key] += Math.max(0, Number(metrics[key]) || 0);
+    }
+  }
+  return totals;
 }
 
 const GENERIC_CANONICAL_NAME_FORMS = new Set([
@@ -1437,12 +1476,16 @@ export function runProjectQualityAudit(projectId: string, runId?: string): Recor
   const review = currentReviewFindings(context.db, context.currentSourceRevisionId, runId);
   const reviewFindings = review.findings.filter((finding) => presentIds.has(finding.segmentId)).map((finding) => ({
     findingId: 'review_' + finding.findingId,
-    type: finding.category === 'accuracy'
-      ? 'accuracy-review'
-      : finding.category === 'terminology'
-        ? 'reviewer-terminology-review'
-        : finding.dimension === 'character_voice' ? 'character-voice-review' : 'style-review',
+    type: finding.editorialMode === 'chinese-monolingual' ? 'chinese-literary-editing'
+      : finding.category === 'accuracy'
+        ? 'accuracy-review'
+        : finding.category === 'terminology'
+          ? 'reviewer-terminology-review'
+          : finding.dimension === 'character_voice' ? 'character-voice-review' : 'style-review',
     category: finding.category,
+    editorialMode: finding.editorialMode,
+    bilingualReviewStatus: finding.bilingualReviewStatus,
+    applicationStatus: finding.applicationStatus,
     severity: finding.priority === 'must_fix' ? 'must-fix' : 'review',
     repairable: true,
     segmentIds: [finding.segmentId],
@@ -1457,6 +1500,26 @@ export function runProjectQualityAudit(projectId: string, runId?: string): Recor
     suggestion: finding.suggestion,
     proposedTranslation: finding.proposedTranslation,
   }));
+  const chineseEditorial = chineseEditorialStageMetrics(context.db, context.currentSourceRevisionId, runId);
+  const chineseEditorialFindings = review.findings.filter((finding) => finding.editorialMode === 'chinese-monolingual');
+  const chineseEditorialApplied = chineseEditorialFindings.filter((finding) => finding.applicationStatus === 'applied').length;
+  const chineseEditorialDismissed = chineseEditorialFindings.filter((finding) => finding.applicationStatus === 'dismissed').length;
+  const chineseEditorialPending = chineseEditorialFindings.filter((finding) => !['applied', 'dismissed'].includes(finding.applicationStatus)).length;
+  const chineseEditorialVerified = chineseEditorialFindings.filter((finding) =>
+    ['verified', 'corrected'].includes(finding.bilingualReviewStatus)).length;
+  const chineseEditorialCorrected = chineseEditorialFindings.filter((finding) =>
+    finding.bilingualReviewStatus === 'corrected').length;
+  const chineseEditorialBilingualPending = chineseEditorialFindings.filter((finding) =>
+    !['verified', 'corrected'].includes(finding.bilingualReviewStatus)).length;
+  const chineseEditorialDecided = chineseEditorialApplied + chineseEditorialDismissed;
+  const chineseEditorialLatestOverrides = chineseEditorialFindings.filter((finding) => {
+    if (finding.applicationStatus !== 'applied' || !finding.appliedResultId) return false;
+    const latest = context.db.prepare(
+      'SELECT result_id, origin FROM translation_results WHERE source_revision_id = ? AND segment_id = ? AND accepted = 1 ORDER BY rowid DESC LIMIT 1'
+    ).get(context.currentSourceRevisionId, finding.segmentId) as { result_id?: string; origin?: string } | undefined;
+    return !!latest && latest.result_id !== finding.appliedResultId && latest.origin === 'manual';
+  }).length;
+  const editorialProfile = memory.chineseEditorialProfile || null;
   const findings = [
     ...missing, ...mappingConflictAudit.findings, ...termFindings, ...residueFindings,
     ...numberFindings, ...repeatedFindings, ...outputFindings, ...contextFindings, ...mentionFindings, ...reviewFindings,
@@ -1510,6 +1573,36 @@ export function runProjectQualityAudit(projectId: string, runId?: string): Recor
       styleFindingRatePer100Segments: ratePer100(reviewFindings.filter((item) => item.category === 'style').length),
       characterVoiceFindingCount: reviewFindings.filter((item) => item.type === 'character-voice-review').length,
       characterVoiceFindingRatePer100Segments: ratePer100(reviewFindings.filter((item) => item.type === 'character-voice-review').length),
+      chineseEditorial: {
+        runId: chineseEditorial.runId,
+        reviewedSegmentCount: chineseEditorial.reviewedCount,
+        editedSegmentCount: chineseEditorial.editedCount,
+        unchangedSegmentCount: chineseEditorial.unchangedCount,
+        uncoveredSegmentCount: chineseEditorial.uncoveredCount,
+        editRatePercent: chineseEditorial.reviewedCount
+          ? Math.round(chineseEditorial.editedCount / chineseEditorial.reviewedCount * 1000) / 10 : null,
+        unchangedRatePercent: chineseEditorial.reviewedCount
+          ? Math.round(chineseEditorial.unchangedCount / chineseEditorial.reviewedCount * 1000) / 10 : null,
+        findingCount: chineseEditorial.findingCount,
+        bilingualVerifiedFindingCount: chineseEditorialVerified,
+        bilingualCorrectedFindingCount: chineseEditorialCorrected,
+        bilingualPendingFindingCount: chineseEditorialBilingualPending,
+        userAppliedFindingCount: chineseEditorialApplied,
+        userDismissedFindingCount: chineseEditorialDismissed,
+        pendingUserDecisionFindingCount: chineseEditorialPending,
+        userDecisionAcceptanceRatePercent: chineseEditorialDecided
+          ? Math.round(chineseEditorialApplied / chineseEditorialDecided * 1000) / 10 : null,
+        manuallyOverriddenAfterApplyCount: chineseEditorialLatestOverrides,
+      },
+      chineseEditorialProfile: editorialProfile ? {
+        status: editorialProfile.status,
+        sourceRevisionId: editorialProfile.sourceRevisionId,
+        analysisVersion: editorialProfile.analysisVersion,
+        sampleFingerprint: editorialProfile.sampleFingerprint,
+        sampleCount: editorialProfile.sampleCount,
+        chapterCount: editorialProfile.chapterCount,
+        evidenceCount: Array.isArray(editorialProfile.evidenceRefs) ? editorialProfile.evidenceRefs.length : 0,
+      } : { status: 'not-generated' },
       repairableFindingCount: findings.filter((item) => item.repairable).length,
     },
     interpretation: [
