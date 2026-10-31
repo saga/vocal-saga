@@ -1122,7 +1122,7 @@ test('default-adopted Chinese editorial profile retains surviving accepted evide
     const profile = {
       version: 1,
       status: 'confirmed',
-      confirmationSource: 'user-confirmed',
+      confirmationSource: 'model-default',
       sourceRevisionId: revisionId,
       analysisVersion: 'chinese-editorial-profile-v1',
       sampleFingerprint: 'sample-fingerprint',
