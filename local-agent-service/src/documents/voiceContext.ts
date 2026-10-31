@@ -380,9 +380,49 @@ export function sanitizeProjectLiteraryMemory(input: unknown): Record<string, an
           ? [{ segmentId, targetExcerpt, observation, aspect }] : [];
       })
     : [];
+  const normalizeEditorialCandidate = (candidate: any) => {
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return null;
+    const candidateProfile = candidate.profile && typeof candidate.profile === 'object' &&
+      !Array.isArray(candidate.profile) ? candidate.profile : {};
+    const candidateEvidence = Array.isArray(candidate.evidenceRefs)
+      ? candidate.evidenceRefs.slice(0, 24).flatMap((item: any) => {
+          const segmentId = text(item?.segmentId, 160);
+          const targetExcerpt = text(item?.targetExcerpt, 240);
+          const observation = text(item?.observation, 240);
+          const aspect = ['narrativeVoice', 'register', 'rhythm', 'dialogue', 'diction', 'consistency'].includes(String(item?.aspect))
+            ? String(item.aspect) : '';
+          return segmentId && targetExcerpt.length >= 4 && observation && aspect
+            ? [{ segmentId, targetExcerpt, observation, aspect }] : [];
+        })
+      : [];
+    return {
+      version: 1,
+      status: 'candidate',
+      sourceRevisionId: text(candidate.sourceRevisionId, 200),
+      analysisVersion: text(candidate.analysisVersion, 120),
+      sampleFingerprint: text(candidate.sampleFingerprint, 128),
+      sampleCount: Math.max(0, Math.min(1000, Number(candidate.sampleCount) || 0)),
+      chapterCount: Math.max(0, Math.min(500, Number(candidate.chapterCount) || 0)),
+      generatedAt: text(candidate.generatedAt, 64),
+      basedOnFingerprint: text(candidate.basedOnFingerprint, 128) || null,
+      generatedFromMemoryRevisionId: text(candidate.generatedFromMemoryRevisionId, 200) || null,
+      profile: {
+        narrativeVoice: text(candidateProfile.narrativeVoice, 1000),
+        register: text(candidateProfile.register, 1000),
+        rhythm: text(candidateProfile.rhythm, 1000),
+        dialogue: text(candidateProfile.dialogue, 1000),
+        diction: text(candidateProfile.diction, 1000),
+        rules: list(candidateProfile.rules, 16, 240),
+        avoid: list(candidateProfile.avoid, 12, 240),
+      },
+      evidenceRefs: candidateEvidence,
+    };
+  };
   const editorialStatus = status(rawEditorial?.status, ['candidate', 'confirmed', 'rejected'], 'candidate');
+  const pendingEditorialUpdate = normalizeEditorialCandidate(rawEditorial?.pendingUpdate);
   const chineseEditorialProfile = rawEditorial ? {
     version: 1,
+    profileVersion: Math.max(1, Math.min(1000, Number(rawEditorial.profileVersion) || 1)),
     status: editorialStatus,
     ...(editorialStatus === 'confirmed' && rawEditorial?.confirmationSource === 'user-confirmed'
       ? { confirmationSource: 'user-confirmed' } : {}),
@@ -404,6 +444,7 @@ export function sanitizeProjectLiteraryMemory(input: unknown): Record<string, an
       avoid: list(editorialProfileInput.avoid, 12, 240),
     },
     evidenceRefs: editorialEvidence,
+    ...(pendingEditorialUpdate ? { pendingUpdate: pendingEditorialUpdate } : {}),
   } : null;
   const memory: Record<string, any> = {
     version: 2, entities, relationships, styleGuide, styleGuideStatus,
