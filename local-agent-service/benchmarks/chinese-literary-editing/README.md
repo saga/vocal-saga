@@ -47,18 +47,22 @@ The script does not upload the dataset or results. The output directory is local
 
 ## Human rubric
 
-Score each candidate independently, preferably with two reviewers:
+The current default editing policy is **Conservative Literary Copyediting**: make the smallest necessary change, preserve sound and rhythm, and leave already-natural text unchanged. This is a prompt-policy decision, not a model-winner claim.
+
+Two reviewers must score the same blinded packet independently. The runner creates separate `human-review-reviewer-1.csv` and `human-review-reviewer-2.csv` sheets. Do not share model-results.json or blind-mapping.json with either reviewer. Lock both sheets before unblinding. Resolve material disagreements through adjudication and report inter-rater agreement.
+
+Score each candidate independently:
 
 | Dimension | What to assess |
 |---|---|
 | Chinese naturalness | Natural collocations, syntax, particles, translationese, readable flow |
 | Narrative voice | Distance, register, tone, authorial restraint and consistency |
-| Character voice | Distinct dialogue without invented catchphrases, dialect or emotion |
+| Character voice (additional diagnostic) | Distinct dialogue without invented catchphrases, dialect or emotion |
 | Literary rhythm | Long sentences, repetition, pauses, ambiguity, imagery and deliberate awkwardness |
 | Fidelity | Omission/addition, negation, viewpoint, reference, tense and tone strength |
 | Over-editing | Whether a sound original expression was needlessly changed or its literary effect damaged |
 
-Record preference (A / B / tie), dimension scores, critical fidelity errors and concrete notes. A reviewer must be allowed to prefer the unchanged draft.
+Record preference (A / B / tie), dimension scores, critical fidelity errors and concrete notes. A reviewer must be allowed to prefer the unchanged draft. The two reviewers must not discuss scores before submitting.
 
 ## Analysis rules
 
@@ -71,4 +75,4 @@ Record preference (A / B / tie), dimension scores, critical fidelity errors and 
 - Keep a fixed dataset version and rerun it after prompt, profile or model changes.
 - Only public-domain, user-owned or licensed content may enter the benchmark.
 
-A model should become the default editor only after it improves blind human preference without increasing critical fidelity regression or over-editing.
+A model should become the default editor only after both reviewers' blind results are adjudicated and show a stable preference advantage without increasing critical fidelity regression or over-editing. Prefer paired segment-level comparisons and report ties, reviewer disagreement, and confidence intervals; do not select a winner from a single overall mean. If evidence is inconclusive, retain the current model and record the result as inconclusive.
