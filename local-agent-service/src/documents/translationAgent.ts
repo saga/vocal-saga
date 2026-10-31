@@ -8,7 +8,7 @@
  * - all long-running progress is persisted as project events, not only sent over HTTP.
  */
 import { parseAgentModel } from '../json.ts';
-import { positiveIntegerEnv, WORKBUDDY_POOL_SIZE } from '../config.ts';
+import { positiveIntegerEnv, REVIEW_TIMEOUT_MS, WORKBUDDY_POOL_SIZE } from '../config.ts';
 import { runAgentStructured } from '../agents/runner.ts';
 import { addTurnUsage, summarizeTurnUsage, type TurnUsage } from '../agents/usage.ts';
 import { getCodeBuddyTaskProfile } from '../agents/taskProfiles.ts';
@@ -1581,6 +1581,7 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
       translationConcurrency,
       reviewConcurrency,
       poolSize,
+      reviewTimeoutMs: reviewEnabled ? REVIEW_TIMEOUT_MS : 0,
       maxBatchSegments: strategy.maxBatchSegments,
       maxBatchSourceChars: strategy.maxBatchSourceChars,
       precedingContextSegments: strategy.precedingContextSegments,
@@ -1644,7 +1645,7 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
         return;
       }
       store.appendEvent(projectId, runId, 'stage.started', {
-        stage: 'review', batchIndex, label: '文学审校',
+        stage: 'review', batchIndex, timeoutMs: REVIEW_TIMEOUT_MS, label: '文学审校',
       });
       const reviewStartedAt = Date.now();
       const reviewVoiceContext = translationBrief?.voiceContext || buildProjectVoiceContext(
@@ -1680,7 +1681,8 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
         const styleStartedAt = Date.now();
         try {
           store.appendEvent(projectId, runId, 'stage.started', {
-            stage: 'style-review', batchIndex, label: /^zh(?:[-_]|$)/i.test(String(batchContext.run.targetLang || ''))
+            stage: 'style-review', batchIndex, timeoutMs: REVIEW_TIMEOUT_MS,
+            label: /^zh(?:[-_]|$)/i.test(String(batchContext.run.targetLang || ''))
               ? '中文单语文学编辑' : '人物声音与文风审校',
           });
           const styleScope = buildDocumentBatchSessionScope({
