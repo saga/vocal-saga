@@ -764,11 +764,27 @@ export function buildProjectVoiceContext(
   };
   // Keep all relevant, temporally eligible context. Prompt-size heuristics must not
   // remove character profiles, evidence, anchors, relationships, or chapter summaries.
+  // Emit per-section sizes (never content) so unusually large context can be attributed
+  // without exporting book text, character names, or translated examples into service logs.
+  const sectionChars = Object.fromEntries(Object.entries(result).map(([key, value]) => [
+    key, JSON.stringify(value ?? null).length,
+  ]).sort((a, b) => Number(b[1]) - Number(a[1])));
+  const largestSections = Object.entries(sectionChars).slice(0, 6)
+    .map(([key, chars]) => key + ':' + chars).join(',');
+  const exampleOrigins = (Array.isArray(result.recentExamples) ? result.recentExamples : [])
+    .reduce((counts: Record<string, number>, item: any) => {
+      const origin = String(item?.origin || 'unknown');
+      counts[origin] = (counts[origin] || 0) + 1;
+      return counts;
+    }, {});
   logInfo('voice-context', 'built · entities=' + (Array.isArray(result.entities) ? result.entities.length : 0) +
     ' · relationships=' + (Array.isArray(result.relationships) ? result.relationships.length : 0) +
     ' · characterVoices=' + (Array.isArray(result.characterVoices) ? result.characterVoices.length : 0) +
     ' · voiceAnchors=' + (Array.isArray(result.voiceAnchors) ? result.voiceAnchors.length : 0) +
     ' · dialogueParticipants=' + (Array.isArray(result.dialogueParticipants) ? result.dialogueParticipants.length : 0) +
+    ' · recentExamples=' + (Array.isArray(result.recentExamples) ? result.recentExamples.length : 0) +
+    ' · exampleOrigins=' + JSON.stringify(exampleOrigins) +
+    ' · largestSections=' + largestSections +
     ' · chars=' + JSON.stringify(result).length);
   return result;
 }
