@@ -554,8 +554,7 @@ export function buildProjectVoiceContext(
   const dialogueParticipants: Array<Record<string, unknown>> = [];
   const participantScore = new Map<string, number>();
   for (const anchor of memory.voiceAnchors) {
-    if (!precedingIds.has(anchor.segmentId) || anchor.status !== 'approved' ||
-        !anchor.attributionEvidence || Number(anchor.attributionConfidence) < 0.7) continue;
+    if (!precedingIds.has(anchor.segmentId) || anchor.status !== 'approved') continue;
     const sourceSegment = precedingById.get(anchor.segmentId);
     if (!sourceSegment || !containsEntityName(sourceSegment.text, anchor.source)) continue;
     participantScore.set(anchor.speakerId, Math.max(participantScore.get(anchor.speakerId) || 0, 3));
@@ -563,8 +562,9 @@ export function buildProjectVoiceContext(
       characterId: anchor.speakerId,
       role: 'speaker',
       evidenceSegmentId: anchor.segmentId,
-      evidenceKind: 'approved-voice-anchor',
-      confidence: Math.min(0.99, Number(anchor.attributionConfidence) || 0.7),
+      evidenceKind: 'default-adopted-voice-anchor',
+      confidence: Number.isFinite(Number(anchor.attributionConfidence))
+        ? Math.max(0.1, Math.min(0.99, Number(anchor.attributionConfidence))) : 0.65,
     });
     if (anchor.addresseeId && profiles.some((profile: any) => profile.characterId === anchor.addresseeId)) {
       participantScore.set(anchor.addresseeId, Math.max(participantScore.get(anchor.addresseeId) || 0, 2));
@@ -578,13 +578,13 @@ export function buildProjectVoiceContext(
     }
   }
   for (const rule of memory.relationshipVoiceRules) {
-    if (!['confirmed', 'candidate'].includes(rule.status)) continue;
+    if (rule.status === 'rejected') continue;
     const evidenceSegmentId = rule.evidenceSegmentIds.find((id: string) => dialoguePrecedingIds.has(id));
     if (!evidenceSegmentId) continue;
     const sourceSegment = precedingById.get(evidenceSegmentId);
     if (!sourceSegment || !profiles.some((profile: any) => profile.characterId === rule.speakerId) ||
         !profiles.some((profile: any) => profile.characterId === rule.addresseeId)) continue;
-    const confidence = rule.status === 'confirmed' ? 0.85 : 0.7;
+    const confidence = 0.75;
     participantScore.set(rule.speakerId, Math.max(participantScore.get(rule.speakerId) || 0, confidence * 3));
     participantScore.set(rule.addresseeId, Math.max(participantScore.get(rule.addresseeId) || 0, confidence * 2));
     dialogueParticipants.push({
@@ -616,7 +616,7 @@ export function buildProjectVoiceContext(
   const chosen = matched;
   const ids = new Set(chosen.map((profile: any) => profile.characterId));
   const relationshipVoiceRules = memory.relationshipVoiceRules.filter((rule: any) =>
-    ['confirmed', 'candidate'].includes(rule.status) &&
+    rule.status !== 'rejected' &&
     ids.has(rule.speakerId) && ids.has(rule.addresseeId))
     .sort((a: any, b: any) => {
       const aRecent = a.evidenceSegmentIds.some((id: string) => precedingIds.has(id)) ? 1 : 0;
@@ -624,9 +624,7 @@ export function buildProjectVoiceContext(
       return bRecent - aRecent || (a.status === 'confirmed' ? -1 : 1);
     });
   const voiceAnchors = memory.voiceAnchors.filter((anchor: any) =>
-    anchor.status === 'approved' && ids.has(anchor.speakerId) &&
-    typeof anchor.attributionEvidence === 'string' && !!anchor.attributionEvidence.trim() &&
-    Number(anchor.attributionConfidence) >= 0.7)
+    anchor.status === 'approved' && ids.has(anchor.speakerId))
     .sort((a: any, b: any) => {
       const aSameChapter = segments.some((segment) => segment.contextPath && segment.contextPath === a.chapter) ? 1 : 0;
       const bSameChapter = segments.some((segment) => segment.contextPath && segment.contextPath === b.chapter) ? 1 : 0;
@@ -662,12 +660,11 @@ export function buildProjectVoiceContext(
 
   const result = {
     version: 1, policyVersion: 'character-voice-v4-dialogue-participants',
-    styleGuide: memory.styleGuideStatus === 'confirmed' || memory.styleGuideOrigin === 'user-edited' ? memory.styleGuide : {},
+    styleGuide: memory.styleGuideAutoDisabled !== true ? memory.styleGuide : {},
     styleGuideStatus: memory.styleGuideStatus,
     styleGuideOrigin: memory.styleGuideOrigin,
-    chineseEditorialProfile: memory.chineseEditorialProfile?.status === 'confirmed' &&
-      memory.chineseEditorialProfile?.confirmationSource === 'user-confirmed'
-      ? memory.chineseEditorialProfile.profile : {},
+    chineseEditorialProfile: memory.chineseEditorialProfile?.status !== 'rejected'
+      ? memory.chineseEditorialProfile?.profile || {} : {},
     chapterSummaries,
     scene: {
       ...(chapterTitle ? { chapterTitle: text(chapterTitle, 160) } : {}),
