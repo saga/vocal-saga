@@ -42,6 +42,7 @@ const MAX_SAMPLE_IDS = 12;
 const MAX_LOG_BYTES = 512 * 1024;
 const MAX_LOG_LINES = 180;
 const MAX_LOG_CHARS = 64 * 1024;
+const collectionQueryErrors = [];
 const SECRET_PATTERNS = [
   /(authorization\s*[:=]\s*bearer\s+)[^\s,;]+/gi,
   /((?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret|local_agent_token)\s*[:=]\s*)["']?[^\s"',;]+/gi,
@@ -82,7 +83,9 @@ function openReadOnly(file) {
 function rows(db, sql, ...params) {
   try { return db.prepare(sql).all(...params); }
   catch (error) {
-    return { collectionError: redact(error instanceof Error ? error.message : String(error)) };
+    const message = redact(error instanceof Error ? error.message : String(error));
+    collectionQueryErrors.push({ query: sql.replace(/\\s+/g, ' ').slice(0, 180), error: message });
+    return { collectionError: message };
   }
 }
 function asArray(value) {
@@ -209,6 +212,92 @@ function summarizeGraphProgress(row) {
     droppedCandidateCounts: progress.droppedCandidateCounts || {},
   };
 }
+function summarizeBriefComposition(row) {
+  const brief = parseJson(row.brief_json, null);
+  if (!brief || typeof brief !== 'object') {
+    return { available: false, parseError: true, storedChars: Number(row.briefChars || 0) };
+  }
+  const measure = (value) => {
+    const chars = JSON.stringify(value ?? null).length;
+    if (!Array.isArray(value)) return {
+      chars, count: value && typeof value === 'object' ? Object.keys(value).length : 0,
+    };
+    const lengths = value.map((item) => JSON.stringify(item ?? null).length).sort((a, b) => a - b);
+    return {
+      chars, count: value.length,
+      itemCharsTotal: lengths.reduce((sum, item) => sum + item, 0),
+      itemCharsMax: lengths[lengths.length - 1] || 0,
+      itemCharsMedian: lengths.length ? lengths[Math.floor(lengths.length / 2)] : 0,
+      duplicateItems: value.length - new Set(value.map((item) => JSON.stringify(item ?? null))).size,
+    };
+  };
+  const sectionMap = (value) => Object.fromEntries(
+    Object.entries(value && typeof value === 'object' && !Array.isArray(value) ? value : {})
+      .map(([key, item]) => [key, measure(item)])
+  );
+  const voice = brief.voiceContext || {};
+  const graph = brief.contextGraph || {};
+  return {
+    available: true,
+    storedChars: Number(row.briefChars || 0),
+    serializedChars: JSON.stringify(brief).length,
+    topLevel: {
+      glossary: measure(brief.glossary),
+      precedingSegments: measure(brief.precedingSegments),
+      contextGraph: measure(graph),
+      voiceContext: measure(voice),
+    },
+    voiceContext: sectionMap(voice),
+    contextGraph: sectionMap(graph),
+  };
+}
+function summarizeReviewEvents(events) {
+  const types = new Set([
+    'review.audit.input', 'review.audit.output', 'review.audit.failed',
+    'review.audit.retry-input', 'review.audit.retry-output',
+  ]);
+  const selected = events.filter((event) => types.has(event.event_type));
+  const compact = selected.slice(-160).map((event) => {
+    const payload = parseJson(event.payload_json, {});
+    const audit = payload.audit && typeof payload.audit === 'object' ? payload.audit : {};
+    const input = audit.input && typeof audit.input === 'object' ? audit.input : {};
+    const response = audit.response && typeof audit.response === 'object' ? audit.response : {};
+    const segments = Array.isArray(input.segments) ? input.segments : [];
+    const translations = response.translations && typeof response.translations === 'object'
+      ? Object.keys(response.translations) : [];
+    return {
+      runId: event.run_id, eventType: event.event_type, createdAt: event.created_at,
+      stage: payload.stage || null, requestId: payload.requestId || null,
+      parentRequestId: payload.parentRequestId || null,
+      responseShape: payload.responseShape || null,
+      inputSegmentCount: segments.length || null,
+      returnedTranslationCount: translations.length || null,
+      reviewedIdCount: Array.isArray(response.reviewedIds) ? response.reviewedIds.length : null,
+      missingIdCount: Array.isArray(response.missingIds) ? response.missingIds.length : null,
+      findingCount: Array.isArray(response.findings) ? response.findings.length : null,
+      error: event.event_type === 'review.audit.failed'
+        ? redact(payload.error || '').slice(0, 500) || null : null,
+    };
+  });
+  const byRunStage = {};
+  for (const item of compact) {
+    const key = String(item.runId || 'unknown') + '/' + String(item.stage || 'unknown');
+    byRunStage[key] ||= {
+      inputCalls: 0, outputCalls: 0, failedCalls: 0, retryCalls: 0,
+      inputSegments: 0, returnedTranslations: 0, missingIds: 0, findings: 0,
+    };
+    const group = byRunStage[key];
+    if (item.eventType.endsWith('.input')) group.inputCalls++;
+    if (item.eventType.endsWith('.output')) group.outputCalls++;
+    if (item.eventType === 'review.audit.failed') group.failedCalls++;
+    if (item.eventType.includes('.retry-')) group.retryCalls++;
+    group.inputSegments += Number(item.inputSegmentCount || 0);
+    group.returnedTranslations += Number(item.returnedTranslationCount || 0);
+    group.missingIds += Number(item.missingIdCount || 0);
+    group.findings += Number(item.findingCount || 0);
+  }
+  return { eventCount: selected.length, retainedEventCount: compact.length, byRunStage, events: compact };
+}
 function summarizeAudit(row) {
   const report = parseJson(row.report_json, {});
   const findings = asArray(report.findings);
@@ -243,11 +332,12 @@ function summarizeDocument(project, db) {
   const rawRunSegments = asArray(rows(db,
     'SELECT run_id, segment_id, status, attempts, error, updated_at FROM run_segments ORDER BY updated_at'));
   const rawResults = asArray(rows(db,
-    'SELECT run_id, origin, provider, model, length(translation_text) AS textChars, accepted FROM translation_results ORDER BY created_at'));
+    'SELECT tr.run_id, tr.origin, r.provider, r.model, length(tr.translation_text) AS textChars, tr.accepted ' +
+    'FROM translation_results tr LEFT JOIN translation_runs r ON r.run_id = tr.run_id ORDER BY tr.created_at'));
   const rawFindings = asArray(rows(db,
     'SELECT finding_id, category, priority, status FROM review_findings ORDER BY finding_id'));
   const rawBriefs = asArray(rows(db,
-    'SELECT run_id, batch_index, source_revision_id, memory_revision_id, brief_hash, ' +
+    'SELECT run_id, batch_index, source_revision_id, memory_revision_id, brief_hash, brief_json, ' +
     'length(brief_json) AS briefChars, length(source_segment_ids_json) AS segmentIdsJsonChars, created_at ' +
     'FROM translation_briefs ORDER BY run_id, batch_index'));
   const rawDeltas = asArray(rows(db,
@@ -275,6 +365,7 @@ function summarizeDocument(project, db) {
   const auditRows = asArray(rows(db, 'SELECT audit_id, run_id, created_at, report_json FROM quality_audits ORDER BY created_at DESC'));
   const eventRows = asArray(rows(db,
     'SELECT event_id, run_id, event_type, payload_json, created_at FROM project_events ORDER BY event_id'));
+  const reviewDiagnostics = summarizeReviewEvents(eventRows);
 
   const runSummary = rawRuns.map((run) => ({
     runId: run.run_id, status: run.status,
@@ -449,8 +540,11 @@ function summarizeDocument(project, db) {
       briefHash: item.brief_hash,
       briefChars: item.briefChars,
       sourceSegmentIdsJsonChars: item.segmentIdsJsonChars,
+      contextComposition: summarizeBriefComposition(item),
       createdAt: item.created_at,
     })),
+    reviewDiagnostics,
+    collectionQueryErrors: [...collectionQueryErrors],
     reviewFindings: {
       count: rawFindings.length,
       categories: reviewFindingCategories,
@@ -513,7 +607,7 @@ function summarizeLogExcerpt() {
       text = buffer.toString('utf8');
     } finally { fs.closeSync(fd); }
     const allLines = text.split(/\r?\n/).filter(Boolean);
-    const pattern = /(?:uncaught|unhandled|fatal|SIGTERM|SIGINT|shutdown|restart|recovered interrupted|recovery check failed|context-graph|document-projects|workbuddy|codebuddy|timeout|timed out|process interrupted|server listening|server started|server stopped|EADDRINUSE|ECONNRESET|aborted)/i;
+    const pattern = /(?:uncaught|unhandled|fatal|SIGTERM|SIGINT|shutdown|restart|recovered interrupted|recovery check failed|context-graph|voice-context|translation-brief|document-agent|literary-review|review\\.audit|quality-audit|quality-repair|canonical-terms|document-projects|workbuddy|codebuddy|timeout|timed out|process interrupted|server listening|server started|server stopped|EADDRINUSE|ECONNRESET|aborted)/i;
     const skip = /(?:polling summary|response preview|prompt preview|request body|authorization\s*[:=]|bearer\s+)/i;
     const retained = allLines.filter((line) => pattern.test(line) && !skip.test(line))
       .slice(-MAX_LOG_LINES).map(redact);
@@ -634,9 +728,9 @@ const readme = [
   'Selection: latest two non-archived document projects by document_projects.updated_at.',
   'Schema version: 2',
   '',
-  'Included: source revision metadata; source segment counts and lengths; Prompt/LiteraryMemory revision fingerprints and compact metadata; Run scopes/statuses; run-segment state counts; translation result counts and text lengths; review finding categories; TranslationBrief size metadata; Context Graph counts and compact analysis progress; quality-audit metrics; filtered project event timeline; bounded service lifecycle/error log excerpt when available.',
+  'Included: source revision metadata; source segment counts and lengths; Prompt/LiteraryMemory revision fingerprints and compact metadata; Run scopes/statuses; run-segment state counts; translation result counts and text lengths; Reviewer input/output/failure coverage metadata; TranslationBrief per-component character/count breakdown (no content); Context Graph counts and compact analysis progress; quality-audit metrics; SQLite collection query errors; filtered project event timeline; bounded service lifecycle/error log excerpt when available.',
   '',
-  'Excluded by default: source segment bodies, translations, full Prompt text, LiteraryMemory bodies, Context Graph Source Feature rows, raw Context Graph checkpoint values, raw TranslationBrief JSON, context-delta payloads, full quality-audit finding text, raw project event payloads, source EPUB/PDF files, SDK session transcripts and unrelated documents.',
+  'Excluded by default: source segment bodies, translations, full Prompt text, LiteraryMemory bodies, Context Graph Source Feature rows, raw Context Graph checkpoint values, raw TranslationBrief JSON (parsed in memory for metadata-only component sizes), context-delta payloads, full quality-audit finding text, raw project event payloads, source EPUB/PDF files, SDK session transcripts and unrelated documents.',
   '',
   'The service log excerpt scans at most the last 512 KiB and retains at most 180 lifecycle/error-related lines. Use --no-logs to omit it. Secret-like values and the user home path are redacted.',
   '',
