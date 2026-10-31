@@ -20,7 +20,7 @@
 - Prompt 版本、翻译策略、文学记忆与 Context Graph；
 - Run 状态、运行历史、事件轨迹及质量审计记录。
 
-Context Graph、原文证据、章节摘要和全书分析产物只在 Local Agent 的项目 SQLite 中保存和检索。扩展不得把图谱节点/证据批量合并进 LiteraryMemory，也不得在轮询状态时下载完整图谱。扩展只读取用于 UI 的小型状态投影；翻译 Run 的预处理启动、来源版本/语言校验与等待逻辑由服务端执行。
+Context Graph、原文证据、章节摘要和全书分析产物只在 Local Agent 的项目 SQLite 中保存和检索。扩展不得把图谱节点/证据批量合并进 LiteraryMemory，也不得在轮询状态时下载完整图谱。扩展只读取用于 UI 和文学翻译前置检查的小型状态投影；它不持有图谱事实或分析算法。文学翻译的正常扩展路径必须先确认当前来源版本的预处理 ready，再创建翻译 Run；服务端 executeRun 仍执行最终门禁。旧客户端或直接 API 调用即使先创建了 queued Run，服务端也必须自动启动/等待匹配的预处理，并在 ready 前禁止进入 running、调用翻译模型或写入译文候选。详细门禁见 [ADR-0005](0005-literary-preprocessing-before-translation.md)。
 
 扩展 UI 在打开文档、恢复会话、刷新页面以及进入 Agent Workspace 时，必须重新查询服务端项目并刷新对应的扩展状态。扩展 IndexedDB 和轻量会话检查点仅用于展示缓存、服务不可用时的离线连续性和故障恢复，不得凌驾于可访问的服务端项目数据。
 
