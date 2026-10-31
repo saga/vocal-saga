@@ -11,7 +11,7 @@ const {
   CONTEXT_GRAPH_WORKFLOW_STAGES,
   CONTEXT_GRAPH_WORKFLOW_VERSION,
 } = await import('../src/documents/contextGraphWorkflow.ts');
-const { ANALYSIS_SCHEMA, CONTEXT_GRAPH_ANALYSIS_VERSION } = await import('../src/documents/contextGraph.ts');
+const { ANALYSIS_SCHEMA, CONTEXT_GRAPH_ANALYSIS_VERSION, isContextGraphReadyForTranslationRun } = await import('../src/documents/contextGraph.ts');
 const { buildWorkbuddyOptions } = await import('../src/agents/workbuddy.ts');
 
 test('all literary style dimensions are required by the single-call A schema', () => {
@@ -116,4 +116,44 @@ test('CodeBuddy workflow turns can resume a persisted SDK session', () => {
   assert.equal(options.resume, 'persisted-session-123');
   assert.equal(options.model, 'test-model');
   assert.deepEqual(options.outputFormat, { type: 'json_schema', schema });
+});
+
+
+test('literary translation requires a complete, current full-book preprocessing snapshot', () => {
+  const run = {
+    sourceRevisionId: 'source-1',
+    sourceLang: 'en',
+    targetLang: 'zh',
+  };
+  const ready = {
+    status: 'completed',
+    styleGuideReady: true,
+    sourceRevisionId: 'source-1',
+    progress: {
+      strategy: 'B',
+      sampleCount: 80,
+      analysisVersion: CONTEXT_GRAPH_ANALYSIS_VERSION,
+      sourceLang: 'en',
+      targetLang: 'zh',
+      completedStages: ['style', 'characters', 'entities', 'relationships', 'chapters'],
+    },
+  };
+  assert.equal(isContextGraphReadyForTranslationRun(ready, run), true);
+  assert.equal(isContextGraphReadyForTranslationRun({ ...ready, styleGuideReady: false }, run), false);
+  assert.equal(isContextGraphReadyForTranslationRun({
+    ...ready,
+    progress: { ...ready.progress, completedStages: ['style', 'characters', 'entities', 'relationships'] },
+  }, run), false);
+  assert.equal(isContextGraphReadyForTranslationRun({
+    ...ready,
+    sourceRevisionId: 'source-2',
+  }, run), false);
+  assert.equal(isContextGraphReadyForTranslationRun({
+    ...ready,
+    progress: { ...ready.progress, analysisVersion: 'old-version' },
+  }, run), false);
+  assert.equal(isContextGraphReadyForTranslationRun({
+    ...ready,
+    progress: { ...ready.progress, sampleCount: 0 },
+  }, run), false);
 });
