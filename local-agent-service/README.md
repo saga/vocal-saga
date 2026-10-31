@@ -178,10 +178,10 @@ The ordinary /v1/chat/completions endpoint remains the single-call provider inte
 
 - ~/.vocal-saga-local-agent/documents/catalog.sqlite is a rebuildable project catalog. Each project owns documents/<documentId>/project.sqlite.
 - Project databases store source revisions and stable segments, Prompt revisions, translation runs, per-segment status, candidate translations, accepted/manual translations, review findings and durable events. The old document_sessions API remains for compatibility.
-- With the local Agent enabled, the extension's normal EPUB/PDF reading action and the Agent workspace tab call the same project API and Translation Agent. They share a project ID, current-source hash, Prompt/config fingerprint, accepted translation map and run history; the UI is not allowed to maintain a second local-only translation pipeline. A workspace has at most one queued/running run at a time. The API run itself never overwrites accepted translations: the extension automatically accepts completed candidates for reader/workspace runs, while direct API/CLI callers can leave candidates pending and explicitly call the accept endpoint.
+- With the local Agent enabled, the extension's normal EPUB/PDF reading action and the Agent workspace tab call the same project API and Translation Agent. They share a project ID, current-source hash, Prompt/config fingerprint, accepted translation map and run history; the UI is not allowed to maintain a second local-only translation pipeline. A workspace has at most one queued/running run at a time. The executor validates and automatically accepts eligible candidates when any Run finishes, regardless of whether it was started from the reader, Workspace, API or CLI. Finalization preserves newer manual edits and source hashes; the accept endpoint remains available for explicit recovery of candidates left pending after an interrupted finalization.
 - Each run plans its scope deterministically: all, stale, failed, selected IDs or chapter. Source fingerprints, Prompt/config fingerprints and pipeline version are used to detect stale output.
-- The Agent executes a bounded workflow: plan, translate in batches, validate IDs and structure, optionally run literary review, then wait for acceptance. The model cannot change project state or bypass the acceptance gate. Missing IDs get one targeted retry instead of resending the whole document.
-- New runs do not overwrite accepted translations. The /runs/:runId/accept endpoint promotes candidates; manual corrections create accepted results marked with origin=manual.
+- The Agent executes a bounded workflow: plan, translate in batches, validate IDs and structure, run configured literary review, and automatically finalize eligible candidates. The model cannot directly mutate project state; the Store validates every candidate and protects newer manual edits. Missing IDs get one targeted retry instead of resending the whole document.
+- New runs do not overwrite newer accepted/manual translations. Eligible candidates are automatically promoted by the shared finalization transaction; `/runs/:runId/accept` remains an idempotent recovery/compatibility operation. Manual corrections create accepted results marked with `origin=manual`.
 - On service startup, interrupted queued/running jobs become paused and in-flight segment rows return to pending. Resuming continues from remaining segments without deleting existing successful candidates.
 
 ### Service-side original-file import and Context Graph
@@ -338,14 +338,14 @@ The normalized JSON import accepts title, format, an optional sourceFileName, a 
 文学模式在同一文档 workspace 内运行；不为每个人物创建独立 Agent。人物声音是可审核、可版本化的数据资产，和静态 Prompt 分开保存。
 
 - 文学记忆保留 v1 的实体、剧情关系、全书文风、章节摘要、近期例句，并迁移为 v2：`characterVoices`、有方向的 `relationshipVoiceRules`、`voiceAnchors`。
-- 新分析只产生候选画像/规则/锚点。服务端按规范原文名生成稳定 ID，证据引用必须能定位当前分析输入中的片段及原文短引文；没有证据的画像不会进入记忆。
-- 用户确认的角色声音核心与用户批准的声音锚点不会被后续章节静默覆盖。冲突会留下 open question；未知说话人不会被强行套用人物画像。
-- 批次翻译和 Reviewer 使用独立的只读 `voiceContext` 字段。它按本批原文检索相关已确认人物、方向性关系规则和 approved 锚点；`contextPath` 继续只表示章节/文档结构。
+- 新分析生成的人物画像/规则/锚点通过来源版本和结构校验后默认参与后续翻译，并以 `model-default` 标记；稳定 ID、证据引用和置信度用于追溯，不要求逐项人工确认。证据不完整时降低使用强度，不伪造证据。
+- 用户修改/确认的角色声音核心与用户批准的声音锚点不会被后续章节静默覆盖；机器默认结果不能覆盖用户决定。冲突保留为 open question；说话人不明确时将人物画像作为弱提示，不把推断写成硬事实。
+- 批次翻译和 Reviewer 使用独立的只读 `voiceContext` 字段。它按本批原文检索当前可用的 model-default、user-modified 或 user-confirmed 人物/关系/锚点，并遵守来源序号边界；`contextPath` 继续只表示章节/文档结构。
 - 上下文按完整条目裁剪，避免序列化 JSON 被字符切片。扩展端缓存指纹包含 voiceContext hash；普通网页没有该字段时，仍使用原来的 cache identity。
 - 文学记忆位于每个项目的 `literary_memory_revisions` 表。每次 Run 固定保存 `literary_memory_revision_id`，可从运行记录还原该次使用的角色档案；记忆修改不创建新的静态 Prompt revision。
 - Reviewer 可在现有 `style` finding 上标记 `dimension=character_voice|register|narrative_style|pacing`，并引用角色 ID 与证据片段。准确性/术语问题按证据进行 must-fix 修订；有原文/译文证据的文风修订自动保存为 Run 候选，中文单语编辑经双语复核后自动更新候选，Run 完成时统一自动采纳。用户可事后修改。
 
-- The Project Store is the final trust boundary: it rechecks profile evidence against the current source revision; requires both confirmed profiles for a confirmed directional rule; and keeps an anchor approved only when its attribution evidence matches the source, confidence is at least 0.7, speaker is confirmed, and target is present in the accepted translation. Legacy/unverified anchors are downgraded to candidates.
+- The Project Store is the final trust boundary: it checks source revision, segment identity, temporal visibility and whether a voice anchor still points to an available source/translation. Evidence coverage and confidence remain metadata for retrieval strength, not human-approval gates or fixed numeric activation thresholds. `model-default`, `user-modified`, `user-confirmed` and `user-rejected` remain distinct; user decisions take precedence.
 - Each literary batch now loads up to four preceding source segments from the same source revision (same chapter first) as a read-only context for pronouns/dialogue turns. They do not enter `run_segments` and must never appear as translation output IDs.
 
 API：
