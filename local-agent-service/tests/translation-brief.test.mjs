@@ -80,6 +80,15 @@ test('TranslationBrief excludes rejected entities and preserves model-default ta
     'default adoption must not turn a weak target mapping into a protected canonical term');
   assert.notEqual(brief.contextGraph.nameMappings.find((mapping) => mapping.source === 'Alice')?.sourceStatus, 'confirmed-memory',
     'a model-default mapping must never become a protected user-confirmed canonical term');
+
+  const components = brief.contextDiagnostics.contextComponents;
+  assert.ok(components, 'TranslationBrief should expose metadata-only component size diagnostics');
+  assert.ok(components.voiceContext.chars > 0);
+  assert.ok(components.voiceContext.sections.entities.count >= 1);
+  assert.ok(components.contextGraph.chars > 0);
+  const summary = summarizeTranslationBrief(brief);
+  assert.deepEqual(summary.contextDiagnostics.contextComponents, components,
+    'trajectory summary should preserve component sizes without exposing component contents');
 });
 
 test('server LiteraryMemory sanitizer makes deletion tombstones authoritative', () => {
