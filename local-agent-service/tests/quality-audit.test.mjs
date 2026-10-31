@@ -971,3 +971,86 @@ test('book audit reports Chinese literary editing coverage, edit rate and biling
   assert.equal(report.metrics.chineseEditorial.pendingUserDecisionFindingCount, 0);
   assert.equal(report.metrics.chineseEditorial.userAppliedFindingCount, 0);
 });
+
+test('automatic quality repair is restricted to deterministic missing segments in its parent Run scope', () => {
+  const store = getDocumentProjectStore();
+  const project = store.createProject({
+    title: 'Automatic repair scope boundary',
+    format: 'txt',
+    sourceFileName: 'automatic-repair-scope.txt',
+    prompt: { translationMode: 'technical', sourceLang: 'en', targetLang: 'zh' },
+    segments: [
+      { id: 'selected-1', text: 'The selected passage is still missing.', kind: 'paragraph', contextPath: 'Chapter 1' },
+      { id: 'outside-1', text: 'This unrelated passage is also missing.', kind: 'paragraph', contextPath: 'Chapter 2' },
+    ],
+  });
+  ensureTestContextGraph(store, project);
+
+  const parent = store.createRun(project.projectId, {
+    scope: { type: 'ids', ids: ['selected-1'] },
+  });
+  store.setRunStatus(project.projectId, parent.runId, 'partial', 'simulated partial completion');
+
+  const audit = runProjectQualityAudit(project.projectId);
+  const selectedFinding = audit.findings.find((item) =>
+    item.type === 'missing-translation' && item.segmentIds.includes('selected-1'));
+  const outsideFinding = audit.findings.find((item) =>
+    item.type === 'missing-translation' && item.segmentIds.includes('outside-1'));
+  assert.ok(selectedFinding);
+  assert.ok(outsideFinding);
+
+  assert.throws(() => createQualityRepairRun(
+    project.projectId,
+    audit.auditId,
+    [outsideFinding.findingId],
+    [],
+    { automatic: true, parentRunId: parent.runId },
+  ), /自动返工超出父运行范围/);
+
+  const repair = createQualityRepairRun(
+    project.projectId,
+    audit.auditId,
+    [selectedFinding.findingId],
+    [],
+    { automatic: true, parentRunId: parent.runId },
+  );
+  assert.deepEqual(repair.segmentIds, ['selected-1']);
+  assert.equal(repair.automatic, true);
+  assert.equal(repair.humanAcceptanceRequired, false);
+  assert.equal(repair.run.parentRunId, parent.runId);
+  assert.deepEqual(store.getRunSegmentIds(project.projectId, repair.run.runId), ['selected-1']);
+});
+
+test('automatic quality repair rejects non-missing findings even when they are in parent scope', () => {
+  const store = getDocumentProjectStore();
+  const project = store.createProject({
+    title: 'Automatic repair finding type boundary',
+    format: 'txt',
+    sourceFileName: 'automatic-repair-finding-type.txt',
+    prompt: {
+      translationMode: 'literary',
+      sourceLang: 'en',
+      targetLang: 'zh',
+      glossary: { document_terms: [{ source: 'Captain Vale', target: '维尔船长' }] },
+    },
+    segments: [
+      { id: 'term-1', text: 'Captain Vale entered the room.', kind: 'paragraph', contextPath: 'Chapter 1' },
+    ],
+  });
+  store.saveManualEdit(project.projectId, 'term-1', '维尔船长走进了房间。');
+  ensureTestContextGraph(store, project);
+  const parent = store.createRun(project.projectId, { scope: { type: 'ids', ids: ['term-1'] } });
+  store.setRunStatus(project.projectId, parent.runId, 'partial', 'simulated partial completion');
+
+  const audit = runProjectQualityAudit(project.projectId);
+  const terminologyFinding = audit.findings.find((item) => item.type === 'terminology-drift');
+  assert.ok(terminologyFinding);
+  assert.throws(() => createQualityRepairRun(
+    project.projectId,
+    audit.auditId,
+    [terminologyFinding.findingId],
+    [],
+    { automatic: true, parentRunId: parent.runId },
+  ), /自动返工只允许使用明确选中的/);
+});
+
