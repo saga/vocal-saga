@@ -651,11 +651,13 @@ export function buildStandaloneReviewMemory(input: Record<string, any>): Record<
   }).map((entity: any) => ({
     source: entity.source, target: entity.target, kind: entity.kind,
     aliases: entity.aliases, reviewStatus: 'confirmed',
+    confirmationSource: entity.confirmationSource || 'legacy-unknown',
+    targetConfidence: entity.targetConfidence === 'corroborated' ? 'corroborated' : 'candidate',
   }));
   const entityNames = new Set(entities.flatMap((entity: any) =>
     [entity.source, ...(entity.aliases || [])].map((value: string) => normalize(value))));
   const relationships = rawMemory.relationships.filter((relation: any) => {
-    if (relation.reviewStatus !== 'confirmed' ||
+    if (relation.reviewStatus === 'rejected' || relation.reviewStatus !== 'confirmed' ||
         !entityNames.has(normalize(relation.subject)) ||
         !entityNames.has(normalize(relation.object))) return false;
     const refs = Array.isArray(relation.evidenceRefs) ? relation.evidenceRefs : [];
@@ -665,6 +667,9 @@ export function buildStandaloneReviewMemory(input: Record<string, any>): Record<
   }).map((relation: any) => ({
     subject: relation.subject, predicate: relation.predicate, object: relation.object,
     reviewStatus: 'confirmed',
+    confirmationSource: relation.confirmationSource || 'model-default',
+    confidence: ['user-confirmed', 'user-modified'].includes(String(relation.confirmationSource || ''))
+      ? 'user-confirmed' : 'candidate',
     evidenceRefs: relation.evidenceRefs,
   }));
   const characterVoices = rawMemory.characterVoices.filter((profile: any) => {
