@@ -9,7 +9,7 @@ import { buildProjectContextGraphBundle, CONTEXT_GRAPH_ANALYSIS_VERSION } from '
 import { getDocumentProjectStore, normalizeDocumentTranslationStrategy } from './projectStore.ts';
 import { isWorthCanonicalEntityMapping, normalizeCanonicalEntityKind, validateCanonicalTarget } from './canonicalEntityPolicy.ts';
 
-export const TRANSLATION_BRIEF_POLICY_VERSION = 'translation-brief-v7-canonical-entity-style-quality';
+export const TRANSLATION_BRIEF_POLICY_VERSION = 'translation-brief-v8-default-adoption';
 // Safety ceiling only; this is not a retrieval target. Prefer complete relevant context over silent pruning.
 export const MAX_TRANSLATION_BRIEF_CHARS = 1_000_000;
 
@@ -763,7 +763,7 @@ export function buildTranslationBrief(
     // source-evidenced LiteraryMemory. The previous null result skipped that entire merge path,
     // so confirmed names silently disappeared from the actual translation request.
     graph = {
-      policyVersion: 'context-graph-v5-canonical-entity-style-quality',
+      policyVersion: 'context-graph-v6-default-adoption',
       knowledgeBoundaryOrdinal: null,
       currentChapter: chapterPath,
       chapterSummaries: [],
@@ -1017,7 +1017,7 @@ export function buildTranslationBrief(
       sourceStatus: 'machine-applied', analysisVersion: graph.analysisVersion,
     } : { narrativeStyle: '', rules: [], sourceStatus: machineStyleEnabled ? 'unavailable' : 'user-disabled' };
     graph.styleGuideReady = !!userStyle || (styleReady && machineStyleEnabled);
-    graph.policyVersion = 'context-graph-v5-canonical-entity-style-quality';
+    graph.policyVersion = 'context-graph-v6-default-adoption';
     graph.constraints = [...(Array.isArray(graph.constraints) ? graph.constraints : []),
       'styleGuide 只约束文风、句法、语域和词汇选择；绝不可用它推断或补写人物身份、事件、秘密与剧情结论。'];
   }
