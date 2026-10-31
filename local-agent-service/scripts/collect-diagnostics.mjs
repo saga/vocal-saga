@@ -176,6 +176,7 @@ function collectLatestDocuments() {
           projectId: project.project_id, title: project.title, format: project.format,
           updatedAt: project.updated_at, metrics: document.metrics,
           runSummary: document.runSummary,
+          analysisSignals: document.analysisSignals,
           exportedFile: 'documents/' + safeName + '.json',
         });
       } finally {
