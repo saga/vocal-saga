@@ -2441,7 +2441,7 @@ export function buildProjectContextGraphBundle(
         'ORDER BY COALESCE(latest.accepted_at, latest.created_at) DESC, latest.created_at DESC, latest.rowid DESC LIMIT 1) ' +
     'ORDER BY s.ordinal DESC'
   ).all(revisionId, firstOrdinal) as Array<{ segmentId: string; source: string; ordinal: number; target: string }>;
-  const graphNameRows = db.prepare(
+  const graphNameRows = (db.prepare(
     `SELECT * FROM context_graph_nodes WHERE source_revision_id = ? AND status IN ('candidate', 'confirmed') ORDER BY kind, name`
   ).all(revisionId) as any[]).filter((row) => !isRejectedGraphNode(row));
   const nameMappingDiagnostics = {
