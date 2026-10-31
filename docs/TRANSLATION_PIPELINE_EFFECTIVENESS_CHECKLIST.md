@@ -207,7 +207,10 @@
 - [ ] 用户确认必须走明确 review API；确认时检查当前 source revision、accepted translation、source hash 和 target excerpt。无效证据不能维持 confirmed。
 - [ ] confirmed 档案只注入目标语风格字段，不注入样本正文、剧情事实、原文、源语言名称或来源引文。
 - [ ] source revision 改变后旧档案不得继续作为 confirmed Profile 注入；旧 Run 的 Brief 不被新 revision 改写。
-- [ ] 新增 accepted translations 触发档案刷新时，不覆盖用户已确认的档案；相同样本 fingerprint 不重复调用模型。
+- [x] 新增 accepted translations 触发档案刷新时，不覆盖用户已确认的档案；相同样本 fingerprint 不重复调用模型。新结果进入 pendingUpdate。
+- [x] pendingUpdate 必须记录 basedOnFingerprint；基础档案版本变化后，拒绝基于旧 fingerprint 的更新候选。
+- [x] accept-update 才递增 profileVersion 并切换运行档案；reject-update 清除候选且继续使用旧版本。
+- [x] Extension sanitizer、memory merge 与 UI 必须保留待更新档案；待更新档案不能进入编辑 Prompt。
 - [ ] 模型调用失败、JSON 不合规、证据不足或持久化失败均不影响已经采纳的译文。
 
 
