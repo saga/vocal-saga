@@ -71,8 +71,14 @@ export function applyChineseEditorialProfileReview(
 ): Record<string, any> {
   const hasEvidence = (candidate: any) => candidate &&
     candidate.sourceRevisionId === currentSourceRevisionId &&
-    Array.isArray(candidate.evidenceRefs) &&
-    new Set(candidate.evidenceRefs.map((item: any) => String(item?.segmentId || '')).filter(Boolean)).size >= 3;
+    Array.isArray(candidate.evidenceRefs);
+  // Explicit rejection is always available; it must not be blocked by evidence thresholds.
+  if (action === 'reject') {
+    return { ...profile, status: 'rejected', confirmationSource: undefined, confirmedAt: undefined };
+  }
+  if (action === 'reject-update') {
+    return { ...profile, pendingUpdate: undefined };
+  }
   if (action === 'accept-update' || action === 'reject-update') {
     const pending = profile?.pendingUpdate;
     if (profile?.status !== 'confirmed' || !hasEvidence(pending)) {
