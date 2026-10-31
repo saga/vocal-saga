@@ -153,6 +153,27 @@ const CONFIGURED_REVIEW_CONCURRENCY = positiveIntegerEnv('LOCAL_AGENT_DOCUMENT_R
 
 export type DocumentBatchRole = 'translation' | 'review';
 
+/**
+ * Select only complete style revisions that have a matching, source-grounded style finding.
+ * Chinese monolingual edits are intentionally deferred until the following bilingual review.
+ */
+export function selectVerifiedStyleReviewCandidates(
+  styleReview: Record<string, any>,
+  currentTranslations: Map<string, string>,
+  allowedSegmentIds: readonly string[],
+): Array<{ segmentId: string; text: string }> {
+  if (styleReview.editorialMode === 'chinese-monolingual') return [];
+  const allowed = new Set(allowedSegmentIds);
+  const findings = Array.isArray(styleReview.findings) ? styleReview.findings : [];
+  return Object.entries(styleReview.translations || {}).flatMap(([segmentId, edited]) => {
+    const draft = currentTranslations.get(segmentId);
+    if (!allowed.has(segmentId) || typeof edited !== 'string' || !edited.trim() || edited === draft) return [];
+    const grounded = findings.some((finding: any) =>
+      finding?.id === segmentId && finding.category === 'style' && finding.proposedTranslation === edited);
+    return grounded ? [{ segmentId, text: edited }] : [];
+  });
+}
+
 export interface DocumentRunConcurrencyBudget {
   poolSize: number;
   translationConcurrency: number;
@@ -1656,15 +1677,11 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
           // 中文单语编辑尚未经过原文对照，先只保存 finding；其他语言的 Reviewer 已同时
           // 对照原文，只有带有对应、已验证 style finding 的完整修订才自动写成新候选。
           const chineseEditorialMode = styleReview.editorialMode === 'chinese-monolingual';
-          const styleCandidates = chineseEditorialMode ? [] :
-            Object.entries(styleReview.translations || {}).flatMap(([id, edited]) => {
-              const draft = translations.get(id);
-              if (typeof edited !== 'string' || !edited.trim() || edited === draft ||
-                  !reviewedItems.some((item) => item.id === id)) return [];
-              const groundedFinding = styleFindings.find((item: any) =>
-                item.segmentId === id && item.finding?.proposedTranslation === edited);
-              return groundedFinding ? [{ segmentId: id, text: edited }] : [];
-            });
+          const styleCandidates = selectVerifiedStyleReviewCandidates(
+            styleReview,
+            translations,
+            reviewedItems.map((item) => item.id),
+          );
           const styleFindingsPersisted = store.saveCandidates(projectId, runId, styleCandidates, styleFindings);
           if (!styleFindingsPersisted) {
             store.appendEvent(projectId, runId, 'review.discarded', {
