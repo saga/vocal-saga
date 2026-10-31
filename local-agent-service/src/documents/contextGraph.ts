@@ -2273,17 +2273,6 @@ export function buildProjectContextGraphBundle(
   };
   // Only earlier accepted translations can corroborate a character's proposed target.
   // This gate prevents a book-wide target from revealing an identity disclosed in later chapters.
-  const priorAcceptedTranslations = db.prepare(
-    'SELECT s.segment_id AS segmentId, s.text AS source, s.ordinal, tr.translation_text AS target ' +
-    'FROM translation_results tr JOIN source_segments s ' +
-      'ON s.source_revision_id = tr.source_revision_id AND s.segment_id = tr.segment_id ' +
-    'WHERE tr.source_revision_id = ? AND tr.accepted = 1 AND tr.source_hash = s.source_hash AND s.ordinal < ? ' +
-      'AND tr.rowid = (SELECT latest.rowid FROM translation_results latest ' +
-        'WHERE latest.source_revision_id = s.source_revision_id AND latest.segment_id = s.segment_id ' +
-          'AND latest.accepted = 1 AND latest.source_hash = s.source_hash ' +
-        'ORDER BY COALESCE(latest.accepted_at, latest.created_at) DESC, latest.created_at DESC, latest.rowid DESC LIMIT 1) ' +
-    'ORDER BY s.ordinal DESC'
-  ).all(revisionId, firstOrdinal) as Array<{ segmentId: string; source: string; ordinal: number; target: string }>;
   const graphNameRows = db.prepare(
     `SELECT * FROM context_graph_nodes WHERE source_revision_id = ? AND status IN ('candidate', 'confirmed') ORDER BY kind, name`
   ).all(revisionId) as any[];
