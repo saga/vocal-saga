@@ -120,7 +120,7 @@ sequenceDiagram
 
 ```mermaid
 flowchart TD
-    A[Extension parses EPUB/PDF/Office into stable segments] --> B[Create/select project and run]
+    A[Extension uploads original EPUB/PDF or submits supported document input] --> B[Local Agent imports, parses and creates/selects project]
     B --> C[Load source revision, Prompt and run scope]
     C --> D[Pool 4: review on = 2 translators + 2 reviewers; off = up to 4 translators]
     D --> E[Translate next batch with independent Session scope]
@@ -143,6 +143,12 @@ flowchart TD
 ```
 
 > The Cloudflare API and Local Agent are separate routes. Enabling Local Agent mode does not fall back to remote providers on local model failure. Worker caps are bounded by `LOCAL_AGENT_POOL_SIZE`, and every batch has an independent Session scope.
+
+
+
+### Local Agent document persistence boundary
+
+For Local Agent document workflows, the project SQLite database is the only persistent store for source files/revisions, parsed segments, translations, LiteraryMemory, Context Graph, Prompt revisions, Runs, review findings and events. The browser extension is a UI/client: it may hold runtime projections in memory, but it does not persist document business data in IndexedDB or extension storage. The server-side reader-session record stores only a project reference and lightweight reading/UI state. If the local service is unavailable, the extension must fail clearly rather than restore an older browser snapshot. See [ADR-0003](docs/adr/0003-server-authoritative-project-state.md).
 
 ## Configuration
 
