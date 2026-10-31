@@ -1697,12 +1697,51 @@ export function createQualityRepairRun(
     fail('审计后已有译文被修改；旧质量报告不能用于返工，请重新执行全书审计。', 409);
   }
   const wantedFindings = new Set(selectedFindingIds);
-  // Explicit segment IDs mean a genuinely narrow repair. They must not expand to every segment
-  // in a repeated-expression group simply because that segment belongs to the same finding.
+  const selectedFindings = (report.findings || []).filter((finding: any) => wantedFindings.has(finding.findingId));
+  const parentRunId = options.parentRunId || report.runId || undefined;
+
+  // Automatic repair is deliberately narrower than manual repair: it may only apply
+  // deterministic missing-translation findings, and only to segments that belonged to
+  // the completed parent Run. A book-level audit must never turn a partial Run into a
+  // background whole-book translation request.
+  const automaticFindingSegmentIds = new Set<string>();
+  if (options.automatic) {
+    if (!parentRunId) fail('自动返工必须关联已完成的父运行。', 400);
+    if (!selectedFindingIds.length || selectedFindings.length !== wantedFindings.size ||
+        selectedFindings.some((finding: any) =>
+          finding.type !== 'missing-translation' || finding.repairable !== true)) {
+      fail('自动返工只允许使用明确选中的、可修复的 missing-translation 发现。', 400);
+    }
+    for (const finding of selectedFindings) {
+      for (const id of finding.segmentIds || []) automaticFindingSegmentIds.add(String(id));
+    }
+    if (requestedSegmentIds.some((id) => !automaticFindingSegmentIds.has(String(id)))) {
+      fail('自动返工的 segmentIds 必须来自所选缺译发现。', 409);
+    }
+    const parent = db.prepare(
+      'SELECT source_revision_id, status FROM translation_runs WHERE run_id = ?',
+    ).get(parentRunId) as { source_revision_id?: string; status?: string } | undefined;
+    if (!parent) fail('找不到自动返工的父运行：' + parentRunId, 404);
+    if (parent.source_revision_id !== currentSourceRevisionId) {
+      fail('自动返工的父运行与当前来源版本不同。', 409);
+    }
+    if (!['completed', 'partial'].includes(String(parent.status))) {
+      fail('自动返工只能由已完成或部分完成的父运行触发。', 409);
+    }
+    const parentSegmentIds = new Set((db.prepare(
+      'SELECT segment_id FROM run_segments WHERE run_id = ?',
+    ).all(parentRunId) as Array<{ segment_id: string }>).map((row) => String(row.segment_id)));
+    const outOfScopeIds = Array.from(automaticFindingSegmentIds).filter((id) => !parentSegmentIds.has(id));
+    if (outOfScopeIds.length) {
+      fail('自动返工超出父运行范围，已拒绝：' + outOfScopeIds.slice(0, 8).join(', '), 409);
+    }
+  }
+
+  // Explicit segment IDs mean a genuinely narrow manual repair. They must not expand to
+  // every segment in a repeated-expression group simply because it belongs to one finding.
   const segments = new Set<string>(requestedSegmentIds.map(String).filter(Boolean));
   if (!requestedSegmentIds.length) {
-    for (const finding of report.findings || []) {
-      if (!wantedFindings.has(finding.findingId)) continue;
+    for (const finding of selectedFindings) {
       if (!finding.repairable) {
         fail('该质量发现涉及较多片段，为避免扩大返工，请显式提供要修改的 segmentIds。');
       }
@@ -1713,7 +1752,6 @@ export function createQualityRepairRun(
   const currentIds = new Set(currentSourceSegments.map((row) => String(row.id)));
   const selected = Array.from(segments).filter((id) => currentIds.has(id));
   if (!selected.length) fail('选定的返工片段不属于当前来源版本。', 409);
-  const parentRunId = options.parentRunId || report.runId || undefined;
   const run = store.createRun(projectId, {
     scope: {
       type: 'ids',
