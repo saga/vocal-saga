@@ -449,7 +449,7 @@ test('simultaneous Run creation requests cannot both acquire the workspace lock'
     assert.equal(attempts.filter((item) => item.status === 'fulfilled').length, 1);
     assert.equal(attempts.filter((item) => item.status === 'rejected').length, 1);
     const failure = attempts.find((item) => item.status === 'rejected');
-    assert.match(String(failure?.reason?.message || failure?.reason), /已有运行中的翻译任务/);
+    assert.match(String(failure?.reason?.message || failure?.reason), /已有尚未完成最终化的翻译任务/);
     assert.equal(store.listRuns(project.projectId, 10).length, 1,
       'a rejected concurrent create must not leave an orphan Run record');
   });
@@ -463,7 +463,7 @@ test('one workspace cannot run two translation jobs concurrently', async () => {
     assert.equal(first.status, 'queued');
     assert.throws(
       () => store.createRun(project.projectId, { scope: { type: 'all' } }),
-      /已有运行中的翻译任务/,
+      /已有尚未完成最终化的翻译任务/,
       'reader and Agent tabs must share one in-flight run lock',
     );
     store.setRunStatus(project.projectId, first.runId, 'paused');
