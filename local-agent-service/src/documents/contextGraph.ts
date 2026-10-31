@@ -1,8 +1,9 @@
 /**
  * Persistent, evidence-grounded Context Graph for long-document translation.
  *
- * SQLite is authoritative. Model-generated facts stay candidates until reviewed, and each
- * evidence quote must be verifiable against a segment in the immutable source revision.
+ * SQLite is authoritative. Source-validated model facts are default-adopted with explicit provenance;
+ * user decisions take precedence, uncertainty controls usage strength, and every evidence quote must
+ * be verifiable against a segment in the immutable source revision.
  */
 import { createHash, randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
@@ -680,6 +681,40 @@ function nodeId(revisionId: string, kind: string, name: string): string {
   return 'cg-' + hash(revisionId + '\n' + kind + '\n' + normalize(name)).slice(0, 32);
 }
 
+/**
+ * Remove replaceable model-generated graph records before a fresh analysis.
+ * Explicitly rejected and user-confirmed records survive. A model-default node referenced by a
+ * surviving user edge is retained as well; otherwise reanalysis would leave a dangling decision.
+ * The caller owns the surrounding SQLite transaction.
+ */
+export function clearReplaceableModelGeneratedContextGraphItems(db: DatabaseSync, revisionId: string): void {
+  const replaceableEdge = "(status = 'candidate' OR (status = 'confirmed' AND COALESCE(json_extract(attributes_json, '$.adoptionSource'), '') = 'model-default'))";
+  const replaceableNode = "(n.status = 'candidate' OR (n.status = 'confirmed' AND COALESCE(json_extract(n.attributes_json, '$.adoptionSource'), '') = 'model-default'))";
+  const protectedEdgeForNode =
+    "NOT EXISTS (SELECT 1 FROM context_graph_edges protected " +
+    "WHERE protected.source_revision_id = n.source_revision_id " +
+    "AND (protected.source_node_id = n.node_id OR protected.target_node_id = n.node_id) " +
+    "AND NOT (protected.status = 'candidate' OR (protected.status = 'confirmed' AND " +
+    "COALESCE(json_extract(protected.attributes_json, '$.adoptionSource'), '') = 'model-default')))";
+
+  db.prepare(
+    'DELETE FROM context_graph_evidence WHERE source_revision_id = ? AND (' +
+    'node_id IN (SELECT n.node_id FROM context_graph_nodes n WHERE n.source_revision_id = ? AND ' +
+    replaceableNode + ' AND ' + protectedEdgeForNode + ') OR ' +
+    'edge_id IN (SELECT e.edge_id FROM context_graph_edges e WHERE e.source_revision_id = ? AND ' +
+    replaceableEdge.replaceAll('status', 'e.status').replaceAll('attributes_json', 'e.attributes_json') +
+    '))',
+  ).run(revisionId, revisionId, revisionId);
+  db.prepare(
+    'DELETE FROM context_graph_edges WHERE source_revision_id = ? AND ' +
+    replaceableEdge,
+  ).run(revisionId);
+  db.prepare(
+    'DELETE FROM context_graph_nodes AS n WHERE n.source_revision_id = ? AND ' +
+    replaceableNode + ' AND ' + protectedEdgeForNode,
+  ).run(revisionId);
+}
+
 function saveNode(
   db: DatabaseSync, revisionId: string, kind: string, name: string,
   attributes: Record<string, unknown>, evidence: Evidence[],
@@ -1247,15 +1282,9 @@ async function runAnalysis(projectId: string, runId: string): Promise<void> {
     });
   db.exec('BEGIN IMMEDIATE');
   try {
-    // Rebuild machine-generated graph items transactionally. User decisions survive; previous
-    // model-default items are replaced by the latest analysis, regardless of their active status.
-    db.prepare(
-      "DELETE FROM context_graph_evidence WHERE source_revision_id = ? AND (node_id IN " +
-      "(SELECT node_id FROM context_graph_nodes WHERE source_revision_id = ? AND (status = 'candidate' OR (status = 'confirmed' AND json_extract(attributes_json, '$.adoptionSource') = 'model-default'))) OR edge_id IN " +
-      "(SELECT edge_id FROM context_graph_edges WHERE source_revision_id = ? AND (status = 'candidate' OR (status = 'confirmed' AND json_extract(attributes_json, '$.adoptionSource') = 'model-default'))))"
-    ).run(revisionId, revisionId, revisionId);
-    db.prepare("DELETE FROM context_graph_edges WHERE source_revision_id = ? AND (status = 'candidate' OR (status = 'confirmed' AND json_extract(attributes_json, '$.adoptionSource') = 'model-default'))").run(revisionId);
-    db.prepare("DELETE FROM context_graph_nodes WHERE source_revision_id = ? AND (status = 'candidate' OR (status = 'confirmed' AND json_extract(attributes_json, '$.adoptionSource') = 'model-default'))").run(revisionId);
+    // Rebuild model-generated graph items transactionally while retaining user decisions
+    // and any model-default endpoint still referenced by a surviving user-confirmed/rejected edge.
+    clearReplaceableModelGeneratedContextGraphItems(db, revisionId);
     // 重新分析前重置上一轮模型生成的章节摘要（见 resetChapterSummariesForReanalysis）。
     resetChapterSummariesForReanalysis(db, revisionId, segments);
     saveMeta(db, revisionId, 'stylePolicyVersion', 'literary-style-v3-default-adoption');
