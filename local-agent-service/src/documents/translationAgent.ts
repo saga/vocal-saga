@@ -1653,18 +1653,30 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
           const styleFindings = (styleReview.findings || [])
             .filter((finding: any) => finding.category === 'style')
             .map((finding: any) => ({ segmentId: finding.id, finding }));
-          const styleFindingsPersisted = store.saveFindings(projectId, runId, styleFindings);
+          // 中文单语编辑尚未经过原文对照，先只保存 finding；其他语言的 Reviewer 已同时
+          // 对照原文，只有带有对应、已验证 style finding 的完整修订才自动写成新候选。
+          const chineseEditorialMode = styleReview.editorialMode === 'chinese-monolingual';
+          const styleCandidates = chineseEditorialMode ? [] :
+            Object.entries(styleReview.translations || {}).flatMap(([id, edited]) => {
+              const draft = translations.get(id);
+              if (typeof edited !== 'string' || !edited.trim() || edited === draft ||
+                  !reviewedItems.some((item) => item.id === id)) return [];
+              const groundedFinding = styleFindings.find((item: any) =>
+                item.segmentId === id && item.finding?.proposedTranslation === edited);
+              return groundedFinding ? [{ segmentId: id, text: edited }] : [];
+            });
+          const styleFindingsPersisted = store.saveCandidates(projectId, runId, styleCandidates, styleFindings);
           if (!styleFindingsPersisted) {
             store.appendEvent(projectId, runId, 'review.discarded', {
-              batchIndex, stage: 'style-review', reason: 'Run left active state before atomic finding commit',
-              findingCount: styleFindings.length,
+              batchIndex, stage: 'style-review', reason: 'Run left active state before atomic candidate/finding commit',
+              candidateCount: styleCandidates.length, findingCount: styleFindings.length,
             });
             return;
           }
-          // For Chinese literary runs, the source-blind editor's candidate becomes the input
-          // to the following bilingual accuracy/terminology review. It remains a pending style
-          // finding; this in-memory handoff does not overwrite the persisted translation.
-          if (styleReview.editorialMode === 'chinese-monolingual') {
+          for (const item of styleCandidates) translations.set(item.segmentId, item.text);
+          // 中文单语编辑的候选先交给后续双语准确性审校；验证通过后由
+          // markChineseEditorialFindingsReviewed 更新本 Run 的候选，不要求用户点击采纳。
+          if (chineseEditorialMode) {
             for (const [id, edited] of Object.entries(styleReview.translations || {})) {
               if (typeof edited === 'string' && edited.trim() && reviewedItems.some((item) => item.id === id)) {
                 translations.set(id, edited);
