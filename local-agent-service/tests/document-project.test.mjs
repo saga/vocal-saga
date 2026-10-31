@@ -427,7 +427,7 @@ test('literary voice profiles auto-activate after independent source evidence co
         evidence: [
           { segmentId: 'voice-1', sourceQuote: 'Alice answered in a measured tone.', dimension: 'register', observation: 'measured register' },
           { segmentId: 'voice-2', sourceQuote: 'She paused, then asked a short question.', dimension: 'syntax_rhythm', observation: 'deliberate pause and short question' },
-          { segmentId: 'voice-3', sourceQuote: 'Alice replied with deliberate precision.', dimension: 'diction', observation: 'precise diction' },
+          { segmentId: 'voice-3', sourceQuote: 'Alice replied with deliberate precision.', dimension: 'lexicon', observation: 'precise diction' },
         ],
       }],
     });
