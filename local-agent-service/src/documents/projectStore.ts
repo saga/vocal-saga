@@ -980,9 +980,26 @@ export class DocumentProjectStore {
 
     memory.characterVoices = memory.characterVoices.map((profile: any) => {
       const evidence = profile.evidence.filter((item: any) => validEvidence(item.segmentId, item.sourceQuote));
+      const evidenceSegmentCount = new Set(evidence.map((item: any) => item.segmentId)).size;
+      const evidenceDimensionCount = new Set(evidence.map((item: any) => item.dimension)).size;
+      const hasSubstantiveVoiceCore = Object.values(profile.voiceCore || {})
+        .some((value: any) => typeof value === 'string' ? !!value.trim() : Array.isArray(value) && value.length > 0);
+      // A candidate voice profile can become evidence-verified without a user click only
+      // when several independently located source excerpts support multiple voice dimensions.
+      // Model-reported confidence is deliberately not part of this decision.
+      const evidenceVerified = profile.status === 'candidate' &&
+        profile.evidenceTruncated !== true &&
+        evidenceSegmentCount >= 3 &&
+        evidenceDimensionCount >= 2 &&
+        hasSubstantiveVoiceCore;
+      const userConfirmed = profile.status === 'confirmed' &&
+        profile.confirmationSource === 'user-confirmed';
+      const legacyConfirmed = profile.status === 'confirmed' &&
+        profile.confirmationSource === 'legacy-unknown' &&
+        evidence.length > 0;
       const status = profile.status === 'rejected'
         ? 'rejected'
-        : profile.status === 'confirmed' && evidence.length
+        : evidenceVerified || userConfirmed || legacyConfirmed
           ? 'confirmed'
           : 'candidate';
       const questions = Array.isArray(profile.openQuestions) ? [...profile.openQuestions] : [];
@@ -991,7 +1008,14 @@ export class DocumentProjectStore {
       }
       return {
         ...profile, evidence, status,
-        ...(status === 'confirmed' ? {} : { confirmationSource: undefined }),
+        ...(status === 'confirmed' && evidenceVerified
+          ? { confirmationSource: 'evidence-verified' }
+          : status === 'confirmed' && userConfirmed
+            ? { confirmationSource: 'user-confirmed' }
+            : status === 'confirmed' && legacyConfirmed
+              ? { confirmationSource: 'legacy-unknown' }
+              : { confirmationSource: undefined }),
+        ...(evidenceVerified ? { autoVerifiedAt: new Date().toISOString() } : {}),
         openQuestions: Array.from(new Set(questions)).slice(0, 8),
       };
     });
@@ -1135,6 +1159,10 @@ export class DocumentProjectStore {
       entityCount: memory.entities.length,
       characterCount: memory.characterVoices.length,
       confirmedCharacterCount: statusCount('confirmed'),
+      evidenceVerifiedCharacterCount: memory.characterVoices.filter((profile: any) =>
+        profile.status === 'confirmed' && profile.confirmationSource === 'evidence-verified').length,
+      userConfirmedCharacterCount: memory.characterVoices.filter((profile: any) =>
+        profile.status === 'confirmed' && profile.confirmationSource === 'user-confirmed').length,
       candidateCharacterCount: statusCount('candidate'),
       rejectedCharacterCount: statusCount('rejected'),
       relationshipCount: memory.relationships.length,
