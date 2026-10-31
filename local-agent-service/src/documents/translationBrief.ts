@@ -9,8 +9,11 @@ import { buildProjectContextGraphBundle, CONTEXT_GRAPH_ANALYSIS_VERSION } from '
 import { getDocumentProjectStore, normalizeDocumentTranslationStrategy } from './projectStore.ts';
 import { isWorthCanonicalEntityMapping, normalizeCanonicalEntityKind, validateCanonicalTarget } from './canonicalEntityPolicy.ts';
 
-export const TRANSLATION_BRIEF_POLICY_VERSION = 'translation-brief-v9-batch-scoped-mappings';
-// Safety ceiling only; this is not a retrieval target. Prefer complete relevant context over silent pruning.
+export const TRANSLATION_BRIEF_POLICY_VERSION = 'translation-brief-v10-bounded-examples';
+// Historical examples are style evidence, not a chapter transcript.
+export const MAX_ACCEPTED_EXAMPLES = 8;
+export const MAX_ACCEPTED_EXAMPLE_CHARS = 4_000;
+// Absolute serialization safety ceiling.
 export const MAX_TRANSLATION_BRIEF_CHARS = 1_000_000;
 
 export interface BriefSegment {
@@ -173,6 +176,7 @@ function buildTemporallyVisibleMemory(
   context: any,
   items: BriefSegment[],
   precedingSegments: BriefSegment[],
+  exampleBudgetChars = MAX_ACCEPTED_EXAMPLE_CHARS,
 ): Record<string, any> {
   const projectId = String(context?.project?.projectId || '');
   const revisionId = String(context?.run?.sourceRevisionId || '');
@@ -399,10 +403,18 @@ function buildTemporallyVisibleMemory(
   // overlapping examples usually repeat the same evidence and displace useful style variety.
   const retrievedExamples: Array<{ segmentId: string; source: string; target: string; chapter: string; origin: string }> = [];
   const selectedExampleTokens: Set<string>[] = [];
+  const selectedPrecedingIds = new Set(precedingSegments.map((segment) => segment.id));
+  let retrievedExampleChars = 0;
+  let acceptedExamplesExcludedAsPreceding = 0;
+  let acceptedExamplesTrimmedByBudget = 0;
   for (const row of scoredExamples) {
     const source = String(row.source || '');
     const target = String(row.target || '');
     if (!source || !target) continue;
+    if (selectedPrecedingIds.has(String(row.segmentId))) {
+      acceptedExamplesExcludedAsPreceding++;
+      continue;
+    }
     const tokens = row.tokens as Set<string>;
     const redundant = selectedExampleTokens.some((selected) => {
       if (!tokens.size || !selected.size) return false;
@@ -410,19 +422,32 @@ function buildTemporallyVisibleMemory(
       const union = tokens.size + selected.size - intersection;
       return intersection / Math.max(1, union) >= 0.85;
     });
-    // Do not impose a fixed number/character budget on retrieved examples. Preserve every
-    // relevant, materially different accepted example; filter by relevance and source similarity,
-    // not by arbitrary context-size heuristics.
     if (redundant && row.sharedNamedEntity === 0 && row.exactPhrase === 0) continue;
-    retrievedExamples.push({
-      segmentId: String(row.segmentId),
-      source,
-      target,
+    const example = {
+      segmentId: String(row.segmentId), source, target,
       chapter: String(row.chapter || '').slice(0, 120),
       origin: ['manual', 'agent', 'imported'].includes(String(row.origin)) ? String(row.origin) : 'imported',
-    });
+    };
+    const exampleChars = JSON.stringify(example).length;
+    if (retrievedExamples.length >= MAX_ACCEPTED_EXAMPLES ||
+        retrievedExampleChars + exampleChars > Math.max(0, exampleBudgetChars)) {
+      acceptedExamplesTrimmedByBudget++;
+      continue;
+    }
+    retrievedExamples.push(example);
+    retrievedExampleChars += exampleChars;
     selectedExampleTokens.push(tokens);
   }
+  rawMemory.recentExamples = retrievedExamples;
+  rawMemory.__translationBriefDiagnostics = {
+    ...(rawMemory.__translationBriefDiagnostics || {}),
+    acceptedExamplesRetrieved: scoredExamples.length,
+    acceptedExamplesInjected: retrievedExamples.length,
+    acceptedExamplesExcludedAsPreceding,
+    acceptedExamplesTrimmedByBudget,
+    acceptedExampleChars: retrievedExampleChars,
+    acceptedExampleBudgetChars: Math.max(0, exampleBudgetChars),
+  };
   rawMemory.entities = (Array.isArray(rawMemory.entities) ? rawMemory.entities : []).flatMap((entity: any) => {
     // A durable user rejection must remove the entity from every downstream TranslationBrief
     // projection, not merely from the visible voiceContext field.
@@ -757,8 +782,10 @@ export function buildTranslationBrief(
   // by the runtime/model request layer, which can report a genuine provider rejection explicitly.
   const maxBriefChars = MAX_TRANSLATION_BRIEF_CHARS;
   const glossary = filterGlossaryForBatch(context, items);
+  const exampleBudgetChars = Math.min(MAX_ACCEPTED_EXAMPLE_CHARS,
+    Math.max(1_000, Math.floor(strategy.contextBudgetChars * 0.25)));
   const temporalMemory = context?.run?.translationMode === 'literary'
-    ? buildTemporallyVisibleMemory(context, items, visiblePrecedingSegments)
+    ? buildTemporallyVisibleMemory(context, items, visiblePrecedingSegments, exampleBudgetChars)
     : {};
   const chapterPaths = Array.from(new Set(items.map((item) => String(item.contextPath || '').trim()).filter(Boolean)));
   // Book batches should be chapter-scoped. If callers violate that invariant, omitting summaries is safer.
@@ -1120,8 +1147,9 @@ export function buildTranslationBrief(
       acceptedExamplesInjected: Array.isArray((voiceContext as any)?.recentExamples) ? (voiceContext as any).recentExamples.length : 0,
       dialogueParticipantsInjected: Array.isArray((voiceContext as any)?.dialogueParticipants)
         ? (voiceContext as any).dialogueParticipants.length : 0,
-      contextBudgetChars: maxBriefChars,
-      budgetTrimCount: 0,
+      contextBudgetChars: strategy.contextBudgetChars,
+      acceptedExampleBudgetChars: exampleBudgetChars,
+      budgetTrimCount: Number((temporalMemory as any)?.__translationBriefDiagnostics?.acceptedExamplesTrimmedByBudget || 0),
       budgetFallbackUsed: false,
     },
     contextChars: 0,
@@ -1132,9 +1160,9 @@ export function buildTranslationBrief(
   // name mappings as an indirect consequence of a prompt-size heuristic. The runtime/provider owns
   // the actual model context-window check and should surface a real limit error without mutating evidence.
   const serialized = serializedContext(brief);
-  (brief.contextDiagnostics as any).budgetTrimCount = 0;
+  (brief.contextDiagnostics as any).budgetTrimCount = Number((temporalMemory as any)?.__translationBriefDiagnostics?.acceptedExamplesTrimmedByBudget || 0);
   (brief.contextDiagnostics as any).budgetFallbackUsed = false;
-  (brief.contextDiagnostics as any).contextBudgetPolicy = 'preserve-retrieved-context';
+  (brief.contextDiagnostics as any).contextBudgetPolicy = 'bounded-ranked-accepted-examples';
   const finalGraph = brief.contextGraph as any;
   const finalVoice = brief.voiceContext as any;
   const finalMappings = Array.isArray(finalGraph?.nameMappings) ? finalGraph.nameMappings : [];
@@ -1154,7 +1182,9 @@ export function buildTranslationBrief(
   diagnostic.relationshipVoiceRulesTrimmedByBudget = 0;
   diagnostic.voiceAnchorsTrimmedByBudget = 0;
   diagnostic.acceptedExamplesAfterBudget = finalCount(finalVoice?.recentExamples);
-  diagnostic.acceptedExamplesTrimmedByBudget = 0;
+  diagnostic.acceptedExamplesTrimmedByBudget = Number((temporalMemory as any)?.__translationBriefDiagnostics?.acceptedExamplesTrimmedByBudget || 0);
+  diagnostic.acceptedExamplesExcludedAsPreceding = Number((temporalMemory as any)?.__translationBriefDiagnostics?.acceptedExamplesExcludedAsPreceding || 0);
+  diagnostic.acceptedExampleChars = Number((temporalMemory as any)?.__translationBriefDiagnostics?.acceptedExampleChars || 0);
   diagnostic.dialogueParticipantsAfterBudget = finalCount(finalVoice?.dialogueParticipants);
   diagnostic.dialogueParticipantsTrimmedByBudget = 0;
   diagnostic.chapterSummariesTrimmedByBudget = 0;
