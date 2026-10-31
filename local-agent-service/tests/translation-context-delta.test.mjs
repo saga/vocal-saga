@@ -248,3 +248,32 @@ test('rejects a compound target for one source name and suspicious mixed-script 
   assert.equal(result.diagnostics.rejectedTargetQualityCandidates, 1,
     'the mixed-script personal name is rejected by target-shape validation');
 });
+
+test('durable deletion tombstones suppress later entity and relationship deltas after projection removal', () => {
+  const delta = emptyTranslationContextDelta();
+  delta.entityCandidates.push({
+    localId: 'king', canonicalSource: 'The King', aliases: ['His Majesty'],
+    kind: 'person', targetProposal: '国王',
+    evidence: [{ segmentId: 's-2', sourceQuote: 'The King returned.' }],
+  });
+  delta.relationshipDeltas.push({
+    subjectSource: 'Alice', predicate: 'trusts', objectSource: 'Bob',
+    evidence: [{ segmentId: 's-3', sourceQuote: 'Alice trusts Bob.' }],
+  });
+  const memory = {
+    entities: [],
+    relationships: [],
+    openQuestions: [],
+    rejectedItems: [
+      { type: 'entity', source: 'The King', kind: 'person', aliases: ['His Majesty'] },
+      { type: 'relationship', subject: 'Alice', predicate: 'trusts', object: 'Bob' },
+    ],
+  };
+  const merged = mergeTranslationContextDeltasIntoMemory(memory, [delta]);
+  assert.deepEqual(merged.memory.entities, [],
+    'a deleted entity must not be recreated merely because its visible memory row was removed');
+  assert.deepEqual(merged.memory.relationships, [],
+    'a deleted relationship must remain suppressed even when no graph edge existed to reject');
+  assert.equal(merged.memory.rejectedItems.length, 2);
+  assert.equal(merged.changed, false);
+});
