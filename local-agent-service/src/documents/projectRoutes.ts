@@ -6,7 +6,7 @@
 import type { Request, Response } from 'express';
 import { getDocumentProjectStore, MAX_DOCUMENT_SOURCE_BYTES } from './projectStore.ts';
 import { startProjectTranslationRun, isProjectRunActive } from './translationAgent.ts';
-import { scheduleChineseEditorialProfileRefresh } from './chineseEditorialProfile.ts';
+import { applyChineseEditorialProfileReview, scheduleChineseEditorialProfileRefresh } from './chineseEditorialProfile.ts';
 import { sendApiError, sendJson } from '../middleware.ts';
 import { parseDocumentFile } from './ingest.ts';
 import { startContextGraphAnalysis, getContextGraph, getContextGraphStatus, reviewContextGraphItem } from './contextGraph.ts';
@@ -372,76 +372,28 @@ export async function handleDocumentProjectRequest(req: Request, res: Response, 
       const current = store.getCurrentLiteraryMemory(projectId);
       const profile = current.memory.chineseEditorialProfile;
       const projectContext = store.getProjectContext(projectId);
-      const evidenceIsValid = (candidate: any) =>
-        candidate && candidate.sourceRevisionId === projectContext.currentSourceRevisionId &&
-        Array.isArray(candidate.evidenceRefs) &&
-        new Set(candidate.evidenceRefs.map((item: any) => String(item.segmentId || '')).filter(Boolean)).size >= 3;
-
-      if (action === 'accept-update' || action === 'reject-update') {
-        const pending = profile?.pendingUpdate;
-        if (profile?.status !== 'confirmed' || !evidenceIsValid(pending)) {
-          throw Object.assign(new Error('没有当前来源版本下可处理的中文编辑档案更新，或更新证据已失效。'), { status: 409 });
-        }
-        if (pending.basedOnFingerprint && pending.basedOnFingerprint !== profile.sampleFingerprint) {
-          throw Object.assign(new Error('待更新档案的基准版本已变化，请重新生成更新候选。'), { status: 409 });
-        }
-        const now = new Date().toISOString();
-        const nextProfile = action === 'accept-update'
-          ? {
-              ...pending,
-              status: 'confirmed',
-              confirmationSource: 'user-confirmed',
-              confirmedAt: now,
-              profileVersion: Math.max(1, Number(profile.profileVersion) || 1) + 1,
-              previousFingerprint: profile.sampleFingerprint || null,
-              acceptedUpdateAt: now,
-            }
-          : {
-              ...profile,
-              pendingUpdate: undefined,
-              lastRejectedUpdate: {
-                sampleFingerprint: pending.sampleFingerprint,
-                rejectedAt: now,
-              },
-            };
-        const saved = store.saveLiteraryMemory(projectId, {
-          ...current.memory,
-          chineseEditorialProfile: nextProfile,
-        });
-        store.appendEvent(projectId, null, 'chinese-editorial-profile.update.user-reviewed', {
-          action,
-          memoryRevisionId: saved.memoryRevisionId,
-          sourceRevisionId: profile.sourceRevisionId,
-          previousFingerprint: profile.sampleFingerprint || null,
-          updateFingerprint: pending.sampleFingerprint,
-          profileVersion: action === 'accept-update' ? nextProfile.profileVersion : profile.profileVersion || 1,
-        });
-        sendJson(res, 200, { ...saved, current: store.getCurrentLiteraryMemory(projectId) });
-        return true;
-      }
-
-      if (!evidenceIsValid(profile)) {
-        throw Object.assign(new Error('当前来源版本没有可确认的中文编辑档案，或档案证据已失效。'), { status: 409 });
-      }
-      if (action === 'confirm' && profile.status === 'rejected') {
-        throw Object.assign(new Error('已拒绝的编辑档案不能直接确认，请先重新分析生成新候选。'), { status: 409 });
-      }
+      const nextProfile = applyChineseEditorialProfileReview(
+        profile,
+        action as 'confirm' | 'reject' | 'accept-update' | 'reject-update',
+        projectContext.currentSourceRevisionId,
+      );
       const nextMemory = {
         ...current.memory,
-        chineseEditorialProfile: {
-          ...profile,
-          status: action === 'confirm' ? 'confirmed' : 'rejected',
-          ...(action === 'confirm'
-            ? { confirmationSource: 'user-confirmed', confirmedAt: new Date().toISOString() }
-            : { confirmationSource: undefined, confirmedAt: undefined }),
-        },
+        chineseEditorialProfile: nextProfile,
       };
       const saved = store.saveLiteraryMemory(projectId, nextMemory);
-      store.appendEvent(projectId, null, 'chinese-editorial-profile.user-reviewed', {
-        action,
-        memoryRevisionId: saved.memoryRevisionId,
-        sourceRevisionId: profile.sourceRevisionId,
-      });
+      store.appendEvent(projectId, null,
+        action === 'accept-update' || action === 'reject-update'
+          ? 'chinese-editorial-profile.update.user-reviewed'
+          : 'chinese-editorial-profile.user-reviewed',
+        {
+          action,
+          memoryRevisionId: saved.memoryRevisionId,
+          sourceRevisionId: profile?.sourceRevisionId || null,
+          previousFingerprint: profile?.sampleFingerprint || null,
+          updateFingerprint: profile?.pendingUpdate?.sampleFingerprint || null,
+          profileVersion: nextProfile.profileVersion || 1,
+        });
       sendJson(res, 200, { ...saved, current: store.getCurrentLiteraryMemory(projectId) });
       return true;
     }
