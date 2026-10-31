@@ -139,7 +139,7 @@ function compactEventPayload(raw) {
   const allow = new Set([
     'stage', 'batchIndex', 'label', 'warning', 'error', 'durationMs', 'status',
     'recovery', 'reason', 'requestId', 'phase', 'strategy', 'stageIndex',
-    'stageCount', 'completedStageCount', 'waveIndex', 'waveSize', 'timeoutMs',
+    'stageCount', 'completedStageCount', 'waveIndex', 'waveSize', 'timeoutMs', 'timeoutMs',
     'provider', 'model', 'sourceLang', 'targetLang', 'segmentCount',
     'sampleCount', 'chapterCount', 'characterCount', 'entityCount',
     'relationshipCount', 'canonicalNameMappingCount', 'invalidEvidenceCount',
