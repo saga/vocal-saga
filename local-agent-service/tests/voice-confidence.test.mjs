@@ -202,7 +202,7 @@ test('legacy active literary memory states preserve their status but record unkn
   assert.equal(memory.voiceAnchors[0].confirmationSource, 'legacy-unknown');
 });
 
-test('confirmation provenance is sanitized and never allows an unconfirmed item to claim user confirmation', () => {
+test('default adoption never mislabels a model candidate as user-confirmed', () => {
   const memory = sanitizeProjectLiteraryMemory({
     entities: [
       { source: 'Alice', target: '艾丽丝', kind: 'person', reviewStatus: 'confirmed', confirmationSource: 'user-confirmed' },
@@ -210,7 +210,8 @@ test('confirmation provenance is sanitized and never allows an unconfirmed item 
     ],
   });
   assert.equal(memory.entities[0].confirmationSource, 'user-confirmed');
-  assert.equal(memory.entities[1].confirmationSource, undefined);
+  assert.equal(memory.entities[1].reviewStatus, 'confirmed');
+  assert.equal(memory.entities[1].confirmationSource, 'model-default');
 });
 
 
