@@ -1890,6 +1890,16 @@ export class DocumentProjectStore {
     }));
   }
 
+  /** Return the immutable segment membership of a Run without loading source/translation bodies. */
+  getRunSegmentIds(projectId: string, runId: string): string[] {
+    const { db } = this.getProjectContext(projectId);
+    const exists = db.prepare('SELECT 1 FROM translation_runs WHERE run_id = ?').get(runId);
+    if (!exists) throw Object.assign(new Error('找不到翻译运行：' + runId), { status: 404 });
+    return (db.prepare(
+      'SELECT segment_id FROM run_segments WHERE run_id = ? ORDER BY rowid',
+    ).all(runId) as Array<{ segment_id: string }>).map((row) => row.segment_id);
+  }
+
   getRunSegmentsForExecution(projectId: string, runId: string): any[] {
     const { db } = this.getProjectContext(projectId);
     return db.prepare(
