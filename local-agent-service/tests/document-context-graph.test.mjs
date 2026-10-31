@@ -122,6 +122,38 @@ test('retrieval injects matched graph records and excludes future chapter summar
   assert.ok(!JSON.stringify(earlyNameBundle).includes('secret passage'));
   assert.ok(!JSON.stringify(earlyNameBundle).includes('Queen Ash'));
 
+  // A new graph edge/node ID must not bypass the user's durable LiteraryMemory rejection.
+  const currentMemory = store.getCurrentLiteraryMemory(project.projectId);
+  store.saveLiteraryMemory(project.projectId, {
+    ...currentMemory.memory,
+    rejectedItems: [{
+      type: 'relationship', subject: 'Alice', predicate: 'trusts', object: 'Bob',
+    }],
+  });
+  const relationRejectedBundle = buildProjectContextGraphBundle(project.projectId, [
+    { id: 'chapter-2-seg-1', text: 'Alice asked Bob about the locked door.', contextPath: 'Chapter 2' },
+  ]);
+  assert.ok(relationRejectedBundle);
+  assert.deepEqual(relationRejectedBundle.characters.map((item) => item.name).sort(), ['Alice', 'Bob']);
+  assert.deepEqual(relationRejectedBundle.relationships, [],
+    'a rejected relation must not leak through a still-active or newly-created graph edge');
+
+  const latestMemory = store.getCurrentLiteraryMemory(project.projectId);
+  store.saveLiteraryMemory(project.projectId, {
+    ...latestMemory.memory,
+    rejectedItems: [
+      ...latestMemory.memory.rejectedItems,
+      { type: 'entity', source: 'Alice', kind: 'person', aliases: ['Ally'] },
+    ],
+  });
+  const entityRejectedBundle = buildProjectContextGraphBundle(project.projectId, [
+    { id: 'chapter-2-seg-1', text: 'Alice asked Bob about the locked door.', contextPath: 'Chapter 2' },
+  ]);
+  assert.ok(entityRejectedBundle);
+  assert.deepEqual(entityRejectedBundle.characters.map((item) => item.name), ['Bob'],
+    'entity tombstones must suppress graph nodes by canonical name and aliases, not only by node ID');
+  assert.deepEqual(entityRejectedBundle.relationships, []);
+
   const graph = getContextGraph(project.projectId);
   const status = getContextGraphStatus(project.projectId);
   assert.equal(status.sourceRevisionId, currentSourceRevisionId);
