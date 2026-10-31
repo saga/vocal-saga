@@ -78,7 +78,7 @@ sequenceDiagram
     loop 每个 batch / wave
         Agent->>Store: getPrecedingSegments
         Agent->>Brief: buildTranslationBrief
-        Brief-->>Agent: 有界上下文、contextHash、诊断计数
+        Brief-->>Agent: 批次可见上下文、contextHash、诊断计数
         Agent->>Store: saveTranslationBriefSnapshot
         Agent->>Store: markRunSegments(running)
         Agent->>Model: translateBatch（结构化输出）
@@ -109,7 +109,7 @@ sequenceDiagram
 - **状态转换以 SQLite 为准**：内存中的 `activeRuns` 只用于本进程去重，不是持久化状态来源。服务重启后应从 Store 恢复状态或重试失败范围。
 - **停止边界是写入边界**：模型调用前、调用返回后、候选写入前都需要再次检查 Run 状态；数据库事务还会拒绝在取消/暂停后提交迟到结果。
 - **审校不是翻译成功的前置条件**：审校失败会写入 warning，并保留有效初译候选。审校修订和 supporting findings 应一起原子提交。
-- **上下文快照可追溯**：同一批次的初译和 Reviewer 使用同一份 TranslationBrief；保存的 revision IDs、hash 和字符数用于审计，不代表完整模型请求的全部长度。TranslationBrief 同时记录不含正文的组件大小统计（glossary、preceding segments、Context Graph、voice context 及各自子项），人物声音检索还记录 accepted-example 候选数、筛选数和最终注入数。诊断包只导出这些计数、字符数和条目长度分布，不导出原文、译文或记忆正文。
+- **上下文快照可追溯**：同一批次的初译和 Reviewer 使用同一份 TranslationBrief；保存的 revision IDs、hash 和字符数用于审计，不代表完整模型请求的全部长度。TranslationBrief 同时记录不含正文的组件大小统计（glossary、preceding segments、Context Graph、voice context 及各自子项），人物声音检索还记录 accepted-example 候选数、筛选数和最终注入数。历史译例最多 8 条、最高 4,000 字符，实际字符预算按 `contextBudgetChars` 的 25% 缩放；已作为 preceding segment 注入的片段不会再次作为译例注入。该预算只裁剪可选历史译例，不截断当前原文、前文、术语、当前可见名称映射或有证据的人物声音信息。诊断包只导出这些计数、字符数和条目长度分布，不导出原文、译文或记忆正文。
 
 ## 4. 文档抽取与预处理
 
@@ -166,7 +166,7 @@ sequenceDiagram
     Run->>Memory: 读取 Run 固定的 memory revision + 此前 wave 的 context_delta
     Memory->>Brief: 证据、目标译名置信度、人物画像
     Brief->>Brief: 检索已采纳历史译例
-    Brief->>Brief: 相关度排序 + 预算裁剪 + 诊断统计
+    Brief->>Brief: 相关度排序 + 历史译例数量/字符预算 + 前文去重 + 诊断统计
     Brief-->>Run: TranslationBrief + contextHash
     Run->>Store: 保存快照
     Note over Run,Brief: 未来 source ordinal 的证据不能进入较早批次
