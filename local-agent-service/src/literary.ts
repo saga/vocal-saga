@@ -378,10 +378,17 @@ export async function runLiteraryAnalysis(body: any, requestId: string, sessionS
   };
 }
 
+/** 每个审校阶段只接受它自己负责的 finding 类别；合并阶段两者都收，但优先级规则不变。 */
+const REVIEW_FOCUS_CATEGORIES: Record<'accuracy' | 'style' | 'combined', string[]> = {
+  accuracy: ['accuracy', 'terminology'],
+  style: ['style'],
+  combined: ['accuracy', 'terminology', 'style'],
+};
+
 export function buildLiteraryReviewPrompt(input: {
   body: any;
   segments: Array<Record<string, any>>;
-  reviewFocus: 'accuracy' | 'style';
+  reviewFocus: 'accuracy' | 'style' | 'combined';
   translationBrief: Record<string, any> | null;
   precedingSegments: Array<Record<string, any>>;
   voiceContext: Record<string, any>;
@@ -402,8 +409,13 @@ export function buildLiteraryReviewPrompt(input: {
     'style finding 可以带可选字段 dimension=character_voice|register|narrative_style|pacing|chinese_literary_editing、characterId、relatedCharacterId、evidenceSegmentIds。人物声音 finding 必须给出具体 source/draft 片段与画像或人物对证据；不允许凭空增加口头禅、方言、粗口、情绪或修辞。',
     reviewFocus === 'style'
       ? '本次是独立文风审校阶段：只输出 category=style 的 findings，重点检查人物声音差异、叙述声音、语域、节奏、翻译腔和不自然表达；不要输出 accuracy/terminology findings。finalTranslation 如有文风改进，应给出完整修订译文，但不得改变事实或新增原文没有的信息。'
-      : '本次是准确性与专名审校阶段：只输出 accuracy 或 terminology findings，修复可核验的误译、漏译、增译、否定/指代错误和规范译名不一致；不要输出 style findings，也不要做纯润色。文风由独立阶段处理。',
-    ...(reviewFocus === 'style' && /^zh(?:[-_]|$)/i.test(String(body.target || 'zh')) ? [
+      : reviewFocus === 'combined'
+        // 「中」档：一次调用同时承担必须修复的准确性和可选的文风改进。
+        // 两级优先级不能合并：accuracy/terminology 仍是 must_fix，style 仍是 optional，
+        // 否则文风偏好会被当成硬错误写回译文。
+        ? '本次是合并审校阶段（准确性优先，文风其次）：对照原文先排查 accuracy/terminology 问题，这类 finding 的 priority 必须是 must_fix；在此之后，如果同一片段还有具体、可举证的翻译腔、不自然搭配、语域或人物声音问题，再输出 category=style 的 finding，priority 必须是 optional。只做能举出具体文本证据的修订，不要为风格偏好改写，也不要把可读的初译重写一遍。finalTranslation 必须是完整译文：有 must_fix 时以修正准确性为准，没有 must_fix 时可以在有依据的前提下采纳文风改进，否则原样返回初译。'
+        : '本次是准确性与专名审校阶段：只输出 accuracy 或 terminology findings，修复可核验的误译、漏译、增译、否定/指代错误和规范译名不一致；不要输出 style findings，也不要做纯润色。文风由独立阶段处理。',
+    ...(reviewFocus !== 'accuracy' && /^zh(?:[-_]|$)/i.test(String(body.target || 'zh')) ? [
       '中文文学编辑（Chinese Literary Editing）是本次文风审校的一部分，不是额外的审校阶段或独立任务。目标是把准确的译文编辑成自然、成熟、符合中文文学阅读习惯的中文；适用于小说、散文、回忆录、传记、文学纪实和随笔，不要把所有作品改成同一种腔调。',
       '重点检查并适度处理：不必要的第一/第二/第三人称代词及“我的/他的”等所属表达；“的、地、得”及其他虚词的冗余或僵硬搭配；英文语序、关系从句、嵌套定语、被动句、名词化和介词结构留下的翻译腔；重复、空泛动词、副词堆叠和不自然词语搭配；句子长度、停顿、衔接和段落节奏。',
       '不要机械删除“我、的、地、得”，也不要以词频或句长作为质量目标。只有在指代清楚、语义不变且中文更自然时才省略或重组；保留必要的所属关系、语气词、修辞性重复、长句、意象、歧义和作者有意安排的节奏。',
@@ -595,7 +607,9 @@ export async function runLiteraryReview(body: any, requestId: string, sessionSco
   const contextGraph = translationBrief?.contextGraph && typeof translationBrief.contextGraph === 'object'
     ? translationBrief.contextGraph
     : null;
-  const reviewFocus = body.reviewFocus === 'style' ? 'style' : 'accuracy';
+  const reviewFocus = body.reviewFocus === 'style'
+    ? 'style'
+    : body.reviewFocus === 'combined' ? 'combined' : 'accuracy';
   const chineseMonolingualEdit = body.chineseMonolingualEdit === true &&
     reviewFocus === 'style' && /^zh(?:[-_]|$)/i.test(String(body.target || 'zh'));
   const { systemPrompt, prompt, contextChars } = chineseMonolingualEdit
@@ -625,9 +639,7 @@ export async function runLiteraryReview(body: any, requestId: string, sessionSco
     if (Array.isArray(raw.findings)) {
       for (const item of raw.findings.slice(0, 12)) {
         // 准确性/实体错误必须修复；具体文风问题作为可选的受控修订依据。
-        if (!item || (reviewFocus === 'style'
-          ? item.category !== 'style'
-          : !['accuracy', 'terminology'].includes(item.category))) continue;
+        if (!item || !REVIEW_FOCUS_CATEGORIES[reviewFocus].includes(String(item.category))) continue;
         const sourceExcerpt = chineseMonolingualEdit ? '' :
           typeof item.sourceExcerpt === 'string' ? item.sourceExcerpt.trim().slice(0, 240) : '';
         const targetExcerpt = chineseMonolingualEdit
@@ -684,7 +696,7 @@ export async function runLiteraryReview(body: any, requestId: string, sessionSco
     // 用户仍可在译文中事后修改。中文单语编辑同样先产出候选，随后由双语审校验证。
     const hasGroundedChineseEdit = chineseMonolingualEdit && candidateUsable &&
       candidateText !== original.draft && candidateFindings.length > 0;
-    const hasGroundedStyleEdit = reviewFocus === 'style' && candidateUsable &&
+    const hasGroundedStyleEdit = reviewFocus !== 'accuracy' && candidateUsable &&
       candidateText !== original.draft && candidateFindings.some((finding) => finding.category === 'style');
     translations[raw.id] = hasMustFixFinding && candidateUsable
       ? candidateText

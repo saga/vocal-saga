@@ -289,7 +289,7 @@ function numericQuantityUnits(value: unknown, sourceLang = 'en'): string[] {
   for (const item of found) unique.set(item.index + ':' + item.unit, item);
   return Array.from(unique.values()).sort((a,b)=>a.index-b.index).map((item)=>item.unit);
 }
-function numericFindings(
+export function numericFindings(
   segments: Array<{ id: string; text: string; contextPath: string }>,
   translations: Map<string, string>,
   sourceLang = 'en',
@@ -748,7 +748,7 @@ function canonicalNameMappingConflictFindings(
   return { findings, conflictedSources };
 }
 
-function terminologyFindings(
+export function terminologyFindings(
   segments: Array<{ id: string; text: string; contextPath: string }>,
   translations: Map<string, string>,
   memory: Record<string, any>,
@@ -812,7 +812,7 @@ const FUNCTION_WORDS_BY_SOURCE_LANG: Record<string, Set<string>> = {
   it: new Set(['io','tu','lui','lei','noi','voi','loro','il','lo','la','i','gli','le','un','una','di','da','e','ma','non','che','per','con','è','era','sono','ha']),
   es: new Set(['yo','tú','él','ella','ellos','ellas','nosotros','nosotras','ustedes','vosotros','vosotras','el','la','los','las','un','una','unos','unas','de','del','al','y','o','pero','porque','por','para','con','sin','en','sobre','entre','que','quien','quién','quienes','quiénes','como','cómo','cuando','cuándo','donde','dónde','no','sí','si','es','son','está','están','era','fue','ser','estar','se','me','te','nos','os','lo','le','les','mi','mis','su','sus','muy','más','menos','también','todo','cada']),
 };
-function englishResidueFindings(
+export function englishResidueFindings(
   segments: Array<{ id: string; text: string; contextPath: string }>,
   translations: Map<string, string>,
   targetLang: string,

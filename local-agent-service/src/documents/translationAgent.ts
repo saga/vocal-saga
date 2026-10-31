@@ -16,7 +16,7 @@ import { runLiteraryReview } from '../literary.ts';
 import { getDocumentProjectStore, normalizeDocumentTranslationStrategy, type DocumentTranslationStrategy } from './projectStore.ts';
 import { buildProjectVoiceContext, sanitizeProjectLiteraryMemory } from './voiceContext.ts';
 import { buildTranslationBrief, summarizeTranslationBrief, type TranslationBrief } from './translationBrief.ts';
-import { runProjectQualityAudit, createQualityRepairRun } from './qualityAudit.ts';
+import { runProjectQualityAudit, createQualityRepairRun, englishResidueFindings, numericFindings, terminologyFindings } from './qualityAudit.ts';
 import { CONTEXT_GRAPH_ANALYSIS_VERSION, getContextGraphStatus, startContextGraphAnalysis } from './contextGraph.ts';
 import { logError, logInfo, logWarn } from '../log.ts';
 import { scheduleChineseEditorialProfileRefresh } from './chineseEditorialProfile.ts';
@@ -308,6 +308,69 @@ export function createConcurrencyLimiter(concurrency: number): <T>(task: () => P
       else active--;
     }
   };
+}
+
+/**
+ * 「中」档的送审筛选：短、无数字、无对白、无专名的片段单独送审收益极低。
+ * 章节名、页码、单句过渡这类片段在文学书里占比不小，每送一次都要付一次完整模型调用。
+ */
+export function isReviewWorthSending(item: { text?: string | null }): boolean {
+  const source = String(item?.text ?? '').trim();
+  if (!source) return false;
+  if (source.length >= 40) return true;
+  if (/\d/.test(source)) return true;
+  if (/["“”'‘’「」『』—]/.test(source)) return true;
+  // 句首之外的大写开头词通常是专名，需要对照规范译名。
+  return /[A-Z]/.test(source.slice(1));
+}
+
+/**
+ * 「弱」档审校：不调用模型，只跑全书质量审计已经在用的确定性检查。
+ * 输出仍然只是 finding 提示：数字与英文残留一律 optional，只有对照已确认规范译名的漂移
+ * 保留 must_fix——这是既有策略，不因审校强度而下调。
+ */
+export function buildDeterministicBatchReview(input: {
+  items: TranslationItem[];
+  translations: Map<string, string>;
+  memory: Record<string, any> | null;
+  sourceLang: string;
+  targetLang: string;
+}): Array<{ segmentId: string; finding: Record<string, any> }> {
+  const scoped = input.items
+    .filter((item) => (input.translations.get(item.id) || '').trim().length > 0)
+    .map((item) => ({ id: item.id, text: item.text, contextPath: item.contextPath || '' }));
+  if (!scoped.length) return [];
+  const drafts = new Map(scoped.map((item) => [item.id, input.translations.get(item.id) || '']));
+  const raw = [
+    ...numericFindings(scoped, drafts, input.sourceLang),
+    ...terminologyFindings(scoped, drafts, input.memory || {}),
+    ...englishResidueFindings(scoped, drafts, input.targetLang, input.sourceLang),
+  ];
+  const seen = new Set<string>();
+  const findings: Array<{ segmentId: string; finding: Record<string, any> }> = [];
+  for (const item of raw) {
+    const segmentId = Array.isArray(item?.segmentIds) ? String(item.segmentIds[0] || '') : '';
+    if (!segmentId || !drafts.has(segmentId)) continue;
+    const key = segmentId + ':' + String(item.type || '');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const isTerminology = item.category === 'terminology';
+    findings.push({
+      segmentId,
+      finding: {
+        id: segmentId,
+        category: isTerminology ? 'terminology' : 'style',
+        priority: isTerminology ? 'must_fix' : 'optional',
+        dimension: 'deterministic_check',
+        detector: item.type,
+        confidence: item.confidence || 'heuristic',
+        reviewStrength: 'weak',
+        reason: String(item.explanation || ''),
+        suggestion: '',
+      },
+    });
+  }
+  return findings.slice(0, 200);
 }
 
 const activeRuns = new Set<string>();
@@ -1566,13 +1629,21 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
     const strategy = normalizeDocumentTranslationStrategy(context.prompt?.config?.translationStrategy);
     const batches = buildBatches(items, context.run.translationMode === 'literary', strategy);
 
-    const reviewEnabled = context.run.translationMode === 'literary' && context.run.reviewEnabled;
+    // 审校强度只在文学模式下有意义；技术模式本来就不审校。
+    const reviewStrength = context.run.translationMode === 'literary' && context.run.reviewEnabled
+      ? strategy.reviewStrength
+      : 'off' as const;
+    const reviewEnabled = reviewStrength !== 'off';
+    // 只有 strong/medium 会真的发模型请求；weak 是纯本地确定性检查，不该占会话槽位。
+    const modelReviewEnabled = reviewStrength === 'strong' || reviewStrength === 'medium';
     const { poolSize, translationConcurrency, reviewConcurrency, detachReviews } =
       resolveDocumentRunConcurrencyBudget(
         WORKBUDDY_POOL_SIZE,
-        reviewEnabled,
+        modelReviewEnabled,
         Math.min(strategy.translationConcurrency, CONFIGURED_TRANSLATION_CONCURRENCY),
-        Math.min(strategy.reviewConcurrency, CONFIGURED_REVIEW_CONCURRENCY),
+        reviewStrength === 'strong'
+          ? Math.min(strategy.reviewConcurrency, CONFIGURED_REVIEW_CONCURRENCY)
+          : 1,
       );
     store.appendEvent(projectId, runId, 'plan.ready', {
       batchCount: batches.length,
@@ -1580,6 +1651,8 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
       strategy: 'bounded-parallel',
       translationConcurrency,
       reviewConcurrency,
+      reviewStrength,
+      reviewModelCallsPerBatch: reviewStrength === 'strong' ? 2 : reviewStrength === 'medium' ? 1 : 0,
       poolSize,
       reviewTimeoutMs: reviewEnabled ? REVIEW_TIMEOUT_MS : 0,
       maxBatchSegments: strategy.maxBatchSegments,
@@ -1600,6 +1673,7 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
       sourceLang: context.run.sourceLang,
       targetLang: context.run.targetLang,
       reviewEnabled,
+      reviewStrength,
       promptRevisionId: context.run.promptRevisionId,
       memoryRevisionId: context.memoryRevisionId || null,
       systemPromptChars: typeof context.prompt.systemPrompt === 'string' ? context.prompt.systemPrompt.length : 0,
@@ -1644,8 +1718,62 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
         });
         return;
       }
+
+      // 「弱」档：不发模型请求，只做确定性检查，因此不占会话槽位、也不阻塞翻译。
+      if (reviewStrength === 'weak') {
+        const deterministicStartedAt = Date.now();
+        const deterministicFindings = buildDeterministicBatchReview({
+          items: reviewedItems,
+          translations,
+          memory: batchContext.memory && typeof batchContext.memory === 'object' ? batchContext.memory : null,
+          sourceLang: String(batchContext.run.sourceLang || 'en'),
+          targetLang: String(batchContext.run.targetLang || 'zh'),
+        });
+        const findingsPersisted = deterministicFindings.length
+          ? store.saveFindings(projectId, runId, deterministicFindings)
+          : true;
+        if (!findingsPersisted) {
+          store.appendEvent(projectId, runId, 'review.discarded', {
+            batchIndex, stage: 'deterministic-review',
+            reason: 'Run left active state before deterministic finding commit',
+            findingCount: deterministicFindings.length,
+          });
+          return;
+        }
+        store.appendEvent(projectId, runId, 'stage.completed', {
+          stage: 'deterministic-review', batchIndex,
+          reviewStrength, modelCalls: 0, findingCount: deterministicFindings.length,
+          durationMs: Date.now() - deterministicStartedAt,
+        });
+        if (store.getRunStatus(projectId, runId) !== 'cancelled') {
+          store.appendEvent(projectId, runId, 'batch.completed', {
+            batchIndex, batchCount: batches.length, candidateCount: translations.size,
+            failedIds, reviewCompleted: true,
+          });
+        }
+        return;
+      }
+
+      // 「中」档只把值得送审的片段交给模型；整批都不值得时一次调用都不发。
+      const reviewTargets = reviewStrength === 'medium'
+        ? reviewedItems.filter((item) => isReviewWorthSending(item))
+        : reviewedItems;
+      if (!reviewTargets.length) {
+        store.appendEvent(projectId, runId, 'stage.skipped', {
+          stage: 'review', batchIndex, reviewStrength,
+          reason: '本批全部是短片段且无数字/对白/专名，合并审校的收益低于一次模型调用',
+          skippedSegmentCount: reviewedItems.length,
+        });
+        store.appendEvent(projectId, runId, 'batch.completed', {
+          batchIndex, batchCount: batches.length, candidateCount: translations.size,
+          failedIds, reviewCompleted: true,
+        });
+        return;
+      }
       store.appendEvent(projectId, runId, 'stage.started', {
-        stage: 'review', batchIndex, timeoutMs: REVIEW_TIMEOUT_MS, label: '文学审校',
+        stage: 'review', batchIndex, timeoutMs: REVIEW_TIMEOUT_MS,
+        reviewStrength,
+        label: reviewStrength === 'medium' ? '合并审校' : '文学审校',
       });
       const reviewStartedAt = Date.now();
       const reviewVoiceContext = translationBrief?.voiceContext || buildProjectVoiceContext(
@@ -1676,6 +1804,7 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
 
       let styleReviewAttempted = false;
       const runStyleReview = async (): Promise<void> => {
+        if (reviewStrength !== 'strong') return;
         if (store.getRunStatus(projectId, runId) === 'cancelled') return;
         styleReviewAttempted = true;
         const styleStartedAt = Date.now();
@@ -1808,7 +1937,9 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
         }
       };
 
-      const chineseMonolingualEdit = /^zh(?:[-_]|$)/i.test(String(batchContext.run.targetLang || ''));
+      // 中文单语编辑是「强」档独有的预备阶段；「中」档把它并进合并审校的双语调用里。
+      const chineseMonolingualEdit = reviewStrength === 'strong' &&
+        /^zh(?:[-_]|$)/i.test(String(batchContext.run.targetLang || ''));
       // Chinese editing must happen before bilingual review: the latter verifies the edited
       // Chinese candidate against source. Other target languages retain their existing order.
       if (chineseMonolingualEdit) await runStyleReview();
@@ -1825,7 +1956,7 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
         });
         const review = await runLiteraryReviewWithMissingRetry({
           projectId, runId,
-          reviewType: 'accuracy-terminology',
+          reviewType: reviewStrength === 'medium' ? 'combined-review' : 'accuracy-terminology',
           taskProfiles: batchContext.prompt.config?.taskProfiles || {},
           chapterTitle: batch[0]?.contextPath || batchContext.project.title,
           target: batchContext.run.targetLang,
@@ -1835,8 +1966,8 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
           precedingSegments,
           voiceContext: reviewVoiceContext,
           translationBrief: translationBrief || undefined,
-          reviewFocus: 'accuracy',
-          segments: reviewedItems.map((item) => ({
+          reviewFocus: reviewStrength === 'medium' ? 'combined' : 'accuracy',
+          segments: reviewTargets.map((item) => ({
             id: item.id, source: item.text, draft: translations.get(item.id)!,
             initialDraft: initialDrafts.get(item.id),
             kind: item.kind, contextPath: item.contextPath,
@@ -1958,7 +2089,7 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
           });
         }
 
-        if (!chineseMonolingualEdit) await runStyleReview();
+        if (!chineseMonolingualEdit && reviewStrength === 'strong') await runStyleReview();
     } catch (error) {
         // Review is a quality improvement, not a gate on translation progress.
         try {
@@ -1979,7 +2110,7 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
         } catch (persistError) {
           logError('document-agent', 'failed to persist review warning · ' + (persistError instanceof Error ? persistError.message : String(persistError)));
         }
-        if (!styleReviewAttempted && store.getRunStatus(projectId, runId) !== 'cancelled') {
+        if (!styleReviewAttempted && reviewStrength === 'strong' && store.getRunStatus(projectId, runId) !== 'cancelled') {
           await runStyleReview();
         }
       }

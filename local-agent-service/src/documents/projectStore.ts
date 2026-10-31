@@ -42,6 +42,17 @@ export interface ProjectSegment {
   end?: string;
 }
 
+export type DocumentReviewStrength = 'strong' | 'medium' | 'weak' | 'off';
+
+export const DOCUMENT_REVIEW_STRENGTHS: readonly DocumentReviewStrength[] = ['strong', 'medium', 'weak', 'off'];
+
+export function normalizeDocumentReviewStrength(input: unknown): DocumentReviewStrength {
+  const value = typeof input === 'string' ? input.trim().toLowerCase() : '';
+  return (DOCUMENT_REVIEW_STRENGTHS as readonly string[]).includes(value)
+    ? value as DocumentReviewStrength
+    : DEFAULT_DOCUMENT_TRANSLATION_STRATEGY.reviewStrength;
+}
+
 export interface DocumentTranslationStrategy {
   /** Maximum source segments in one model request. */
   maxBatchSegments: number;
@@ -51,6 +62,14 @@ export interface DocumentTranslationStrategy {
   translationConcurrency: number;
   /** Requested concurrent reviewer jobs; capped by the actual provider pool. */
   reviewConcurrency: number;
+  /**
+   * 审校强度。只有 strong 会真的占用 reviewConcurrency 个槽位。
+   * - strong：文风审校 + 准确性审校，两次模型调用（历史行为）
+   * - medium：一次合并审校调用，兼顾 must_fix 与文风 findings
+   * - weak：不调模型，只做数字/专名/英文残留等确定性检查
+   * - off：不审校
+   */
+  reviewStrength: DocumentReviewStrength;
   /** Number of earlier source segments offered for disambiguation, never translated again. */
   precedingContextSegments: number;
   /** Upper bound for the assembled TranslationBrief context. */
@@ -64,6 +83,7 @@ export const DEFAULT_DOCUMENT_TRANSLATION_STRATEGY: DocumentTranslationStrategy 
   maxBatchSourceChars: 8000,
   translationConcurrency: 4,
   reviewConcurrency: 2,
+  reviewStrength: 'medium',
   precedingContextSegments: 4,
   contextBudgetChars: 18000,
   maxModelAttempts: 2,
@@ -85,6 +105,7 @@ export function normalizeDocumentTranslationStrategy(input: unknown): DocumentTr
     maxBatchSourceChars: integer('maxBatchSourceChars', DEFAULT_DOCUMENT_TRANSLATION_STRATEGY.maxBatchSourceChars, 2000, 12000),
     translationConcurrency: integer('translationConcurrency', DEFAULT_DOCUMENT_TRANSLATION_STRATEGY.translationConcurrency, 1, 6),
     reviewConcurrency: integer('reviewConcurrency', DEFAULT_DOCUMENT_TRANSLATION_STRATEGY.reviewConcurrency, 1, 4),
+    reviewStrength: normalizeDocumentReviewStrength(raw.reviewStrength),
     precedingContextSegments: integer('precedingContextSegments', DEFAULT_DOCUMENT_TRANSLATION_STRATEGY.precedingContextSegments, 0, 6),
     contextBudgetChars: integer('contextBudgetChars', DEFAULT_DOCUMENT_TRANSLATION_STRATEGY.contextBudgetChars, 4000, 18000),
     maxModelAttempts: integer('maxModelAttempts', DEFAULT_DOCUMENT_TRANSLATION_STRATEGY.maxModelAttempts, 1, 2),
