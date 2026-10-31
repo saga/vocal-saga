@@ -38,8 +38,8 @@ const since = Date.now() - sinceHours * 60 * 60 * 1000;
 fs.mkdirSync(bundleDir, { recursive: true, mode: 0o700 });
 
 const SECRET_PATTERNS = [
-  /(authorization\\s*[:=]\\s*bearer\\s+)[^\\s,;]+/gi,
-  /((?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret|local_agent_token)\\s*[:=]\\s*)["']?[^\\s"',;]+/gi,
+  /(authorization\s*[:=]\s*bearer\s+)[^\s,;]+/gi,
+  /((?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret|local_agent_token)\s*[:=]\s*)["']?[^\s"',;]+/gi,
   /(sk-[A-Za-z0-9_-]{12,})/g,
   /(gh[pousr]_[A-Za-z0-9]{20,})/g,
 ];
@@ -57,12 +57,12 @@ function copyRecentLog(source, targetName) {
   if (!fs.existsSync(source)) return { found: false, path: source };
   const stat = fs.statSync(source);
   const raw = fs.readFileSync(source, 'utf8');
-  const lines = raw.split(/\\r?\\n/);
+  const lines = raw.split(/\r?\n/);
   const selected = lines.filter((line) => {
-    const match = line.match(/\\[(?:[^\\]]+ )?(\\d{1,2}:\\d{2}:\\d{2})\\]/);
+    const match = line.match(/\[(?:[^\]]+ )?(\d{1,2}:\d{2}:\d{2})\]/);
     return !match || stat.mtimeMs >= since;
   }).slice(-12000);
-  write(targetName, redact(selected.join('\\n')));
+  write(targetName, redact(selected.join('\n')));
   return { found: true, bytes: stat.size, includedLines: selected.length, modifiedAt: stat.mtime.toISOString() };
 }
 function run(command, commandArgs, timeout = 8000) {
@@ -76,7 +76,7 @@ function run(command, commandArgs, timeout = 8000) {
 }
 function sqliteOverview() {
   if (!fs.existsSync(dbFile)) return { found: false };
-  const db = new DatabaseSync('file:' + dbFile + '?mode=ro', { readOnly: true });
+  const db = new DatabaseSync(dbFile, { readOnly: true });
   try {
     const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all();
     const result = [];
@@ -106,7 +106,7 @@ function collectLogFiles() {
       for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
         const full = path.join(dir, entry.name);
         if (entry.isDirectory()) walk(full);
-        else if (entry.isFile() && /\\.(log|jsonl|txt)$/i.test(entry.name)) {
+        else if (entry.isFile() && /\.(log|jsonl|txt)$/i.test(entry.name)) {
           const stat = fs.statSync(full);
           if (stat.mtimeMs >= since && stat.size <= 20 * 1024 * 1024) files.push({ full, root, stat });
         }
@@ -117,14 +117,14 @@ function collectLogFiles() {
   return files.slice(0, 30).map((file, index) => {
     const rel = path.relative(file.root, file.full);
     const target = 'logs/' + String(index + 1).padStart(2, '0') + '-' + path.basename(rel);
-    const lines = fs.readFileSync(file.full, 'utf8').split(/\\r?\\n/).slice(-8000);
-    write(target, redact(lines.join('\\n')));
+    const lines = fs.readFileSync(file.full, 'utf8').split(/\r?\n/).slice(-8000);
+    write(target, redact(lines.join('\n')));
     return { file: target, source: '~/' + path.relative(home, file.full), bytes: file.stat.size, includedLines: lines.length };
   });
 }
 function localFindings(logText) {
   const patterns = [
-    ['errors', /\\b(error|failed|failure|exception|uncaught|unhandled)\\b/gi],
+    ['errors', /\b(error|failed|failure|exception|uncaught|unhandled)\b/gi],
     ['timeouts', /timeout|超时|timed out/gi],
     ['retries', /retry|重试|fallback/gi],
     ['empty-or-invalid-output', /空内容|invalid json|不是有效 json|structured output/gi],
@@ -140,7 +140,7 @@ async function runCodeBuddyAnalysis(summary) {
     '输出中文，按：1. 主要异常/可能根因 2. 证据（引用日志原句，最多 8 条）3. 影响范围 4. 建议优先级排序 5. 还缺少什么观测信息。',
     '不要把相关性说成因果；信息不足时明确写未知。不要建议上传源文、译文或密钥。',
     JSON.stringify(summary, null, 2),
-  ].join('\\n\\n');
+  ].join('\n\n');
   const stream = sdk.query({
     prompt,
     options: {
@@ -187,7 +187,7 @@ const summary = {
   },
   logSignals: localFindings(primaryLog),
 };
-write('summary.json', JSON.stringify(summary, null, 2) + '\\n');
+write('summary.json', JSON.stringify(summary, null, 2) + '\n');
 write('README.txt', [
   'Vocal Saga Local Agent diagnostic bundle',
   'Generated: ' + collectedAt.toISOString(),
@@ -197,14 +197,14 @@ write('README.txt', [
   'Log files are secret-redacted, but manually inspect this archive before sharing.',
   'summary.json includes environment/runtime metadata and aggregate SQLite table counts.',
   analyze ? 'CodeBuddy analysis was explicitly requested; see codebuddy-analysis.md.' : 'No model analysis was run. Re-run with --analyze to use the local CodeBuddy SDK.',
-].join('\\n') + '\\n');
+].join('\n') + '\n');
 
 if (analyze) {
   try {
     const analysis = await runCodeBuddyAnalysis({ ...summary, logExcerpt: primaryLog.slice(-18000) });
-    write('codebuddy-analysis.md', analysis + '\\n');
+    write('codebuddy-analysis.md', analysis + '\n');
   } catch (error) {
-    write('codebuddy-analysis-error.txt', redact(error instanceof Error ? error.stack || error.message : String(error)) + '\\n');
+    write('codebuddy-analysis-error.txt', redact(error instanceof Error ? error.stack || error.message : String(error)) + '\n');
   }
 }
 
