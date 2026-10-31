@@ -16,7 +16,7 @@
 | Project API / CLI | 创建或恢复 Project/Run，校验请求和操作权限；不直接生成另一份翻译实现 |
 | `translationAgent.ts` | 统一调度、批次切分、模型请求、响应校验、候选保存、审校、上下文增量合并、停止/恢复边界 |
 | `translationBrief.ts` | 为每批构造有预算、来源版本固定、按原文序号过滤的只读上下文快照 |
-| `translationContextDelta.ts` | 证据核验、增量合并、冲突保留；模型提出的任何事实都保持候选状态 |
+| `translationContextDelta.ts` | 证据核验、增量合并、冲突保留；模型提出的事实通过来源校验后默认采纳，置信度与证据范围单独记录 |
 | `projectStore.ts` | SQLite 事实来源：Run/片段状态、TranslationBrief、上下文增量、候选译文及项目记忆 revision |
 | `qualityAudit.ts` | 全书缺失、术语/重复表达问题和不同批次候选译名冲突的审计入口 |
 
@@ -38,7 +38,7 @@ flowchart TD
     M --> F
     L --> N["等待审校并完成 Run"]
     N --> O{"来源版本未变化且 Run 成功完成？"}
-    O -- 是 --> P["将新实体/关系作为 suggested 合并到项目记忆"]
+    O -- 是 --> P["将通过证据校验的新实体/关系以 model-default 默认采纳方式合并到项目记忆"]
     O -- 否 --> Q["仅保留在原 Run 的增量账本"]
     P --> R["全书质量审计 / 人工复核"]
     Q --> R
@@ -62,7 +62,7 @@ readiness 不是单看数据库 `status=completed`。它还要求 source revisio
 
 预处理失败不会降级为“只做逐章分析然后继续文学翻译”。失败阶段、缺失字段和错误通过服务端状态及 Run 事件诊断；重分析不得覆盖已采纳译文、人工修订或旧 Run 的固定快照。详见 [ADR-0005](adr/0005-literary-preprocessing-before-translation.md) 与 [完整流程说明](../FULL-BOOK-PREPROCESSING-FIRST-TRANSLATION-FLOW-2026-10-31.md)。
 
-文学模式仍复用两个既有 Reviewer 任务，不新增 Agent 或模型调用。非中文目标语言保持原有顺序和行为。中文目标语言下，Style Review 改为真正的中文单语编辑：模型只接收中文初稿、目标语言人物声音描述、已确认中文风格规范和同一来源版本中更早已采纳的中文例句；不接收英文原文、英文引文、源语言人名/别名、源语言术语表、来源摘要或前文原文。编辑 finding 必须引用中文初稿中的 `targetExcerpt`。编辑候选随后交给 Accuracy / Terminology Review，与原文和初译对照复核；初译仅作为变化比较，不作为正确答案。只有双语复核完成的中文编辑候选才能被用户采纳，未完成复核时 Store 会拒绝应用。文风建议始终保持 pending，不静默覆盖已接受译文。详见根目录 [VOCAL-SAGA-LOCAL-AGENT-CHINESE-LITERARY-EDITING-RESEARCH-AND-IMPROVEMENT-PLAN-2026-10-31.md](../VOCAL-SAGA-LOCAL-AGENT-CHINESE-LITERARY-EDITING-RESEARCH-AND-IMPROVEMENT-PLAN-2026-10-31.md)。
+文学模式仍复用两个既有 Reviewer 任务，不新增 Agent 或模型调用。非中文目标语言保持原有顺序和行为。中文目标语言下，Style Review 改为真正的中文单语编辑：模型只接收中文初稿、目标语言人物声音描述、已确认中文风格规范和同一来源版本中更早已采纳的中文例句；不接收英文原文、英文引文、源语言人名/别名、源语言术语表、来源摘要或前文原文。编辑 finding 必须引用中文初稿中的 `targetExcerpt`。编辑候选随后交给 Accuracy / Terminology Review，与原文和初译对照复核；初译仅作为变化比较，不作为正确答案。中文单语编辑候选必须先经过双语准确性/术语复核，复核完成后由服务端自动更新本次 Run 的候选；其他目标语言的文风修订须有对应的原文/译文证据 finding，随后自动保存为 Run 候选。Run 最终化统一自动采纳候选，但不覆盖更新较新的人工修订。详见根目录 [VOCAL-SAGA-LOCAL-AGENT-CHINESE-LITERARY-EDITING-RESEARCH-AND-IMPROVEMENT-PLAN-2026-10-31.md](../VOCAL-SAGA-LOCAL-AGENT-CHINESE-LITERARY-EDITING-RESEARCH-AND-IMPROVEMENT-PLAN-2026-10-31.md)。
 
 ## 2. 初译响应契约
 
@@ -116,7 +116,7 @@ readiness 不是单看数据库 `status=completed`。它还要求 source revisio
 | `open_questions` | 保留身份、称谓、指代或上下文上的不确定点 | 问题必须关联可核验的当前批次来源证据 |
 | `conflicts` | 显式报告本批发现的解释/映射冲突 | 冲突需有来源证据；合并时保留为待核验信息 |
 
-`context_delta` 中的模型状态、置信度或“已确认”字样都不具有授权效力。项目级记录统一保留为 `suggested/candidate`，人工确认仍使用现有记忆审核入口。
+`context_delta` 中的模型状态、置信度或“已确认”字样都不具有授权效力。通过来源证据与结构校验的模型结果以 `model-default` 默认采纳并参与后续翻译；`user-modified`、`user-confirmed` 和 `user-rejected` 分别保留，用户修改/拒绝优先。
 
 上下文元数据与译文分开验收。缺失、截断或无效的 `context_delta` 会被丢弃并记录诊断，但只要 `translations` 本身通过结构校验，译文仍然保存。这保证上下文抽取质量不佳时不会连带丢掉有效的初译。
 
@@ -147,7 +147,7 @@ readiness 不是单看数据库 `status=completed`。它还要求 source revisio
 
 合并遵循明确顺序：
 
-1. 人工确认的规范译名、别名和关系不会被模型候选改写。
+1. 人工确认或修改的规范译名、别名和关系不会被模型默认结果改写。
 2. 相同来源实体且目标译名相同的候选可以增加有证据的别名或补充候选关系。
 3. 同一来源实体出现不同候选译名时，保留原有/来源顺序中的首个目标，记录明确的 open question；禁止静默覆盖或全局替换。
 4. 名称相同不等于实体相同。合并只根据明确的 source/alias 集合重合以及兼容的实体类型进行，不使用任意子串模糊匹配。
