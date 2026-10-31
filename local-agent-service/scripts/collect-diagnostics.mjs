@@ -34,8 +34,8 @@ const bundleDir = path.join(outputRoot, bundleName);
 fs.mkdirSync(bundleDir, { recursive: true, mode: 0o700 });
 
 const SECRET_PATTERNS = [
-  /(authorization\\s*[:=]\\s*bearer\\s+)[^\\s,;]+/gi,
-  /((?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret|local_agent_token)\\s*[:=]\\s*)["']?[^\\s"',;]+/gi,
+  /(authorization\s*[:=]\s*bearer\s+)[^\s,;]+/gi,
+  /((?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret|local_agent_token)\s*[:=]\s*)["']?[^\s"',;]+/gi,
   /\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9]{20,})\b/g,
 ];
 function redact(value) {
@@ -47,7 +47,7 @@ function redact(value) {
 function writeJson(relativePath, value) {
   const target = path.join(bundleDir, relativePath);
   fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
-  fs.writeFileSync(target, JSON.stringify(value, null, 2) + '\\n', { mode: 0o600 });
+  fs.writeFileSync(target, JSON.stringify(value, null, 2) + '\n', { mode: 0o600 });
 }
 function openReadOnly(file) {
   return new DatabaseSync(file, { readOnly: true });
@@ -212,7 +212,7 @@ async function runCodeBuddyAnalysis(summary) {
     ],
   };
   const stream = sdk.query({
-    prompt: '请分析以下两个最新文档项目的翻译流水线诊断摘要，按要求输出结论：\\n\\n' + JSON.stringify(analysisInput, null, 2),
+    prompt: '请分析以下两个最新文档项目的翻译流水线诊断摘要，按要求输出结论：\n\n' + JSON.stringify(analysisInput, null, 2),
     options: {
       cwd: serviceDir, settingSources: [], persistSession: false,
       tools: [], allowedTools: [], maxTurns: 1, thinking: { type: 'disabled' },
@@ -260,15 +260,15 @@ const readme = [
   '',
   'PRIVACY: These document records intentionally include source text, translated text, review findings and persisted prompts because they are needed to diagnose translation quality. Review the two JSON files before sharing. Original EPUB/PDF binaries, unrelated documents, request-history database rows and SDK session transcripts are not included.',
   analyze ? 'CodeBuddy analysis was requested; see codebuddy-analysis.md.' : 'No model analysis was run. Add --analyze to call the local CodeBuddy SDK.',
-].join('\\n') + '\\n';
+].join('\n') + '\n';
 fs.writeFileSync(path.join(bundleDir, 'README.txt'), readme, { mode: 0o600 });
 
 if (analyze) {
   try {
     const report = await runCodeBuddyAnalysis(summary);
-    fs.writeFileSync(path.join(bundleDir, 'codebuddy-analysis.md'), report + '\\n', { mode: 0o600 });
+    fs.writeFileSync(path.join(bundleDir, 'codebuddy-analysis.md'), report + '\n', { mode: 0o600 });
   } catch (error) {
-    fs.writeFileSync(path.join(bundleDir, 'codebuddy-analysis-error.txt'), redact(error instanceof Error ? error.stack || error.message : String(error)) + '\\n', { mode: 0o600 });
+    fs.writeFileSync(path.join(bundleDir, 'codebuddy-analysis-error.txt'), redact(error instanceof Error ? error.stack || error.message : String(error)) + '\n', { mode: 0o600 });
   }
 }
 
