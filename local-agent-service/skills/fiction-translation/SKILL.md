@@ -72,3 +72,7 @@ Before completing a literary batch, ask:
 - Has the model kept the current translation if the finding is merely stylistic and not accepted?
 
 When there is no reliable character-voice evidence, prefer a faithful, natural translation over an invented voice signature.
+
+
+- Chinese literary quality audits expose separate counts for reviewed, edited, unchanged and uncovered segments; bilingual verification states; and user apply/dismiss decisions. Never interpret an absent review as a successful unchanged review.
+- Treat `manuallyOverriddenAfterApplyCount` as a subsequent manual override signal, not a definitive over-edit/error label.
