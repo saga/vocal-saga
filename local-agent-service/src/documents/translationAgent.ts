@@ -1893,6 +1893,10 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
         // the race, neither the revised candidate nor its audit findings are persisted.
         const reviewPersisted = store.saveCandidates(projectId, runId, revisedCandidates, reviewFindings);
         if (!reviewPersisted) {
+          for (const id of chineseEditorialCandidateIds) {
+            const initial = initialDrafts.get(id);
+            if (initial !== undefined) translations.set(id, initial);
+          }
           store.appendEvent(projectId, runId, 'review.discarded', {
             batchIndex, reason: 'Run left active state before atomic Reviewer commit',
             revisedCount: revisedCandidates.length, findingCount: reviewFindings.length,
