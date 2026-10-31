@@ -9,7 +9,7 @@ import { startProjectTranslationRun, isProjectRunActive } from './translationAge
 import { applyChineseEditorialProfileReview, scheduleChineseEditorialProfileRefresh } from './chineseEditorialProfile.ts';
 import { sendApiError, sendJson } from '../middleware.ts';
 import { parseDocumentFile } from './ingest.ts';
-import { startContextGraphAnalysis, getContextGraph, getContextGraphStatus, reviewContextGraphItem } from './contextGraph.ts';
+import { startContextGraphAnalysis, getContextGraph, getContextGraphStatus, reviewContextGraphItem, reviewContextGraphItems } from './contextGraph.ts';
 import {
   runProjectQualityAudit,
   createQualityRepairRun,
@@ -342,9 +342,13 @@ export async function handleDocumentProjectRequest(req: Request, res: Response, 
     }
     if (pathParts.length === 6 && pathParts[4] === 'context-graph' && pathParts[5] === 'review' && method === 'POST') {
       const body = bodyObject(req.body);
+      if (Array.isArray(body.items)) {
+        sendJson(res, 200, { reviews: reviewContextGraphItems(projectId, body.items) });
+        return true;
+      }
       if (!['node', 'edge'].includes(body.type) || typeof body.id !== 'string' ||
           !['candidate', 'confirmed', 'rejected'].includes(body.status)) {
-        throw Object.assign(new Error('review 需要 type=node|edge、id 和 status=candidate|confirmed|rejected'), { status: 400 });
+        throw Object.assign(new Error('review 需要单条 type=node|edge、id、status，或批量 items 数组'), { status: 400 });
       }
       sendJson(res, 200, { review: reviewContextGraphItem(projectId, body.type, body.id, body.status) });
       return true;
