@@ -140,6 +140,29 @@ test('source-grounded style review revisions become automatic Run candidates', a
   }, drafts, ['s1', 's2']), [], 'Chinese monolingual edits must wait for bilingual verification');
 });
 
+test('standalone review keeps model-default mappings weak and excludes rejected mappings', async () => {
+  const { buildStandaloneReviewContextGraph } = await import('../src/documents/translationAgent.ts');
+  const context = buildStandaloneReviewContextGraph({
+    segments: [{ id: 'standalone-1', source: 'Alice met Bob and Carol. Dave watched them.' }],
+    precedingSegments: [],
+    memory: {
+      entities: [
+        { source: 'Alice', target: '艾丽丝', kind: 'person', aliases: [], reviewStatus: 'confirmed', confirmationSource: 'model-default', targetConfidence: 'candidate' },
+        { source: 'Bob', target: '鲍勃', kind: 'person', aliases: [], reviewStatus: 'confirmed', confirmationSource: 'user-confirmed', targetConfidence: 'confirmed' },
+        { source: 'Carol', target: '卡罗尔', kind: 'person', aliases: [], reviewStatus: 'confirmed', confirmationSource: 'model-default', targetConfidence: 'corroborated' },
+        { source: 'Dave', target: '戴夫', kind: 'person', aliases: [], reviewStatus: 'rejected', confirmationSource: 'user-rejected' },
+      ],
+    },
+  });
+  const mappings = new Map(context.nameMappings.map((item) => [item.source, item]));
+  assert.equal(mappings.get('Alice').sourceStatus, 'candidate');
+  assert.equal(mappings.get('Alice').targetConfidence, 'candidate');
+  assert.equal(mappings.get('Carol').sourceStatus, 'candidate',
+    'standalone review has no immutable target-evidence ledger, so model-default cannot become a protected mapping');
+  assert.equal(mappings.get('Bob').sourceStatus, 'confirmed-memory');
+  assert.equal(mappings.has('Dave'), false);
+});
+
 test('literary translation requires a complete, current full-book preprocessing snapshot', () => {
   const run = {
     sourceRevisionId: 'source-1',
