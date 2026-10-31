@@ -280,9 +280,13 @@ test('batch graph rejection and LiteraryMemory revision commit or roll back toge
   });
   const rollbackContext = store.getProjectContext(rollbackProject.projectId);
   getContextGraph(rollbackProject.projectId);
-  insertNode.run('rollback-carol', rollbackContext.currentSourceRevisionId, 'character', 'Carol', 'carol',
+  rollbackContext.db.prepare(
+    'INSERT INTO context_graph_nodes(node_id, source_revision_id, kind, name, normalized_name, attributes_json, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+  ).run('rollback-carol', rollbackContext.currentSourceRevisionId, 'character', 'Carol', 'carol',
     JSON.stringify({ adoptionSource: 'model-default' }), 'confirmed', now, now);
-  insertEvidence.run(rollbackContext.currentSourceRevisionId, 'rollback-carol', 'atomic-rollback-source', 'Carol knows Dave.', 'character', now);
+  rollbackContext.db.prepare(
+    'INSERT INTO context_graph_evidence(source_revision_id, node_id, edge_id, segment_id, quote, role, created_at) VALUES (?, ?, NULL, ?, ?, ?, ?)',
+  ).run(rollbackContext.currentSourceRevisionId, 'rollback-carol', 'atomic-rollback-source', 'Carol knows Dave.', 'character', now);
 
   const originalSave = store.saveLiteraryMemory;
   store.saveLiteraryMemory = () => { throw new Error('simulated LiteraryMemory write failure'); };
