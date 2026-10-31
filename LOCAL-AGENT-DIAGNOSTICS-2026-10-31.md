@@ -224,7 +224,7 @@ Proust 记录到 5 个 \`review.audit.failed\`，全部是：
 - \`local-agent-service/scripts/collect-diagnostics.mjs\`：改为紧凑诊断包，默认不导出书稿/译文/完整 Prompt/原始大型记录；增加有限服务日志摘录及 \`--no-logs\`。
 - \`local-agent-service/README.md\`：同步新的诊断包字段、隐私边界和命令说明。
 
-本报告只记录从本次压缩包可验证的运行事实及对应代码路径，没有在本次变更中修改翻译调度、Run 恢复或 Workbuddy Runtime 行为。
+本报告先记录压缩包中的原始运行事实；后续发现的代码问题及整改状态统一列在 §8。
 
 ## 八、整改状态（2026-10-31）
 
@@ -244,6 +244,7 @@ Proust 记录到 5 个 \`review.audit.failed\`，全部是：
 
 - `tests/document-run-recovery.test.mjs`：覆盖 running→pending、candidate 保留及真实恢复计数。
 - `tests/quality-audit.test.mjs`：覆盖父 Run 范围内/范围外自动返工，以及禁止对非缺译 finding 自动返工。
+- `tests/reviewer-timeout.test.mjs`：验证 Reviewer timeout 能穿透 `runAgentJson`，实际终止超时的 OpenCode 子进程。
 
 **验证状态：** 本次编辑通过 GitHub Contents API 提交；当前执行环境无法从 GitHub 拉取仓库到本地，因此这里不声称 npm test 或 typecheck 已通过。仓库现有 GitHub Actions workflow 会在 `local-agent-service/**` 变更后执行 `npm test`、`npm run typecheck`、API manifest 检查和确定性扫描基准，需以该 workflow 实际结果为准。
 
