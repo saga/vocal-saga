@@ -134,7 +134,7 @@ export async function runAgentJson(
       parsed = r.parsed;
       usage = r.usage;
     } else if (effectiveAgent.provider === 'opencode') {
-      const output = await runOpenCode(effectiveAgent, effective.prompt, effective.systemPrompt);
+      const output = await runOpenCode(effectiveAgent, effective.prompt, effective.systemPrompt, options.timeoutMs);
       const value = parseJsonValue(output);
       if (!value || Array.isArray(value)) throw new Error('OpenCode 返回内容不是预期 JSON 对象');
       parsed = value as Record<string, any>;
