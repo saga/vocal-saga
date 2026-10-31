@@ -191,6 +191,7 @@ export function resolveBilingualVerifiedChineseEdits(
   const translations = bilingualReview.translations && typeof bilingualReview.translations === 'object'
     ? bilingualReview.translations : {};
   const candidates: Array<{ segmentId: string; text: string }> = [];
+  const verified: Array<{ segmentId: string; text: string }> = [];
   const fallbacks: Array<{ segmentId: string; text: string }> = [];
   for (const [segmentId, edited] of chineseEditorialEdits) {
     const initial = initialDrafts.get(segmentId);
@@ -198,12 +199,13 @@ export function resolveBilingualVerifiedChineseEdits(
     if (initial === undefined) continue;
     if (reviewed.has(segmentId) && !missing.has(segmentId) &&
         typeof reviewedText === 'string' && reviewedText.trim()) {
+      verified.push({ segmentId, text: reviewedText });
       if (reviewedText !== initial) candidates.push({ segmentId, text: reviewedText });
     } else {
       fallbacks.push({ segmentId, text: initial });
     }
   }
-  return { candidates, fallbacks };
+  return { candidates, verified, fallbacks };
 }
 
 export interface DocumentRunConcurrencyBudget {
@@ -1862,6 +1864,9 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
         );
         const chineseCandidateIds = new Set(chineseEditorialCandidateIds);
         for (const item of chineseVerification.fallbacks) {
+          translations.set(item.segmentId, item.text);
+        }
+        for (const item of chineseVerification.verified) {
           translations.set(item.segmentId, item.text);
         }
         for (const item of chineseVerification.candidates) {
