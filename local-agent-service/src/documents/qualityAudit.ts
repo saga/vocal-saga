@@ -572,7 +572,7 @@ function chineseEditorialStageMetrics(
     const row = db.prepare(
       'SELECT tr.run_id FROM translation_runs tr JOIN project_events pe ON pe.run_id = tr.run_id ' +
       'WHERE tr.source_revision_id = ? AND pe.event_type = ? ' +
-      "AND pe.payload_json LIKE '%\\\"editorialMode\\\":\\\"chinese-monolingual\\\"%' " +
+      "AND pe.payload_json LIKE '%chinese-monolingual%' " +
       'ORDER BY tr.finished_at DESC, pe.event_id DESC LIMIT 1'
     ).get(revisionId, 'stage.completed') as { run_id?: string } | undefined;
     runId = row?.run_id || null;
