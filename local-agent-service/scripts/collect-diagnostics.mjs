@@ -30,7 +30,7 @@ const analyze = flag('--analyze');
 const dataDir = path.resolve(process.env.LOCAL_AGENT_DATA_DIR || path.join(home, '.vocal-saga-local-agent'));
 const logFile = path.resolve(process.env.LOCAL_AGENT_LOG_FILE || path.join(dataDir, 'logs', 'local-agent.log'));
 const dbFile = path.resolve(process.env.LOCAL_AGENT_DATABASE || path.join(dataDir, 'local-agent.sqlite'));
-const outputRoot = path.resolve(value('--out', path.join(serviceDir, 'diagnostic-bundles')));
+const outputRoot = path.resolve(value('--out', path.join(dataDir, 'diagnostic-bundles')));
 const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
 const bundleDir = path.join(outputRoot, 'local-agent-diagnostics-' + timestamp);
 const collectedAt = new Date();
@@ -58,10 +58,8 @@ function copyRecentLog(source, targetName) {
   const stat = fs.statSync(source);
   const raw = fs.readFileSync(source, 'utf8');
   const lines = raw.split(/\r?\n/);
-  const selected = lines.filter((line) => {
-    const match = line.match(/\[(?:[^\]]+ )?(\d{1,2}:\d{2}:\d{2})\]/);
-    return !match || stat.mtimeMs >= since;
-  }).slice(-12000);
+  // Log timestamps are local-time-only; cap the tail instead of pretending to filter by date.
+  const selected = lines.filter((line) => !/(prompt|原文|译文|response preview|内容预览|sourceText|translatedText)/i.test(line)).slice(-12000);
   write(targetName, redact(selected.join('\n')));
   return { found: true, bytes: stat.size, includedLines: selected.length, modifiedAt: stat.mtime.toISOString() };
 }
@@ -113,7 +111,7 @@ function collectLogFiles() {
   return files.slice(0, 30).map((file, index) => {
     const rel = path.relative(file.root, file.full);
     const target = 'logs/' + String(index + 1).padStart(2, '0') + '-' + path.basename(rel);
-    const lines = fs.readFileSync(file.full, 'utf8').split(/\r?\n/).slice(-8000);
+    const lines = fs.readFileSync(file.full, 'utf8').split(/\r?\n/).filter((line) => !/(prompt|原文|译文|response preview|内容预览|sourceText|translatedText)/i.test(line)).slice(-8000);
     write(target, redact(lines.join('\n')));
     return { file: target, source: '~/' + path.relative(home, file.full), bytes: file.stat.size, includedLines: lines.length };
   });
