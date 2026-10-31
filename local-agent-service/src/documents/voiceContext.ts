@@ -214,6 +214,28 @@ export function sanitizeProjectLiteraryMemory(input: unknown): Record<string, an
       ...(confirmation ? { confirmationSource: confirmation } : {}),
     }];
   }) : []);
+  // Explicit user deletions survive after the visible entity/relation projection is removed.
+  // These compact tombstones prevent later model deltas from silently recreating deleted memory.
+  const rejectedItems = Array.isArray(raw.rejectedItems) ? raw.rejectedItems.slice(-200).flatMap((item: any) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
+    if (item.type === 'entity') {
+      const source = text(item.source, 120);
+      if (!source) return [];
+      return [{
+        type: 'entity',
+        source,
+        kind: normalizeCanonicalEntityKind(item.kind),
+        aliases: list(item.aliases, 8, 80),
+      }];
+    }
+    if (item.type === 'relationship') {
+      const subject = text(item.subject, 120);
+      const predicate = text(item.predicate, 100);
+      const object = text(item.object, 120);
+      return subject && predicate && object ? [{ type: 'relationship', subject, predicate, object }] : [];
+    }
+    return [];
+  }) : [];
   const relationships = Array.isArray(raw.relationships) ? raw.relationships.slice(0, 160).flatMap((item: any) => {
     if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
     const subject = text(item.subject, 120); const predicate = text(item.predicate, 100); const object = text(item.object, 120);
@@ -463,6 +485,7 @@ export function sanitizeProjectLiteraryMemory(input: unknown): Record<string, an
     ...(chineseEditorialProfile ? { chineseEditorialProfile } : {}),
     chapterSummaries, recentExamples, characterVoices, relationshipVoiceRules, voiceAnchors,
     openQuestions: list(raw.openQuestions, 40, 200),
+    rejectedItems,
   };
 
   // The cap applies to the canonical DTO that will actually be persisted, not untrusted
