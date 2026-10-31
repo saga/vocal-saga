@@ -400,6 +400,78 @@ test('one workspace cannot run two translation jobs concurrently', async () => {
 });
 
 
+test('literary voice profiles auto-activate after independent source evidence covers multiple dimensions', async () => {
+  await withStore((store) => {
+    const project = store.createProject({
+      title: 'Evidence Verified Voice',
+      format: 'epub',
+      segments: [
+        { id: 'voice-1', text: 'Alice answered in a measured tone.', contextPath: 'Chapter 1' },
+        { id: 'voice-2', text: 'She paused, then asked a short question.', contextPath: 'Chapter 2' },
+        { id: 'voice-3', text: 'Alice replied with deliberate precision.', contextPath: 'Chapter 3' },
+      ],
+      prompt: { translationMode: 'literary', sourceLang: 'en', targetLang: 'zh' },
+    });
+    ensureTestContextGraph(store, project);
+
+    store.saveLiteraryMemory(project.projectId, {
+      characterVoices: [{
+        characterId: 'char-alice',
+        canonicalSourceName: 'Alice',
+        status: 'candidate',
+        confidence: 0.99,
+        voiceCore: {
+          register: 'measured and restrained',
+          syntaxRhythm: ['short questions after deliberate pauses'],
+        },
+        evidence: [
+          { segmentId: 'voice-1', sourceQuote: 'Alice answered in a measured tone.', dimension: 'register', observation: 'measured register' },
+          { segmentId: 'voice-2', sourceQuote: 'She paused, then asked a short question.', dimension: 'syntax_rhythm', observation: 'deliberate pause and short question' },
+          { segmentId: 'voice-3', sourceQuote: 'Alice replied with deliberate precision.', dimension: 'diction', observation: 'precise diction' },
+        ],
+      }],
+    });
+
+    const saved = store.getCurrentLiteraryMemory(project.projectId).memory.characterVoices[0];
+    assert.equal(saved.status, 'confirmed');
+    assert.equal(saved.confirmationSource, 'evidence-verified');
+    assert.equal(saved.evidence.length, 3);
+    assert.equal(saved.confidence, null,
+      'activation is based on independently verified source evidence, never model self-reported confidence');
+  });
+});
+
+test('candidate literary voice profiles remain candidates when evidence is sparse or one-dimensional', async () => {
+  await withStore((store) => {
+    const project = store.createProject({
+      title: 'Insufficient Voice Evidence',
+      format: 'epub',
+      segments: [
+        { id: 'voice-1', text: 'Alice answered quietly.', contextPath: 'Chapter 1' },
+        { id: 'voice-2', text: 'Alice spoke softly.', contextPath: 'Chapter 1' },
+        { id: 'voice-3', text: 'Alice replied gently.', contextPath: 'Chapter 1' },
+      ],
+    });
+    ensureTestContextGraph(store, project);
+    store.saveLiteraryMemory(project.projectId, {
+      characterVoices: [{
+        characterId: 'char-alice',
+        canonicalSourceName: 'Alice',
+        status: 'candidate',
+        voiceCore: { register: 'quiet and gentle' },
+        evidence: [
+          { segmentId: 'voice-1', sourceQuote: 'Alice answered quietly.', dimension: 'register', observation: 'quiet register' },
+          { segmentId: 'voice-2', sourceQuote: 'Alice spoke softly.', dimension: 'register', observation: 'soft register' },
+          { segmentId: 'voice-3', sourceQuote: 'Alice replied gently.', dimension: 'register', observation: 'gentle register' },
+        ],
+      }],
+    });
+    const saved = store.getCurrentLiteraryMemory(project.projectId).memory.characterVoices[0];
+    assert.equal(saved.status, 'candidate');
+    assert.equal(saved.confirmationSource, undefined);
+  });
+});
+
 test('literary memory confirms only current-source evidence and accepted translation anchors', async () => {
   await withStore((store) => {
     const source = [
