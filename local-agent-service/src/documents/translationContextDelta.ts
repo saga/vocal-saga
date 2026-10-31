@@ -451,9 +451,9 @@ export function mergeTranslationContextDeltasIntoMemory(
         .some((name: unknown) => candidateNames.has(normalizeName(name))));
   };
   const isRejectedRelationship = (relation: ContextRelationshipDelta) => {
-    const key = [relation.subjectSource, relation.predicate, relation.objectSource].map(normalizeName).join('\\u0000');
+    const key = [relation.subjectSource, relation.predicate, relation.objectSource].map(normalizeName).join('\u0000');
     return memory.rejectedItems.some((item: any) => item?.type === 'relationship' &&
-      [item.subject, item.predicate, item.object].map(normalizeName).join('\\u0000') === key);
+      [item.subject, item.predicate, item.object].map(normalizeName).join('\u0000') === key);
   };
   const addQuestion = (value: string) => {
     const question = text(value, 200);
