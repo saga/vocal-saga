@@ -1381,6 +1381,7 @@ export function isContextGraphReadyForTranslationRun(
   if (!graph || !run || graph.status !== 'completed' || graph.styleGuideReady !== true) return false;
   const progress = graph.progress && typeof graph.progress === 'object' ? graph.progress : {};
   if (Number(progress.sampleCount || 0) <= 0) return false;
+  if (progress.strategy !== 'A' && progress.strategy !== 'B') return false;
   // B is a checkpointed five-stage workflow. A completed DB row is not sufficient if any
   // required stage checkpoint is missing (e.g. a stale/partially recovered completion event).
   if (progress.strategy === 'B') {
