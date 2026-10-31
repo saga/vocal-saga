@@ -140,6 +140,19 @@ flowchart TD
 
 项目记忆合并只更新可复用的结构化候选，不直接改写历史译文。全局质量审计新增 `context-delta-conflict` finding，用于定位多个批次提出的冲突译名；finding 是人工审查入口，不自动启动返工，也不自动应用译文修改。
 
+### 3.4 作品级 Chinese Editorial Profile
+
+中文目标语风格档案与 Context Graph 的 Source Author Voice 分开维护。前者只描述已采纳中文译文中可观察到的目标语表达习惯；后者仍描述原文作者/文本特征，不能把两者混为同一份 styleGuide。
+
+- 用户采纳译文后，Local Agent Service 自动检查当前 source revision 的 accepted translation ledger。达到最少样本量后，复用 `planBookSamples` 从已采纳片段中做章节/位置/对白覆盖抽样。
+- 原文只在本机用于确定性抽样；发送给档案分析模型的 Prompt 只包含中文已采纳译文和 segment ID，不包含 source、原文引文、英文人名、glossary 或 Context Graph。
+- 模型输出的是候选 `chineseEditorialProfile`，包括叙述声音、语域、节奏、对白、词汇、规则和避免事项；每条观察必须引用其中文样本中真实存在的连续片段。
+- Project Store 将 profile 作为 LiteraryMemory 的不可变 revision 保存，并逐条核验 segment ID、当前 source hash、已采纳译文和 target excerpt。证据不足或原文版本变化时，confirmed 自动降级为 candidate。
+- 候选档案不会注入翻译或中文编辑 Prompt。用户通过 `POST /api/documents/projects/{projectId}/literary-memory/chinese-editorial-profile/review` 明确确认后，才会进入后续 TranslationBrief 的目标语上下文；拒绝后不再注入。
+- profile 与 source revision 绑定。新原文版本不能继承旧版本的确认状态；旧 Run 的 TranslationBrief 仍保留其创建时的 memory revision 和上下文快照。
+
+该流程不新增数据库表或独立 Agent；使用现有 BookScan、LiteraryMemory revision、Project Store 和 `styleReview` 任务模型配置。档案分析只在有新的已采纳译文时按需运行，不在每个翻译批次重复调用。
+
 ## 4. 事件与可观测性
 
 与增量相关的事件包括：
