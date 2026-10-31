@@ -1838,6 +1838,10 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
         // A cancellation can happen while the reviewer is in flight. In that case neither
         // its revised candidates nor its findings may be written after the stop request.
         if (store.getRunStatus(projectId, runId) === 'cancelled') {
+          for (const id of chineseEditorialCandidateIds) {
+            const initial = initialDrafts.get(id);
+            if (initial !== undefined) translations.set(id, initial);
+          }
           store.appendEvent(projectId, runId, 'review.discarded', {
             batchIndex, reason: 'cancelled while reviewer was in flight',
           });
