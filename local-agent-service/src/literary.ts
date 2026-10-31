@@ -1,4 +1,5 @@
 import { runAgentJson } from './agents/runner.ts';
+import { REVIEW_TIMEOUT_MS } from './config.ts';
 import { formatTurnUsageLog } from './agents/usage.ts';
 import { getCodeBuddyTaskProfile } from './agents/taskProfiles.ts';
 import { parseAgentModel } from './json.ts';
@@ -604,6 +605,7 @@ export async function runLiteraryReview(body: any, requestId: string, sessionSco
   const modelRun = await runAgentJson(
     agent, prompt, systemPrompt, LITERARY_REVIEW_SCHEMA, requestId, sessionScope,
     getCodeBuddyTaskProfile(body, reviewFocus === 'style' ? 'styleReview' : 'accuracyReview'),
+    { timeoutMs: REVIEW_TIMEOUT_MS },
   );
   const parsed = modelRun.result;
   if (modelRun.usage) logInfo('literary-review', formatTurnUsageLog(modelRun.usage) + ' · request=' + requestId.slice(0, 12));
