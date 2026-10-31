@@ -1453,7 +1453,7 @@ export class DocumentProjectStore {
           throw Object.assign(new Error('创建运行期间 Prompt 已更新；请基于最新 Prompt 重新提交运行。'), { status: 409 });
         }
       }
-      // 一个 workspace 同时只允许一个 queued/running run，防止阅读页与 Agent Tab 并发修改同一组候选。
+      // 一个 workspace 同时只允许一个 queued/running/awaiting_acceptance run；最终化未完成前不启动下一轮。
       const inFlight = db.prepare("SELECT run_id FROM translation_runs WHERE status IN ('queued','running','awaiting_acceptance') LIMIT 1").get() as { run_id?: string } | undefined;
       if (inFlight?.run_id) {
         throw Object.assign(new Error('当前文档已有尚未完成最终化的翻译任务：' + inFlight.run_id), { status: 409 });
