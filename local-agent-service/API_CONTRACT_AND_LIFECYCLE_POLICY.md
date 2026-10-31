@@ -122,3 +122,15 @@ The shared error helper now assigns explicit machine codes for HTTP 408 (`REQUES
 The document-project test suite now includes a durable-store reopen test for a partially completed Run: it verifies the Run remains discoverable, the candidate translation survives process-style Store reconstruction, and a cancelled Run cannot be queued again after another reconstruction. A concurrent-create regression test asserts that two simultaneous attempts cannot both acquire the workspace Run lock or leave an orphan Run.
 
 `openapi.json` introduces an OpenAPI 3.1 contract for the highest-risk Run collection/create, resume, and cancel endpoints, plus shared error DTO and Run schemas. `scripts/check-api-route-manifest.mjs` validates local OpenAPI references and required lifecycle operations in addition to the existing source/manifest drift checks. Coverage is intentionally marked `partial`: the 54-entry route manifest remains the route inventory, not a claim that every endpoint has a complete request/response schema. Remaining schema work is to replace the generic `GenericRequest` / `GenericSuccess` placeholders with endpoint-specific request and response schemas for every `inventory-only` operation. The existing `check:api-contract` CI step validates local OpenAPI references, required lifecycle operations, route-count parity, and route-to-path/method mapping; it does not yet validate the runtime response bodies against schemas or establish full OpenAPI coverage.
+
+
+## 12. Literary preprocessing readiness gate (2026-10-31)
+
+Literary document translation must not begin model translation until the current source revision has a complete, language-matched Context Graph. This is distinct from the asynchronous Run-creation contract above:
+
+- The normal extension path checks the compact `GET .../context-graph/status` DTO before creating a literary Run. Unknown, failed, stale, language-mismatched or incomplete state is fail-closed. First-time preprocessing is automatically started; failed/stale analysis requires explicit reanalysis.
+- `POST .../runs` may still return **202** for direct API/older clients that created a durable queued Run before the UI gate existed. **202 means the Run record was accepted, not that translation has begun.**
+- `executeRun` is the authoritative server-side gate. It validates source revision, current analysis version, language pair, supported strategy, non-empty samples, style completeness and B-workflow checkpoints before changing the Run to `running`, reading execution segments or calling a translation model.
+- If preprocessing cannot become ready, the Run fails with a diagnostic event/error and no translation candidates are produced. Technical-document Runs do not require the literary Context Graph.
+
+See [ADR-0005](../docs/adr/0005-literary-preprocessing-before-translation.md) for the decision and [TRANSLATION_PIPELINE.md](../docs/TRANSLATION_PIPELINE.md) for the full flow.
