@@ -2099,20 +2099,49 @@ export class DocumentProjectStore {
         return false;
       }
       const select = db.prepare(
-        "SELECT finding_id, finding_json FROM review_findings WHERE run_id = ? AND segment_id = ? AND category = 'style' AND status = 'pending'",
+        "SELECT rf.finding_id, rf.finding_json, rs.candidate_result_id, rs.source_hash " +
+        "FROM review_findings rf JOIN run_segments rs ON rs.run_id = rf.run_id AND rs.segment_id = rf.segment_id " +
+        "WHERE rf.run_id = ? AND rf.segment_id = ? AND rf.category = 'style' AND rf.status = 'pending'",
       );
-      const update = db.prepare('UPDATE review_findings SET finding_json = ? WHERE finding_id = ?');
+      const updateFinding = db.prepare(
+        "UPDATE review_findings SET finding_json = ?, status = 'applied' WHERE finding_id = ? AND status = 'pending'",
+      );
+      const updateCandidate = db.prepare(
+        'UPDATE translation_results SET translation_text = ? ' +
+        'WHERE result_id = ? AND run_id = ? AND accepted = 0 AND source_hash = ?',
+      );
+      const autoApplied: Array<{ segmentId: string; findingId: number }> = [];
       for (const item of normalized) {
-        const rows = select.all(runId, item.segmentId) as Array<{ finding_id: number; finding_json: string }>;
+        const rows = select.all(runId, item.segmentId) as Array<{
+          finding_id: number; finding_json: string; candidate_result_id?: string | null; source_hash: string;
+        }>;
         for (const row of rows) {
           const finding = parseJson<any>(row.finding_json, {});
-          if (finding.editorialMode !== 'chinese-monolingual') continue;
+          if (finding.editorialMode !== 'chinese-monolingual' || !row.candidate_result_id) continue;
+          // The bilingual reviewer has verified this exact target-language edit against the source.
+          // Update only this Run's unaccepted candidate; the final acceptance transaction still
+          // protects newer manual edits and source revisions.
+          const candidate = updateCandidate.run(
+            item.proposedTranslation, row.candidate_result_id, runId, row.source_hash,
+          );
+          if (Number(candidate.changes || 0) !== 1) continue;
           finding.bilingualReviewStatus = item.status;
           finding.proposedTranslation = item.proposedTranslation;
-          update.run(JSON.stringify(finding), row.finding_id);
+          finding.applicationStatus = 'applied';
+          finding.applicationMethod = 'automatic-bilingual-verification';
+          finding.appliedResultId = row.candidate_result_id;
+          updateFinding.run(JSON.stringify(finding), row.finding_id);
+          autoApplied.push({ segmentId: item.segmentId, findingId: row.finding_id });
         }
       }
       db.exec('COMMIT');
+      if (autoApplied.length) {
+        this.addEvent(projectId, runId, 'chinese-editorial.auto-applied', {
+          count: autoApplied.length,
+          items: autoApplied,
+          policy: 'complete-bilingual-review; source-pinned-candidate; manual-edits-protected-at-acceptance',
+        });
+      }
       return true;
     } catch (error) {
       try { db.exec('ROLLBACK'); } catch { /* already rolled back */ }
