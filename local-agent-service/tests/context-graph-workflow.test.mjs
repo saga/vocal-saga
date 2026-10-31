@@ -15,15 +15,15 @@ const { ANALYSIS_SCHEMA, CONTEXT_GRAPH_ANALYSIS_VERSION } = await import('../src
 const { isContextGraphReadyForTranslationRun } = await import('../src/documents/translationAgent.ts');
 const { buildWorkbuddyOptions } = await import('../src/agents/workbuddy.ts');
 
-test('all literary style dimensions are required by the single-call A schema', () => {
+test('literary style dimensions are optional observations, not translation prerequisites', () => {
   const required = new Set(ANALYSIS_SCHEMA.required);
   for (const field of ['narrativeStyle', 'styleRegister', 'styleRhythm', 'styleDialogue', 'styleDiction', 'styleRules']) {
-    assert.ok(required.has(field), field + ' must be required by the JSON schema');
+    assert.ok(required.has(field), field + ' remains part of the structured analysis contract');
   }
   for (const field of ['narrativeStyle', 'styleRegister', 'styleRhythm', 'styleDialogue', 'styleDiction']) {
-    assert.equal(ANALYSIS_SCHEMA.properties[field].minLength, 1, field + ' must not be an empty string');
+    assert.equal(ANALYSIS_SCHEMA.properties[field].minLength, undefined, field + ' may be empty when evidence is limited');
   }
-  assert.equal(ANALYSIS_SCHEMA.properties.styleRules.minItems, 1);
+  assert.equal(ANALYSIS_SCHEMA.properties.styleRules.minItems, undefined);
   assert.match(CONTEXT_GRAPH_ANALYSIS_VERSION, /context-graph-v10-default-adoption/);
 });
 
