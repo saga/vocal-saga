@@ -13,7 +13,14 @@ test('voice context excludes rejected memory and treats model-default facts as w
     version: 2,
     entities: [
       { source: 'Alice', target: '艾丽丝', kind: 'person', aliases: [], reviewStatus: 'confirmed', confirmationSource: 'model-default', targetConfidence: 'candidate' },
-      { source: 'Bob', target: '鲍勃', kind: 'person', aliases: [], reviewStatus: 'confirmed', confirmationSource: 'model-default', targetConfidence: 'corroborated' },
+      {
+        source: 'Bob', target: '鲍勃', kind: 'person', aliases: [], reviewStatus: 'confirmed',
+        confirmationSource: 'model-default', targetConfidence: 'corroborated',
+        targetEvidenceRefs: [
+          { segmentId: 's1', sourceQuote: 'Alice trusts Bob.', targetSurface: '鲍勃' },
+          { segmentId: 's2', sourceQuote: 'Alice trusts Bob.', targetSurface: '鲍勃' },
+        ],
+      },
       { source: 'Carol', target: '卡罗尔', kind: 'person', aliases: [], reviewStatus: 'rejected', confirmationSource: 'user-rejected' },
     ],
     relationships: [
