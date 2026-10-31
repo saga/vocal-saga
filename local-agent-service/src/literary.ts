@@ -498,6 +498,8 @@ export function buildChineseTargetOnlyVoiceContext(input: Record<string, any> | 
     policyVersion: 'chinese-target-only-v1',
     styleGuide: (context.styleGuideStatus === 'confirmed' || context.styleGuideOrigin === 'user-edited') &&
       context.styleGuide && typeof context.styleGuide === 'object' ? context.styleGuide : {},
+    chineseEditorialProfile: context.chineseEditorialProfile && typeof context.chineseEditorialProfile === 'object'
+      ? context.chineseEditorialProfile : {},
     characterVoices,
     voiceAnchors,
     dialogueParticipants,
