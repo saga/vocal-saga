@@ -1,6 +1,7 @@
 # 翻译流程自动化优先改造计划
 
 - 状态：P0/P1 已完成；2026-10-31 已实施 P2（中文文学编辑经双语 Reviewer 验证后自动应用）及 P3（文学整书一次点击启动、预处理自动衔接）；真实小说端到端回归和 CI 验证仍待执行
+- 本次 Human Review 审查报告：[HUMAN-REVIEW-MINIMIZATION-AUDIT-2026-10-31.md](HUMAN-REVIEW-MINIMIZATION-AUDIT-2026-10-31.md)
 - 范围：`saga/fanyi-extension` 与本仓库 `local-agent-service/`
 - 产品目标：至少 99% 的常规文档/小说翻译，在用户启动后不需要中途确认、逐项审批或手工修改规则。
 - 架构原则：长文档翻译、审核、质量修复、记忆和持久化状态以 `local-agent-service` 为唯一执行事实来源；extension 是入口、进度与例外展示层。Cloudflare Worker 继续承担短请求，不移入长任务编排。
