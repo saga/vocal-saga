@@ -201,12 +201,14 @@ function buildTemporallyVisibleMemory(
     ? JSON.parse(JSON.stringify(context.memory)) as Record<string, any>
     : empty;
   const editorialProfile = rawMemory.chineseEditorialProfile;
-  if (!editorialProfile || editorialProfile.status !== 'confirmed' ||
-      editorialProfile.confirmationSource !== 'user-confirmed' ||
-      editorialProfile.sourceRevisionId !== revisionId ||
-      !Array.isArray(editorialProfile.evidenceRefs) ||
-      new Set(editorialProfile.evidenceRefs.map((item: any) => String(item?.segmentId || '')).filter(Boolean)).size < 3) {
+  if (!editorialProfile || editorialProfile.status === 'rejected' ||
+      editorialProfile.sourceRevisionId !== revisionId) {
     rawMemory.chineseEditorialProfile = null;
+  } else {
+    // Machine-generated editorial profiles are default-adopted. Evidence remains metadata;
+    // it does not create a human approval gate. This profile is style-only, not plot memory.
+    editorialProfile.status = 'confirmed';
+    editorialProfile.confirmationSource = editorialProfile.confirmationSource || 'model-default';
   }
   const initialMemoryCounts = {
     entities: Array.isArray(rawMemory.entities) ? rawMemory.entities.length : 0,
@@ -507,16 +509,13 @@ function buildTemporallyVisibleMemory(
       return !!source && sourceQuoteMatches(source.text, ref.sourceQuote) &&
         sourceNameMatches(ref.sourceQuote, relation.subject) && sourceNameMatches(ref.sourceQuote, relation.object);
     });
-    const evidenceVisible = evidenceRefs.length
-      ? priorEvidenceRefs.length > 0
-      : sourceNameMatches(relation.evidence, relation.subject) &&
-        sourceNameMatches(relation.evidence, relation.object) &&
-        appearsAsEarlierEvidence(relation.evidence);
-    if (!evidenceVisible) {
-      exclusionDiagnostics.memoryRelationshipExcludedEvidenceNotVisible++;
-      return [];
-    }
-    return [{ ...relation, ...(evidenceRefs.length ? { evidenceRefs: priorEvidenceRefs } : {}) }];
+    // Relationship analysis is default-adopted. Keep only names already visible before this
+    // batch; evidence quality is retained as metadata and never asks the reader to approve it.
+    return [{
+      ...relation,
+      reviewStatus: relation.reviewStatus === 'rejected' ? 'rejected' : 'confirmed',
+      ...(evidenceRefs.length ? { evidenceRefs: priorEvidenceRefs } : {}),
+    }].filter((item: any) => item.reviewStatus !== 'rejected');
   });
 
   rawMemory.characterVoices = (Array.isArray(rawMemory.characterVoices) ? rawMemory.characterVoices : []).flatMap((profile: any) => {
@@ -535,9 +534,20 @@ function buildTemporallyVisibleMemory(
       const source = sourceById.get(item.segmentId);
       return !source || !sourceQuoteMatches(source.text, item.sourceQuote);
     });
-    if (evidenceIncomplete || !rawEvidence.length || invalidEvidence) {
-      if (hasFutureEvidence) exclusionDiagnostics.characterVoiceExcludedFutureEvidence++;
-      else exclusionDiagnostics.characterVoiceExcludedIncompleteEvidence++;
+    if (hasFutureEvidence) {
+      // Aggregate voiceCore may include later dialogue; never leak it into an earlier batch.
+      exclusionDiagnostics.characterVoiceExcludedFutureEvidence++;
+      return [];
+    }
+    // Partial or imperfect evidence lowers traceability, not adoption. Retain valid prior
+    // examples and use the model's current best profile instead of waiting for a click.
+    const usableEvidence = rawEvidence.filter((item: any) => {
+      if (!item || !isPrior(item.segmentId)) return false;
+      const source = sourceById.get(item.segmentId);
+      return !!source && sourceQuoteMatches(source.text, item.sourceQuote);
+    });
+    if (!usableEvidence.length && !profile.voiceCore) {
+      exclusionDiagnostics.characterVoiceExcludedIncompleteEvidence++;
       return [];
     }
     if (!appearedBefore(profile.canonicalSourceName)) {
@@ -555,17 +565,24 @@ function buildTemporallyVisibleMemory(
         other.characterId === rule.otherCharacterId && appearedBefore(other.canonicalSourceName) &&
         (Array.isArray(other.aliases) ? other.aliases : []).every((alias: unknown) => appearedBefore(alias)));
     }).map((rule: any) => ({ ...rule, evidenceSegmentIds: rule.evidenceSegmentIds.filter(isPrior) }));
-    return [{ ...profile, aliases, evidence: rawEvidence, contrastRules }];
+    return [{ ...profile, status: profile.status === 'rejected' ? 'rejected' : 'confirmed',
+      confirmationSource: profile.confirmationSource || 'model-default',
+      useForTranslation: profile.status !== 'rejected' && profile.useForTranslation !== false,
+      aliases, evidence: usableEvidence, contrastRules }];
   });
   const visibleCharacterIds = new Set(rawMemory.characterVoices.map((profile: any) => profile.characterId));
   rawMemory.relationshipVoiceRules = (Array.isArray(rawMemory.relationshipVoiceRules) ? rawMemory.relationshipVoiceRules : [])
     .filter((rule: any) => {
       const evidenceIds = Array.isArray(rule.evidenceSegmentIds) ? rule.evidenceSegmentIds : [];
-      return evidenceIds.length > 0 && evidenceIds.every(isPrior) &&
-        visibleCharacterIds.has(rule.speakerId) && visibleCharacterIds.has(rule.addresseeId);
+      return evidenceIds.every(isPrior) &&
+        visibleCharacterIds.has(rule.speakerId) && visibleCharacterIds.has(rule.addresseeId) &&
+        rule.status !== 'rejected';
     })
     .map((rule: any) => ({
       ...rule,
+      status: 'confirmed',
+      confirmationSource: rule.confirmationSource || 'model-default',
+      evidenceSegmentIds: (Array.isArray(rule.evidenceSegmentIds) ? rule.evidenceSegmentIds : []).filter(isPrior),
       addressTerms: (Array.isArray(rule.addressTerms) ? rule.addressTerms : [])
         .filter((term: unknown) => appearedBefore(term)),
       // Scene-dependent register changes often summarize a later arc without segment-level quotes.
@@ -580,14 +597,15 @@ function buildTemporallyVisibleMemory(
 
   // These book-level strings lack source-positioned citations. Do not let whole-book analysis
   // leak a future plot fact through a field labelled "style", "example", or "summary".
-  // Free-form whole-book summaries/examples may reveal future plot. A style guide is safe only
-  // after the user explicitly confirms it in the workspace; model suggestions stay out of prompts.
-  const userConfirmedStyleGuide = rawMemory.styleGuideStatus === 'confirmed' && rawMemory.styleGuideConfirmationSource === 'user-confirmed';
-  // Explicit user edits are safe to use as a style override; machine-generated book-wide style
-  // stays separately versioned and is injected from the current Context Graph below.
-  const userEditedStyleGuide = rawMemory.styleGuideOrigin === 'user-edited';
-  rawMemory.styleGuide = userConfirmedStyleGuide || userEditedStyleGuide ? rawMemory.styleGuide : {};
-  rawMemory.styleGuideStatus = userConfirmedStyleGuide ? 'confirmed' : 'candidate';
+  // Whole-book summaries/examples remain excluded to protect temporal plot boundaries. Style-only
+  // guides are default-adopted; a user can explicitly disable the generated guide.
+  const styleGuideEnabled = rawMemory.styleGuideAutoDisabled !== true &&
+    (rawMemory.styleGuideOrigin === 'context-graph' || rawMemory.styleGuideOrigin === 'user-edited' ||
+      Object.keys(rawMemory.styleGuide || {}).length > 0);
+  rawMemory.styleGuide = styleGuideEnabled ? rawMemory.styleGuide : {};
+  rawMemory.styleGuideStatus = styleGuideEnabled ? 'confirmed' : 'candidate';
+  rawMemory.styleGuideConfirmationSource = styleGuideEnabled
+    ? rawMemory.styleGuideConfirmationSource || 'model-default' : undefined;
   rawMemory.chapterSummaries = [];
   rawMemory.recentExamples = retrievedExamples;
   rawMemory.openQuestions = [];
@@ -996,8 +1014,7 @@ export function buildTranslationBrief(
     const styleReady = graph.analysisVersion === CONTEXT_GRAPH_ANALYSIS_VERSION &&
       required.every((key) => typeof candidateStyle[key] === 'string' && candidateStyle[key].trim()) &&
       Array.isArray(candidateStyle.rules) && candidateStyle.rules.some((item: unknown) => typeof item === 'string' && item.trim());
-    const userConfirmedStyle = temporalMemory.styleGuideStatus === 'confirmed' &&
-      temporalMemory.styleGuideConfirmationSource === 'user-confirmed';
+    const userConfirmedStyle = temporalMemory.styleGuideStatus === 'confirmed';
     const userEditedStyle = temporalMemory.styleGuideOrigin === 'user-edited';
     const userStyle = userConfirmedStyle || userEditedStyle ? temporalMemory.styleGuide : null;
     const machineStyleEnabled = temporalMemory.styleGuideAutoDisabled !== true;
