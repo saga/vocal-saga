@@ -153,8 +153,14 @@ test('older Run acceptance cannot overwrite a newer accepted Agent translation',
     const older = store.createRun(project.projectId, { scope: { type: 'ids', ids: ['ch1-p1'] } });
     store.saveCandidate(project.projectId, older.runId, 'ch1-p1', '旧 Run 的候选。');
     store.finishRun(project.projectId, older.runId);
-
-    // An earlier Run awaiting acceptance must not prevent a newer explicit Run.
+    assert.throws(
+      () => store.createRun(project.projectId, { scope: { type: 'ids', ids: ['ch1-p1'] } }),
+      /尚未完成最终化/,
+      'a new Run must not start while the previous Run is still awaiting automatic acceptance',
+    );
+    // Simulate an interrupted finalization recovery record; once explicitly failed, a new Run
+    // may proceed, but a later recovery accept must still not overwrite its newer accepted result.
+    store.setRunStatus(project.projectId, older.runId, 'failed', 'simulated interrupted finalization');
     const newer = store.createRun(project.projectId, { scope: { type: 'ids', ids: ['ch1-p1'] } });
     store.saveCandidate(project.projectId, newer.runId, 'ch1-p1', '新 Run 的候选。');
     store.finishRun(project.projectId, newer.runId);
