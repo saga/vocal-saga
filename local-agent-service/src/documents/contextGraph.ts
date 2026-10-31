@@ -689,12 +689,10 @@ function saveNode(
   const now = new Date().toISOString();
   db.prepare(
     'INSERT INTO context_graph_nodes(node_id, source_revision_id, kind, name, normalized_name, attributes_json, status, created_at, updated_at) ' +
-    'VALUES (?, ?, ?, ?, ?, ?, \'candidate\', ?, ?) ON CONFLICT(node_id) DO UPDATE SET ' +
+    'VALUES (?, ?, ?, ?, ?, ?, \'confirmed\', ?, ?) ON CONFLICT(node_id) DO UPDATE SET ' +
     'attributes_json=CASE WHEN context_graph_nodes.status IN (\'confirmed\',\'rejected\') AND json_extract(context_graph_nodes.attributes_json, \'$.targetLang\') IS json_extract(excluded.attributes_json, \'$.targetLang\') THEN context_graph_nodes.attributes_json ELSE excluded.attributes_json END, ' +
-    'status=CASE WHEN context_graph_nodes.status = \'rejected\' THEN \'rejected\' ' +
-      'WHEN context_graph_nodes.status = \'confirmed\' AND json_extract(context_graph_nodes.attributes_json, \'$.targetLang\') IS json_extract(excluded.attributes_json, \'$.targetLang\') THEN \'confirmed\' ' +
-      'ELSE \'candidate\' END, updated_at=excluded.updated_at'
-  ).run(id, revisionId, kind, safeText(name, 120), normalizedName, JSON.stringify(attributes), now, now);
+    'status=CASE WHEN context_graph_nodes.status = \'rejected\' THEN \'rejected\' ELSE \'confirmed\' END, updated_at=excluded.updated_at'
+  ).run(id, revisionId, kind, safeText(name, 120), normalizedName, JSON.stringify({ ...attributes, adoptionSource: 'model-default' }), now, now);
   const insertEvidence = db.prepare(
     'INSERT INTO context_graph_evidence(source_revision_id, node_id, edge_id, segment_id, quote, role, created_at) VALUES (?, ?, NULL, ?, ?, ?, ?)'
   );
@@ -715,10 +713,10 @@ function saveEdge(
   const now = new Date().toISOString();
   db.prepare(
     'INSERT INTO context_graph_edges(edge_id, source_revision_id, source_node_id, target_node_id, kind, attributes_json, status, created_at, updated_at) ' +
-    'VALUES (?, ?, ?, ?, ?, ?, \'candidate\', ?, ?) ON CONFLICT(edge_id) DO UPDATE SET ' +
+    'VALUES (?, ?, ?, ?, ?, ?, \'confirmed\', ?, ?) ON CONFLICT(edge_id) DO UPDATE SET ' +
     'attributes_json=CASE WHEN context_graph_edges.status IN (\'confirmed\',\'rejected\') THEN context_graph_edges.attributes_json ELSE excluded.attributes_json END, ' +
-    'status=CASE WHEN context_graph_edges.status IN (\'confirmed\',\'rejected\') THEN context_graph_edges.status ELSE \'candidate\' END, updated_at=excluded.updated_at'
-  ).run(id, revisionId, fromId, toId, kind, JSON.stringify(attributes), now, now);
+    'status=CASE WHEN context_graph_edges.status = \'rejected\' THEN \'rejected\' ELSE \'confirmed\' END, updated_at=excluded.updated_at'
+  ).run(id, revisionId, fromId, toId, kind, JSON.stringify({ ...attributes, adoptionSource: 'model-default' }), now, now);
   const insertEvidence = db.prepare(
     'INSERT INTO context_graph_evidence(source_revision_id, node_id, edge_id, segment_id, quote, role, created_at) VALUES (?, NULL, ?, ?, ?, \'relationship\', ?)'
   );
@@ -1249,15 +1247,15 @@ async function runAnalysis(projectId: string, runId: string): Promise<void> {
     });
   db.exec('BEGIN IMMEDIATE');
   try {
-    // Rebuild machine candidates transactionally so a newer analysis cannot leave stale low-quality
-    // candidates active. User-confirmed/rejected nodes survive; rollback restores the prior graph on failure.
+    // Rebuild machine-generated graph items transactionally. User decisions survive; previous
+    // model-default items are replaced by the latest analysis, regardless of their active status.
     db.prepare(
       "DELETE FROM context_graph_evidence WHERE source_revision_id = ? AND (node_id IN " +
-      "(SELECT node_id FROM context_graph_nodes WHERE source_revision_id = ? AND status = 'candidate') OR edge_id IN " +
-      "(SELECT edge_id FROM context_graph_edges WHERE source_revision_id = ? AND status = 'candidate'))"
+      "(SELECT node_id FROM context_graph_nodes WHERE source_revision_id = ? AND (status = 'candidate' OR json_extract(attributes_json, '$.adoptionSource') = 'model-default')) OR edge_id IN " +
+      "(SELECT edge_id FROM context_graph_edges WHERE source_revision_id = ? AND (status = 'candidate' OR json_extract(attributes_json, '$.adoptionSource') = 'model-default')))"
     ).run(revisionId, revisionId, revisionId);
-    db.prepare("DELETE FROM context_graph_edges WHERE source_revision_id = ? AND status = 'candidate'").run(revisionId);
-    db.prepare("DELETE FROM context_graph_nodes WHERE source_revision_id = ? AND status = 'candidate'").run(revisionId);
+    db.prepare("DELETE FROM context_graph_edges WHERE source_revision_id = ? AND (status = 'candidate' OR json_extract(attributes_json, '$.adoptionSource') = 'model-default')").run(revisionId);
+    db.prepare("DELETE FROM context_graph_nodes WHERE source_revision_id = ? AND (status = 'candidate' OR json_extract(attributes_json, '$.adoptionSource') = 'model-default')").run(revisionId);
     // 重新分析前重置上一轮模型生成的章节摘要（见 resetChapterSummariesForReanalysis）。
     resetChapterSummariesForReanalysis(db, revisionId, segments);
     saveMeta(db, revisionId, 'stylePolicyVersion', 'literary-style-v2-auto-context');
@@ -2315,7 +2313,7 @@ export function buildProjectContextGraphBundle(
       nameMappingDiagnostics.graphNameMappingExcludedInvalidTarget++;
       return [];
     }
-    const explicitUserConfirmation = row.status === 'confirmed';
+    const explicitUserConfirmation = row.status === 'confirmed' && attributes.adoptionSource !== 'model-default';
     const entityKindForPolicy = row.kind === 'character' ? 'person' : attributes.entityKind || 'other';
     if (!explicitUserConfirmation && !isWorthCanonicalEntityMapping({
       source: row.name,
@@ -2363,14 +2361,8 @@ export function buildProjectContextGraphBundle(
     const entityKind = String(attributes.entityKind || '').toLocaleLowerCase();
     const characterLike = row.kind === 'character' ||
       ['person', 'character', 'character_epithet', 'nickname'].includes(entityKind);
-    if (row.status !== 'confirmed' && characterLike) {
-      const targetWasPreviouslyUsed = priorAcceptedTranslations.some((entry) =>
-        quoteMentions(entry.source, row.name) && normalize(entry.target).includes(normalize(target)));
-      if (!targetWasPreviouslyUsed) {
-        nameMappingDiagnostics.graphNameMappingExcludedTargetNotPreviouslyAccepted++;
-        return [];
-      }
-    }
+    // Model-default character mappings are usable immediately. Keep their source-position
+    // and alias boundaries, but do not wait for a prior accepted translation to activate them.
     // For non-character proper-name entities, the pre-analysis target is stable for this Run,
     // but is not persisted as a user-confirmed project-memory fact.
     const allAliases = uniqueStrings(attributes.aliases, 12, 100)
@@ -2391,8 +2383,8 @@ export function buildProjectContextGraphBundle(
       evidenceBacked: true,
       explicitBookSpecificMeaning: attributes.bookSpecificMeaning === true,
       // This preflight choice is deterministic within this Run but is not persisted as user-confirmed.
-      sourceStatus: row.status === 'confirmed' ? 'confirmed' : 'run-canonical',
-      confirmationSource: row.status === 'confirmed' ? 'user-confirmed' : 'legacy-unknown',
+      sourceStatus: 'confirmed',
+      confirmationSource: explicitUserConfirmation ? 'user-confirmed' : 'model-default',
     }];
   });
 
