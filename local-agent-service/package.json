@@ -10,7 +10,7 @@
   "scripts": {
     "start": "tsx src/start.ts",
     "dev": "tsx watch src/start.ts",
-    "test": "node --import tsx --test tests/*.test.mjs",
+    "test": "LOCAL_AGENT_LOG_FILE=\"${TMPDIR:-/tmp}/vocal-saga-local-agent-test.log\" node --import tsx --test tests/*.test.mjs",
     "typecheck": "tsc --noEmit",
     "doc": "tsx src/documents/cli-start.ts",
     "doc:help": "tsx src/documents/cli-start.ts --help",

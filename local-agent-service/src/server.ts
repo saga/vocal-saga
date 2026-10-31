@@ -15,7 +15,10 @@ import { sendApiError, sendJson, addCors, isAllowedHost, assertExposureIsSafe, r
 import { handleRequest } from './routes.ts';
 import { getTextPool } from './agents/workbuddyPool.ts';
 import { getDocumentProjectStore } from './documents/projectStore.ts';
-import { logError, logWarn, logInfo, requestPath, summarizeError, errorStackTail } from './log.ts';
+import {
+  logError, logWarn, logInfo, requestPath, summarizeError, errorStackTail,
+  isPollingRequest, createPollingRollup, recordPollingRequest, resetPollingRollup, formatPollingSummary,
+} from './log.ts';
 
 // 兼容旧入口与测试：继续从 server.ts 导出这些函数。
 export { parseAgentModel, buildAgentPrompt, parseJsonObject, parseJsonValue, normalizeMessages } from './json.ts';
@@ -44,17 +47,29 @@ export function startLocalAgentServer() {
 
   // 请求日志必须挂在来源校验之前：这样被 CORS/Host 拦掉的请求（浏览器只看到 Failed to fetch）
   // 也能在终端留下痕迹，否则「请求根本没到」「被 403 拦了」两种情况无法区分。
-  // 轮询型 GET（run 详情、事件流、预处理状态）成功时静默，避免每秒一条日志刷屏；
-  // 出错、慢请求和所有写操作照常输出。
+  // 轮询型 GET（run 详情、事件流、预处理状态）成功时静默，改成每分钟一行汇总；
+  // 出错、慢请求和所有写操作照常逐条输出。
   const SLOW_REQUEST_MS = 3000;
+  const POLLING_SUMMARY_MS = 60_000;
+  const polling = createPollingRollup();
+  const flushPolling = () => {
+    const summary = formatPollingSummary(polling);
+    resetPollingRollup(polling);
+    if (summary) logInfo('http', summary);
+  };
+  const pollingTimer = setInterval(flushPolling, POLLING_SUMMARY_MS);
+  // 定时器不能拖住进程退出：测试会多次调用 startLocalAgentServer。
+  pollingTimer.unref();
   app.use((req: Request, res: Response, next: NextFunction) => {
     const startedAt = Date.now();
     const path = requestPath(req.originalUrl);
     res.on('finish', () => {
       const duration = Date.now() - startedAt;
       const status = res.statusCode;
-      const isPolling = req.method === 'GET' && (/\/runs\/[^/]+$/.test(path) || /\/events$/.test(path) || /\/context-graph$/.test(path));
-      if (status < 400 && isPolling && duration < SLOW_REQUEST_MS) return;
+      if (status < 400 && isPollingRequest(req.method, path) && duration < SLOW_REQUEST_MS) {
+        recordPollingRequest(polling, path, duration);
+        return;
+      }
       const origin = typeof req.headers.origin === 'string' ? ' · origin=' + req.headers.origin : '';
       const line = req.method + ' ' + path + ' → ' + status + ' · ' + duration + 'ms' + (status >= 400 ? origin : '');
       if (status >= 500) logError('http', line);
@@ -152,5 +167,11 @@ export function startLocalAgentServer() {
       logError('local-agent', '监听 ' + HOST + ':' + PORT + ' 失败：' + (error?.message || String(error)));
     }
     process.exit(1);
+  });
+
+  // 关服时把还没打出去的轮询汇总补上，并释放定时器（否则多次启动会累积 interval）。
+  server.on('close', () => {
+    clearInterval(pollingTimer);
+    flushPolling();
   });
 }
