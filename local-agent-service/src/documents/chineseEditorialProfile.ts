@@ -79,7 +79,7 @@ export function applyChineseEditorialProfileReview(
   if (action === 'reject-update') {
     return { ...profile, pendingUpdate: undefined };
   }
-  if (action === 'accept-update' || action === 'reject-update') {
+  if (action === 'accept-update') {
     const pending = profile?.pendingUpdate;
     if (profile?.status !== 'confirmed' || !hasEvidence(pending)) {
       throw Object.assign(new Error('没有当前来源版本下可处理的中文编辑档案更新，或更新证据已失效。'), { status: 409 });
