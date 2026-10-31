@@ -27,7 +27,7 @@
 - `relationship_deltas`：带原文证据的候选关系变化。
 - `open_questions` 与 `conflicts`：保留不确定性，不强迫模型给出确定结论。
 
-初译上下文增量只是建议。服务端独立验证增量和译文；无效上下文元数据不得导致有效译文丢失。
+初译上下文增量是带证据的模型判断，不是用户确认。服务端独立验证增量和译文；通过来源/结构校验的模型结果以 `model-default` 默认采纳并参与后续批次，无效上下文元数据不得导致有效译文丢失。
 
 ### 3. 增量必须有来源证据并受批次边界约束
 
@@ -45,11 +45,11 @@
 
 已核验的上下文增量按 Run 和首个 source segment 幂等保存到 SQLite `translation_context_deltas`，记录 batch index、来源 ordinal、片段 ID、增量和验证摘要。暂停、重试或进程恢复可以重建 source-ordered run-local 上下文。
 
-仅在文学 Run 完整结束且当前来源 revision 与 Run 的来源 revision 一致时，将候选合并到当前项目文学记忆；新增人物/关系保持 suggested，并保存带 segment ID 与原文引文的 `evidenceRefs`。后续 TranslationBrief 必须根据证据 segment 的 source ordinal 过滤记忆：称谓曾在早期出现，不代表后文产生的实体解释可以回流到早期上下文。用户修改的目标译名不被覆盖。如果来源已变更或 Run 中断，增量保留在 Run 账本，但不写入当前项目记忆。
+仅在文学 Run 完整结束且当前来源 revision 与 Run 的来源 revision 一致时，将候选合并到当前项目文学记忆；新增人物/关系通过来源和结构校验后以 `model-default` 默认采纳，并保存带 segment ID 与原文引文的 `evidenceRefs`；证据不完整影响置信度与使用范围，不成为逐项审批门槛。后续 TranslationBrief 必须根据证据 segment 的 source ordinal 过滤记忆：称谓曾在早期出现，不代表后文产生的实体解释可以回流到早期上下文。用户修改的目标译名不被覆盖。如果来源已变更或 Run 中断，增量保留在 Run 账本，但不写入当前项目记忆。
 
 ### 6. 用一致性审计发现冲突，不自动修订译文
 
-当多个批次对同一规范来源名称提出不同译名时，按来源顺序保留第一个候选，并记录 open question；质量审计额外生成 `context-delta-conflict` finding。审计只定位问题并提供证据，不能自动替换全书译文，也不能修改已采纳或人工修订的内容。只有现有显式人工采纳/返工流程可以改变译文。
+当多个批次对同一规范来源名称提出不同译名时，按来源顺序保留第一个候选，并记录 open question；质量审计额外生成 `context-delta-conflict` finding。审计只定位问题并提供证据，不能自动替换全书译文，也不能修改已采纳或人工修订的内容。准确性/术语修订和经过证据校验的文风修订作为本次 Run 候选保存；中文单语编辑先经过双语复核。Run 最终化自动采纳有效候选，保护来源版本和较新的人工修订。质量审计发现的冲突译名仍不自动猜测或全局替换。
 
 ## 后果
 
