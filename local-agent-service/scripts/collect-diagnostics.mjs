@@ -94,13 +94,9 @@ function sqliteOverview() {
   }
 }
 function collectLogFiles() {
-  const roots = [
-    path.join(dataDir, 'logs'),
-    path.join(home, '.architecture-diagram-studio', 'logs'),
-    path.join(home, '.codebuddy', 'logs'),
-  ];
+  // Only collect this service's own logs. SDK/CLI transcript directories may contain full user prompts or book text.
   const files = [];
-  for (const root of roots) {
+  for (const root of [path.join(dataDir, 'logs')]) {
     if (!fs.existsSync(root)) continue;
     const walk = (dir) => {
       for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -108,7 +104,7 @@ function collectLogFiles() {
         if (entry.isDirectory()) walk(full);
         else if (entry.isFile() && /\.(log|jsonl|txt)$/i.test(entry.name)) {
           const stat = fs.statSync(full);
-          if (stat.mtimeMs >= since && stat.size <= 20 * 1024 * 1024) files.push({ full, root, stat });
+          if (full !== logFile && stat.mtimeMs >= since && stat.size <= 20 * 1024 * 1024) files.push({ full, root, stat });
         }
       }
     };
@@ -179,7 +175,7 @@ const summary = {
   paths: { dataDir: '~/' + path.relative(home, dataDir), logFile: '~/' + path.relative(home, logFile), database: '~/' + path.relative(home, dbFile) },
   primaryLog: logMeta,
   additionalLogs,
-  sqlite: sqliteOverview(),
+  sqlite: (() => { try { return sqliteOverview(); } catch (error) { return { found: true, error: redact(error instanceof Error ? error.message : String(error)) }; } })(),
   checks: {
     health: run(process.execPath, ['-e', "fetch('http://127.0.0.1:'+(process.env.LOCAL_AGENT_PORT||8789)+'/health').then(async r=>{console.log('HTTP '+r.status);console.log((await r.text()).slice(0,1000));}).catch(e=>{console.error(e.message);process.exitCode=1})"]),
     codebuddyCli: run('codebuddy', ['--version']),
@@ -193,8 +189,9 @@ write('README.txt', [
   'Generated: ' + collectedAt.toISOString(),
   'Window: last ' + sinceHours + ' hours (log-file tail is capped)',
   '',
-  'Privacy: request/translation content and SQLite row contents are not collected.',
-  'Log files are secret-redacted, but manually inspect this archive before sharing.',
+  'Privacy: SQLite row contents and known prompt/source/translation preview log lines are excluded.',
+  'Only this service\'s own logs are collected; SDK transcript directories are deliberately excluded.',
+  'Logs are secret-redacted, but manually inspect this archive before sharing.',
   'summary.json includes environment/runtime metadata and aggregate SQLite table counts.',
   analyze ? 'CodeBuddy analysis was explicitly requested; see codebuddy-analysis.md.' : 'No model analysis was run. Re-run with --analyze to use the local CodeBuddy SDK.',
 ].join('\n') + '\n');
