@@ -153,51 +153,22 @@ test('confirmed book-level Chinese editorial profile is included without source-
 });
 
 
-test('Chinese editorial profile updates require an explicit decision and preserve the confirmed base', () => {
+test('Chinese editorial profiles are default-adopted and can be explicitly rejected without an approval gate', () => {
   const base = {
     status: 'confirmed',
-    confirmationSource: 'user-confirmed',
+    confirmationSource: 'model-default',
     profileVersion: 2,
     sourceRevisionId: 'revision-1',
-    sampleFingerprint: 'base-fingerprint',
-    profile: { narrativeVoice: '原有叙述声音。' },
-    evidenceRefs: [
-      { segmentId: 's1' }, { segmentId: 's2' }, { segmentId: 's3' },
-    ],
-    pendingUpdate: {
-      status: 'candidate',
-      sourceRevisionId: 'revision-1',
-      sampleFingerprint: 'update-fingerprint',
-      basedOnFingerprint: 'base-fingerprint',
-      profile: { narrativeVoice: '更新后的叙述声音。' },
-      evidenceRefs: [
-        { segmentId: 's4' }, { segmentId: 's5' }, { segmentId: 's6' },
-      ],
-    },
+    sampleFingerprint: 'active-fingerprint',
+    profile: { narrativeVoice: '自动启用的叙述声音。' },
+    evidenceRefs: [],
   };
+  const rejected = applyChineseEditorialProfileReview(base, 'reject', 'revision-1', '2026-10-31T01:00:00.000Z');
+  assert.equal(rejected.status, 'rejected');
+  assert.equal(rejected.confirmationSource, undefined);
 
-  const accepted = applyChineseEditorialProfileReview(base, 'accept-update', 'revision-1', '2026-10-31T01:00:00.000Z');
-  assert.equal(accepted.status, 'confirmed');
-  assert.equal(accepted.profileVersion, 3);
-  assert.equal(accepted.previousFingerprint, 'base-fingerprint');
-  assert.equal(accepted.sampleFingerprint, 'update-fingerprint');
-  assert.equal(accepted.profile.narrativeVoice, '更新后的叙述声音。');
-  assert.equal(accepted.confirmationSource, 'user-confirmed');
-  assert.equal(accepted.pendingUpdate, undefined);
-
-  const rejected = applyChineseEditorialProfileReview(base, 'reject-update', 'revision-1', '2026-10-31T01:00:00.000Z');
-  assert.equal(rejected.sampleFingerprint, 'base-fingerprint');
-  assert.equal(rejected.profile.narrativeVoice, '原有叙述声音。');
-  assert.equal(rejected.pendingUpdate, undefined);
-  assert.equal(rejected.lastRejectedUpdate.sampleFingerprint, 'update-fingerprint');
-
-  assert.throws(() => applyChineseEditorialProfileReview(base, 'accept-update', 'revision-2'), /当前来源版本/);
-  assert.throws(() => applyChineseEditorialProfileReview({
-    ...base,
-    pendingUpdate: { ...base.pendingUpdate, basedOnFingerprint: 'stale-fingerprint' },
-  }, 'accept-update', 'revision-1'), /基准版本已变化/);
-  assert.throws(() => applyChineseEditorialProfileReview({
-    ...base,
-    pendingUpdate: { ...base.pendingUpdate, evidenceRefs: [{ segmentId: 's4' }] },
-  }, 'accept-update', 'revision-1'), /证据已失效/);
+  const rejectedWithoutEvidence = applyChineseEditorialProfileReview({
+    ...base, evidenceRefs: [],
+  }, 'reject', 'revision-1');
+  assert.equal(rejectedWithoutEvidence.status, 'rejected');
 });
