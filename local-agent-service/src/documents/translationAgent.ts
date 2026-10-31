@@ -777,6 +777,7 @@ export function buildStandaloneReviewContextGraph(input: Record<string, any>): R
       // Standalone Review has no immutable run snapshot or verified target-surface ledger.
       // Only explicit user decisions may become protected mappings in this legacy path.
       sourceStatus: userDecidedMapping ? 'confirmed-memory' : 'candidate',
+      confirmationSource: userDecidedMapping ? (entity.confirmationSource || 'user-confirmed') : 'model-default',
       targetConfidence: userDecidedMapping ? 'confirmed' : 'candidate',
     });
   }
