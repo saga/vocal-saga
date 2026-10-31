@@ -144,7 +144,7 @@
 ### CI 状态
 
 - fanyi-extension：新增删除回归测试的 GitHub Actions CI 已通过，run 41165321715。
-- vocal-saga：CI run `41165483572` 与 Local Agent Service run `41165483574` 均已完成并通过；覆盖主项目和 Local Agent Service 类型检查、单测、共享模块检查、fiction quality fixtures、API route manifest、book-scan benchmark 和 library build。
+- vocal-saga：CI run `41165483572`、Local Agent Service run `41165483574`、最新 Context Graph cleanup CI run `41165746126` 和 Local Agent Service run `41165746003` 均已完成并通过；覆盖主项目和 Local Agent Service 类型检查、单测、共享模块检查、fiction quality fixtures、API route manifest、book-scan benchmark 和 library build。
 - 上一轮 vocal-saga 基础 CI（run 41164972117）及 Local Agent Service CI（run 41164972116）均已通过。
 
 ### 尚未完成
@@ -152,3 +152,12 @@
 - 等待本轮 vocal-saga 最新 CI 完成，若失败则根据日志修复。
 - 仍需端到端验证真实 Context Graph 的“拒绝 → 重新分析 → 不复活”，以及 LiteraryMemory 与图谱的跨存储一致性。
 - 仍需使用真实小说样本评估人物声音漂移、事实增删和过度润色；fixture 回归通过不等于真实文学质量达标。
+### 第三轮续做：Context Graph 重新分析清理边界
+
+- 将 Context Graph 文件头部过时的“模型事实保持候选直到人工审核”改为“来源校验后默认采纳，用户决定优先，置信度控制使用强度”。
+- 将重新分析前的清理 SQL 抽取为 `clearReplaceableModelGeneratedContextGraphItems`，便于独立测试。
+- 修复潜在的端点完整性问题：重新分析清理模型默认节点时，如果仍被用户确认/拒绝的关系边引用，节点必须保留，否则会留下无法完整呈现的用户决定。
+- 新增 `document-context-graph.test.mjs` 回归测试，覆盖模型默认节点/边清理、用户拒绝节点/边保留、用户确认关系引用的模型默认端点保留，以及相关 evidence 保留。
+- 提交：`cc35fe7e03aab09fd8307330575f6d39adc1fce3`、`85e4a3580787d328fe5a6c426f7ef8558eaa25e6`。
+- 验证：Local Agent Service CI run `41165746003` 通过；vocal-saga 完整 CI run `41165746126` 通过全部步骤，包括共享模块检查、类型检查、主项目单测、Local Agent Service 类型检查/单测、fiction quality fixtures 和 library build。
+- Extension 人物删除专项回归 CI run `41165681322` 通过。
