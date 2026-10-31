@@ -263,7 +263,7 @@ function summarizeBriefComposition(row) {
     },
     voiceContext: sectionMap(voice),
     contextGraph: sectionMap(graph),
-    retrievalDiagnostics: brief.contextDiagnostics || {},
+    retrievalDiagnostics: compactValue('contextDiagnostics', brief.contextDiagnostics || {}),
   };
 }
 function summarizeReviewEvents(events) {
