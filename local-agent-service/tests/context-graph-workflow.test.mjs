@@ -120,6 +120,26 @@ test('CodeBuddy workflow turns can resume a persisted SDK session', () => {
 });
 
 
+test('source-grounded style review revisions become automatic Run candidates', async () => {
+  const { selectVerifiedStyleReviewCandidates } = await import('../src/documents/translationAgent.ts');
+  const drafts = new Map([['s1', '她推开了旧门。'], ['s2', '他走进房间。']]);
+  const review = {
+    translations: { s1: '她轻轻推开那扇旧门。', s2: '他走进房间。' },
+    findings: [{ id: 's1', category: 'style', proposedTranslation: '她轻轻推开那扇旧门。' }],
+  };
+  assert.deepEqual(selectVerifiedStyleReviewCandidates(review, drafts, ['s1', 's2']), [
+    { segmentId: 's1', text: '她轻轻推开那扇旧门。' },
+  ]);
+  assert.deepEqual(selectVerifiedStyleReviewCandidates({
+    ...review,
+    findings: [],
+  }, drafts, ['s1', 's2']), [], 'a rewrite without a matching grounded style finding must not be applied');
+  assert.deepEqual(selectVerifiedStyleReviewCandidates({
+    ...review,
+    editorialMode: 'chinese-monolingual',
+  }, drafts, ['s1', 's2']), [], 'Chinese monolingual edits must wait for bilingual verification');
+});
+
 test('literary translation requires a complete, current full-book preprocessing snapshot', () => {
   const run = {
     sourceRevisionId: 'source-1',
