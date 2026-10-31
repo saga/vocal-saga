@@ -238,6 +238,65 @@ test('Context Graph batch review is atomic when any requested item is missing', 
     'the valid first item must roll back when a later item in the batch is invalid');
 });
 
+test('batch graph rejection and LiteraryMemory revision commit or roll back together', () => {
+  const store = getDocumentProjectStore();
+  const project = store.createProject({
+    title: 'Atomic Graph and Memory Persistence',
+    format: 'txt',
+    sourceFileName: 'atomic-graph-memory.txt',
+    prompt: { translationMode: 'literary' },
+    segments: [{ id: 'atomic-memory-source', text: 'Alice trusts Bob.', kind: 'paragraph', contextPath: 'Chapter 1' }],
+  });
+  const { db, currentSourceRevisionId } = store.getProjectContext(project.projectId);
+  getContextGraph(project.projectId);
+  const now = new Date().toISOString();
+  const insertNode = db.prepare(
+    'INSERT INTO context_graph_nodes(node_id, source_revision_id, kind, name, normalized_name, attributes_json, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+  );
+  const insertEvidence = db.prepare(
+    'INSERT INTO context_graph_evidence(source_revision_id, node_id, edge_id, segment_id, quote, role, created_at) VALUES (?, ?, NULL, ?, ?, ?, ?)',
+  );
+  insertNode.run('atomic-alice', currentSourceRevisionId, 'character', 'Alice', 'alice',
+    JSON.stringify({ adoptionSource: 'model-default' }), 'confirmed', now, now);
+  insertEvidence.run(currentSourceRevisionId, 'atomic-alice', 'atomic-memory-source', 'Alice trusts Bob.', 'character', now);
+
+  const memory = {
+    version: 2, entities: [], relationships: [], styleGuide: {}, chapterSummaries: [],
+    recentExamples: [], characterVoices: [], relationshipVoiceRules: [], voiceAnchors: [], openQuestions: [],
+  };
+  reviewContextGraphItems(project.projectId, [
+    { type: 'node', id: 'atomic-alice', status: 'rejected' },
+  ], memory);
+  assert.equal(getContextGraph(project.projectId).nodes.find((node) => node.id === 'atomic-alice').status, 'rejected');
+  assert.ok(store.getCurrentLiteraryMemory(project.projectId).memoryRevisionId,
+    'the matching LiteraryMemory revision must be committed with the graph decision');
+
+  const rollbackProject = store.createProject({
+    title: 'Atomic Graph Memory Rollback',
+    format: 'txt',
+    sourceFileName: 'atomic-graph-memory-rollback.txt',
+    prompt: { translationMode: 'literary' },
+    segments: [{ id: 'atomic-rollback-source', text: 'Carol knows Dave.', kind: 'paragraph', contextPath: 'Chapter 1' }],
+  });
+  const rollbackContext = store.getProjectContext(rollbackProject.projectId);
+  getContextGraph(rollbackProject.projectId);
+  insertNode.run('rollback-carol', rollbackContext.currentSourceRevisionId, 'character', 'Carol', 'carol',
+    JSON.stringify({ adoptionSource: 'model-default' }), 'confirmed', now, now);
+  insertEvidence.run(rollbackContext.currentSourceRevisionId, 'rollback-carol', 'atomic-rollback-source', 'Carol knows Dave.', 'character', now);
+
+  const originalSave = store.saveLiteraryMemory;
+  store.saveLiteraryMemory = () => { throw new Error('simulated LiteraryMemory write failure'); };
+  try {
+    assert.throws(() => reviewContextGraphItems(rollbackProject.projectId, [
+      { type: 'node', id: 'rollback-carol', status: 'rejected' },
+    ], memory), /simulated LiteraryMemory write failure/);
+  } finally {
+    store.saveLiteraryMemory = originalSave;
+  }
+  assert.equal(getContextGraph(rollbackProject.projectId).nodes.find((node) => node.id === 'rollback-carol').status, 'confirmed',
+    'graph rejection must roll back when the LiteraryMemory revision cannot be saved');
+});
+
 test('Context Graph changes are rejected while a translation run is active', () => {
   const store = getDocumentProjectStore();
   const project = store.listProjects().find((item) => item.title === 'Context Graph Test');
