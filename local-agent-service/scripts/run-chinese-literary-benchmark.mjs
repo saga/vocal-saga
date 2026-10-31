@@ -116,14 +116,21 @@ function csvCell(value) {
   return '"' + text.replace(/"/gu, '""') + '"';
 }
 
-function humanReviewCsv(rows) {
+function humanReviewCsv(rows, reviewerId) {
   const columns = [
-    'id', 'candidateA_naturalness', 'candidateB_naturalness',
-    'candidateA_voice', 'candidateB_voice', 'candidateA_rhythm', 'candidateB_rhythm',
-    'candidateA_fidelity', 'candidateB_fidelity', 'candidateA_over_edit',
-    'candidateB_over_edit', 'preference', 'critical_error', 'notes',
+    'reviewer_id', 'id',
+    'candidateA_naturalness', 'candidateB_naturalness',
+    'candidateA_narrative_voice', 'candidateB_narrative_voice',
+    'candidateA_literary_rhythm', 'candidateB_literary_rhythm',
+    'candidateA_fidelity', 'candidateB_fidelity',
+    'candidateA_over_editing', 'candidateB_over_editing',
+    'preference', 'candidateA_critical_fidelity_error',
+    'candidateB_critical_fidelity_error', 'notes',
   ];
-  return [columns.join(','), ...rows.map((row) => csvCell(row.id) + ',' + columns.slice(1).map(() => '""').join(','))].join('\n') + '\n';
+  return [
+    columns.join(','),
+    ...rows.map((row) => [reviewerId, row.id, ...columns.slice(2).map(() => '')].map(csvCell).join(',')),
+  ].join('\n') + '\n';
 }
 
 async function runEditorModel(rows, config, modelKey, targetLang, runId, batchSize) {
@@ -286,11 +293,12 @@ async function main() {
     writeFile(path.join(outputDir, 'blind-mapping.json'), JSON.stringify(mapping, null, 2) + '\n', 'utf8'),
     writeFile(path.join(outputDir, 'model-results.json'), JSON.stringify(modelResults, null, 2) + '\n', 'utf8'),
     writeFile(path.join(outputDir, 'run-manifest.json'), JSON.stringify(manifest, null, 2) + '\n', 'utf8'),
-    writeFile(path.join(outputDir, 'human-review-template.csv'), humanReviewCsv(blind.packet.items), 'utf8'),
+    writeFile(path.join(outputDir, 'human-review-reviewer-1.csv'), humanReviewCsv(blind.packet.items, 'reviewer-1'), 'utf8'),
+    writeFile(path.join(outputDir, 'human-review-reviewer-2.csv'), humanReviewCsv(blind.packet.items, 'reviewer-2'), 'utf8'),
   ]);
   process.stdout.write(JSON.stringify({
     completed: true, runId, segmentCount: rows.length, outputDir,
-    files: ['blind-review-packet.json', 'blind-mapping.json', 'model-results.json', 'run-manifest.json', 'human-review-template.csv'],
+    files: ['blind-review-packet.json', 'blind-mapping.json', 'model-results.json', 'run-manifest.json', 'human-review-reviewer-1.csv', 'human-review-reviewer-2.csv'],
     modelA: first.metrics, modelB: second.metrics,
   }, null, 2) + '\n');
 }
