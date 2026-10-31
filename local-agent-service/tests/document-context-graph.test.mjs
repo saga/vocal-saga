@@ -16,6 +16,7 @@ const {
   getContextGraphStatus,
   buildProjectContextGraphBundle,
   reviewContextGraphItem,
+  clearReplaceableModelGeneratedContextGraphItems,
   startContextGraphAnalysis,
   persistSourceFeatureIndex,
   readSourceFeatureIndex,
@@ -425,6 +426,79 @@ test('re-analysis resets model chapter summaries without violating the NOT NULL 
   }
 });
 
+
+test('reanalysis cleanup preserves rejected/user-confirmed graph items and protected endpoints', () => {
+  const store = getDocumentProjectStore();
+  const project = store.createProject({
+    title: 'Context Graph Adoption Cleanup',
+    format: 'txt',
+    sourceFileName: 'context-graph-adoption-cleanup.txt',
+    prompt: { translationMode: 'literary' },
+    segments: [{ id: 'cleanup-source', text: 'Alice trusts Bob.', kind: 'paragraph', contextPath: 'Chapter 1' }],
+  });
+  const { db, currentSourceRevisionId } = store.getProjectContext(project.projectId);
+  getContextGraph(project.projectId);
+  const now = new Date().toISOString();
+  const insertNode = db.prepare(
+    'INSERT INTO context_graph_nodes(node_id, source_revision_id, kind, name, normalized_name, attributes_json, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+  );
+  const nodes = [
+    ['n-model', 'Model Node', { adoptionSource: 'model-default' }, 'confirmed'],
+    ['n-rejected', 'Rejected Node', { adoptionSource: 'user-rejected' }, 'rejected'],
+    ['n-user', 'User Node', { adoptionSource: 'user-confirmed' }, 'confirmed'],
+    ['n-protected-model', 'Model Endpoint', { adoptionSource: 'model-default' }, 'confirmed'],
+    ['n-candidate', 'Candidate Node', { adoptionSource: 'model-default' }, 'candidate'],
+  ];
+  for (const [id, name, attributes, status] of nodes) {
+    insertNode.run(id, currentSourceRevisionId, 'character', name, String(name).toLowerCase(),
+      JSON.stringify(attributes), status, now, now);
+  }
+  const insertEdge = db.prepare(
+    'INSERT INTO context_graph_edges(edge_id, source_revision_id, source_node_id, target_node_id, kind, attributes_json, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+  );
+  const edges = [
+    ['e-model', 'n-model', 'n-user', { adoptionSource: 'model-default' }, 'confirmed'],
+    ['e-rejected', 'n-rejected', 'n-user', { adoptionSource: 'user-rejected' }, 'rejected'],
+    ['e-user', 'n-protected-model', 'n-user', { adoptionSource: 'user-confirmed' }, 'confirmed'],
+    ['e-candidate', 'n-candidate', 'n-user', { adoptionSource: 'model-default' }, 'candidate'],
+  ];
+  for (const [id, source, target, attributes, status] of edges) {
+    insertEdge.run(id, currentSourceRevisionId, source, target, 'relation',
+      JSON.stringify(attributes), status, now, now);
+  }
+  const insertEvidence = db.prepare(
+    'INSERT INTO context_graph_evidence(source_revision_id, node_id, edge_id, segment_id, quote, role, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+  );
+  for (const [id] of nodes) {
+    insertEvidence.run(currentSourceRevisionId, id, null, 'cleanup-source', 'Alice trusts Bob.', 'character', now);
+  }
+  for (const [id] of edges) {
+    insertEvidence.run(currentSourceRevisionId, null, id, 'cleanup-source', 'Alice trusts Bob.', 'relationship', now);
+  }
+
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    clearReplaceableModelGeneratedContextGraphItems(db, currentSourceRevisionId);
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+
+  const remainingNodes = db.prepare(
+    'SELECT node_id, status FROM context_graph_nodes WHERE source_revision_id = ? ORDER BY node_id',
+  ).all(currentSourceRevisionId);
+  const remainingEdges = db.prepare(
+    'SELECT edge_id, status FROM context_graph_edges WHERE source_revision_id = ? ORDER BY edge_id',
+  ).all(currentSourceRevisionId);
+  assert.deepEqual(remainingNodes.map((row) => row.node_id), ['n-protected-model', 'n-rejected', 'n-user']);
+  assert.deepEqual(remainingEdges.map((row) => row.edge_id), ['e-rejected', 'e-user']);
+  assert.equal(remainingNodes.find((row) => row.node_id === 'n-rejected').status, 'rejected');
+  assert.equal(remainingEdges.find((row) => row.edge_id === 'e-rejected').status, 'rejected');
+  assert.equal(db.prepare(
+    'SELECT COUNT(*) AS count FROM context_graph_evidence WHERE source_revision_id = ? AND node_id = ?',
+  ).get(currentSourceRevisionId, 'n-rejected').count, 1);
+});
 
 test('source feature index is scoped to both source revision and source language', () => {
   const store = getDocumentProjectStore();
