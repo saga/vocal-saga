@@ -152,7 +152,7 @@ readiness 不是单看数据库 `status=completed`。它还要求 source revisio
 3. 同一来源实体出现不同候选译名时，保留原有/来源顺序中的首个目标，记录明确的 open question；禁止静默覆盖或全局替换。
 4. 名称相同不等于实体相同。合并只根据明确的 source/alias 集合重合以及兼容的实体类型进行，不使用任意子串模糊匹配。
 5. 每个批次的已验证增量写入项目 SQLite 的 `translation_context_deltas` 表，幂等键为 `(run_id, first_segment_id)`，同时保存 `batch_index`、来源 ordinal、来源片段 ID、增量 JSON、验证计数及时间。重试同一批时可更新这一批的记录，其他批次记录不删除。
-6. 只有 Run 成功完成且项目当前来源 revision 仍与 Run 一致时，才把最终候选合并进当前文学记忆 revision。新增实体和关系同时保留 `evidenceRefs: [{ segmentId, sourceQuote }]`。每次构建 TranslationBrief 时，实体/关系证据都必须通过来源版本、segment ID、引文匹配和 ordinal 过滤；不能因为同一称谓在早期出现过，就把后文才有证据的映射注入早期片段。新增数据仍为 suggested；来源已经改变或 Run 中断时不把旧证据写入全局记忆，而保留在原 Run 的账本里。
+6. 只有 Run 成功完成且项目当前来源 revision 仍与 Run 一致时，才把最终候选合并进当前文学记忆 revision。新增实体和关系同时保留 `evidenceRefs: [{ segmentId, sourceQuote }]`。每次构建 TranslationBrief 时，实体/关系证据都必须通过来源版本、segment ID、引文匹配和 ordinal 过滤；不能因为同一称谓在早期出现过，就把后文才有证据的映射注入早期片段。来源证据和结构校验通过的新实体/关系以 `model-default` 默认采纳并参与后续批次；置信度和证据覆盖单独记录，低置信度只作弱提示。来源已经改变或 Run 中断时不把旧证据写入当前项目记忆，而保留在原 Run 账本里。
 
 项目记忆合并只更新可复用的结构化候选，不直接改写历史译文。全局质量审计新增 `context-delta-conflict` finding，用于定位多个批次提出的冲突译名；finding 是人工审查入口，不自动启动返工，也不自动应用译文修改。
 
@@ -162,9 +162,9 @@ readiness 不是单看数据库 `status=completed`。它还要求 source revisio
 
 - 用户采纳译文后，Local Agent Service 自动检查当前 source revision 的 accepted translation ledger。达到最少样本量后，复用 `planBookSamples` 从已采纳片段中做章节/位置/对白覆盖抽样。
 - 原文只在本机用于确定性抽样；发送给档案分析模型的 Prompt 只包含中文已采纳译文和 segment ID，不包含 source、原文引文、英文人名、glossary 或 Context Graph。
-- 模型输出的是候选 `chineseEditorialProfile`，包括叙述声音、语域、节奏、对白、词汇、规则和避免事项；每条观察必须引用其中文样本中真实存在的连续片段。
-- Project Store 将 profile 作为 LiteraryMemory 的不可变 revision 保存，并逐条核验 segment ID、当前 source hash、已采纳译文和 target excerpt。证据不足或原文版本变化时，confirmed 自动降级为 candidate。
-- 候选档案不会注入翻译或中文编辑 Prompt。用户通过 `POST /api/documents/projects/{projectId}/literary-memory/chinese-editorial-profile/review` 明确确认后，才会进入后续 TranslationBrief 的目标语上下文；拒绝后不再注入。
+- 模型输出的 `chineseEditorialProfile` 包括叙述声音、语域、节奏、对白、词汇、规则和避免事项；通过样本来源与结构校验后立即以 `model-default` 默认应用。每条观察尽可能引用中文样本中的连续片段；证据不足影响置信度，不阻断使用。
+- Project Store 将 profile 作为 LiteraryMemory 的不可变 revision 保存，并逐条核验 segment ID、当前 source hash、已采纳译文和 target excerpt。证据不足时保留低置信度和适用范围；原文版本变化时旧档案不跨版本注入。用户修改或拒绝优先于机器默认版本。
+- 机器默认应用的档案直接进入后续 TranslationBrief 的目标语上下文；不需要用户确认。用户可直接编辑，或通过 `POST /api/documents/projects/{projectId}/literary-memory/chinese-editorial-profile/review` 明确拒绝/停用；拒绝状态持久化，不会在自动刷新时复活。
 - profile 与 source revision 绑定。新原文版本不能继承旧版本的确认状态；旧 Run 的 TranslationBrief 仍保留其创建时的 memory revision 和上下文快照。
 
 该流程不新增数据库表或独立 Agent；使用现有 BookScan、LiteraryMemory revision、Project Store 和 `styleReview` 任务模型配置。档案分析只在有新的已采纳译文时按需运行，不在每个翻译批次重复调用。
