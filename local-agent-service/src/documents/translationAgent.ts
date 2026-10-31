@@ -765,13 +765,17 @@ export function buildStandaloneReviewContextGraph(input: Record<string, any>): R
     if (aliases.some((alias) => !appearsIn(alias, visibleTexts))) continue;
     if (!appearsIn(entity.source, sourceTexts) &&
         !aliases.some((alias) => appearsIn(alias, sourceTexts))) continue;
+    const userDecidedMapping = ['user-confirmed', 'user-modified'].includes(String(entity.confirmationSource || ''));
     nameMappings.push({
       source: entity.source.trim(),
       target: entity.target.trim(),
       aliases,
       kind: typeof entity.kind === 'string' ? entity.kind : 'other',
       evidenceBacked: true,
-      sourceStatus: 'confirmed-memory',
+      // Standalone Review has no immutable run snapshot or verified target-surface ledger.
+      // Only explicit user decisions may become protected mappings in this legacy path.
+      sourceStatus: userDecidedMapping ? 'confirmed-memory' : 'candidate',
+      targetConfidence: userDecidedMapping ? 'confirmed' : 'candidate',
     });
   }
   return {
