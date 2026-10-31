@@ -94,7 +94,7 @@ async function queryWorkbuddyRaw(
   timer = setTimeout(() => {
     timedOut = true;
     logWarn('agent', '一次性调用超时 · ' + (timeoutMs / 1000).toFixed(0) + 's · request=' + String(_requestId).slice(0, 40)
-      + ' · 上限可用 LOCAL_AGENT_TIMEOUT_MS（单次调用）/ LOCAL_AGENT_ANALYSIS_TIMEOUT_MS（全书预处理）调整');
+      + ' · 上限可用 LOCAL_AGENT_TIMEOUT_MS（普通调用）/ LOCAL_AGENT_REVIEW_TIMEOUT_MS（审校）/ LOCAL_AGENT_ANALYSIS_TIMEOUT_MS（全书预处理）调整');
     requestInterrupt();
     rejectTimeout(timeoutError());
   }, timeoutMs);
