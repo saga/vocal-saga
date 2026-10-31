@@ -989,3 +989,33 @@ Phase 2 的第一版已落地，直接复用现有 BookScan、LiteraryMemory rev
 - 目前服务端 API 已可确认/拒绝，尚未在 fanyi-extension 的 Literary Memory UI 中增加 profile 卡片、证据查看和确认按钮。
 - Profile 的分析提示词和输出结构已有自动测试，但真实模型质量仍需通过 Phase 4 的中文盲评验证。
 - Phase 3 下一步：把 profile revision、单语编辑 finding、双语复核状态、用户采纳/拒绝/撤销汇总进全书 Quality Audit；建立可审计的 before/after 指标。
+
+
+---
+
+## 18. Phase 3 实施进展：中文文学编辑质量闭环（2026-10-31）
+
+Phase 3 的第一批指标已经加入全书 Quality Audit。
+
+### 新增可观测数据
+
+- 编辑阶段事件现在记录每批中文编辑的 reviewed、edited、unchanged、uncovered 和 finding 数。
+- Quality Audit 通过持久化的 `stage.completed` 事件汇总编辑覆盖率、修改率和未修改率。
+- 审校 finding 现在向报告暴露 `editorialMode`、`bilingualReviewStatus`、`applicationStatus`、`targetExcerpt` 和候选译文。
+- 审计分别统计双语复核 verified/corrected/pending，用户 applied/dismissed/pending，以及已采纳建议后来被人工覆盖的数量。
+- 审计附带当前 Chinese Editorial Profile 的状态、source revision、analysis version、sample fingerprint、样本数和证据数。
+- 新增回归测试，验证编辑率、未修改率、双语复核状态和用户待决策数量不会混为一谈。
+
+### 指标解释边界
+
+- Edit rate 高不等于编辑质量高；unchanged rate 高也不等于编辑器失效。
+- 用户 dismiss 不是 over-edit 的确定证据，只表示用户没有采纳该建议。
+- 人工覆盖已采纳建议只作为后续修改信号，不直接判定为错误。
+- 没有编辑事件时不宣称编辑质量通过。
+- 真实的 over-edit rate 仍需要人工标注样本或用户明确的“过度编辑”反馈；当前不使用代理指标冒充真实质量。
+
+### 后续工作
+
+- 需要把指标与 `quality-evaluations` 的盲评流程打通，形成可比较的编辑前后报告。
+- 需要在 fanyi-extension 的 Literary Memory / Quality Audit UI 中展示 Profile 证据、确认状态和编辑质量指标。
+- Phase 4 仍需建立可复现的 100–200 段中文文学盲评语料、模型对照和任务路由。
