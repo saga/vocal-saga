@@ -1,5 +1,7 @@
 # Agent 轨迹误报“全书预处理仍在运行”分析
 
+> 范围说明（2026-10-31）：本文只分析 Context Graph 旧 run 的事件终态收尾、轨迹活跃任务清理和状态视图一致性；它不是文学翻译 readiness 规则。文学翻译是否可以开始，统一遵循 [ADR-0005](docs/adr/0005-literary-preprocessing-before-translation.md)。本文列出的僵尸 run / 轨迹收敛建议仍是独立的可观测性问题，不因 ADR-0005 的翻译门禁而自动视为已修复。
+
 > 本轮仅做分析，未修改任何代码。扩展代码位于仓库外（`/Users/saga/code-repos/fanyi-extension`），服务端代码位于 `local-agent-service/`。
 
 ## 结论
