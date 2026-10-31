@@ -527,11 +527,6 @@ function buildTemporallyVisibleMemory(
       const source = typeof item?.segmentId === 'string' ? sourceById.get(item.segmentId) : undefined;
       return !!source && Number(source.ordinal) >= firstOrdinal;
     });
-    const invalidEvidence = rawEvidence.some((item: any) => {
-      if (!item || !isPrior(item.segmentId)) return true;
-      const source = sourceById.get(item.segmentId);
-      return !source || !sourceQuoteMatches(source.text, item.sourceQuote);
-    });
     if (hasFutureEvidence) {
       // Aggregate voiceCore may include later dialogue; never leak it into an earlier batch.
       exclusionDiagnostics.characterVoiceExcludedFutureEvidence++;
