@@ -246,7 +246,7 @@ Proust 记录到 5 个 \`review.audit.failed\`，全部是：
 - `tests/quality-audit.test.mjs`：覆盖父 Run 范围内/范围外自动返工，以及禁止对非缺译 finding 自动返工。
 - `tests/reviewer-timeout.test.mjs`：验证 Reviewer timeout 能穿透 `runAgentJson`，实际终止超时的 OpenCode 子进程。
 
-**验证状态：** 本次编辑通过 GitHub Contents API 提交；当前执行环境无法从 GitHub 拉取仓库到本地，因此这里不声称 npm test 或 typecheck 已通过。仓库现有 GitHub Actions workflow 会在 `local-agent-service/**` 变更后执行 `npm test`、`npm run typecheck`、API manifest 检查和确定性扫描基准，需以该 workflow 实际结果为准。
+**验证状态：通过。** GitHub Actions `Local Agent Service` run [#41187429031](https://github.com/saga/vocal-saga/actions/runs/41187429031) 对最终代码提交 `4d360ac1c2217ec9f040d9f1d48e796c70cd86fb` 执行成功：`npm test` 为 **313 passed / 0 failed**，`npm run typecheck`、API route manifest 检查和确定性 book-scan benchmark 均通过。此前两轮测试曾暴露两个测试 fixture 问题（SQLite null-prototype 行对象比较、旧自动返工 fixture 未设置父 Run scope/status），均已修正后重新运行并通过。
 
 **仍未确认的事项：** 本次诊断包没有操作系统退出原因或进程管理器日志，所以没有修改服务进程的 SIGTERM/SIGINT 生命周期，也没有声称已经找到重启的系统级根因。下一次运行新版 `diagnose:bundle` 后，检查 `service-log-excerpt.txt` 中的 signal、shutdown、uncaught、EADDRINUSE 和 Provider timeout 记录，再决定是否需要增加有界 graceful shutdown 或修正启动器/开发 watcher 行为。
 
