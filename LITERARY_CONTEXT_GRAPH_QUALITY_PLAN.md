@@ -1,5 +1,7 @@
 # 文学翻译预处理与实体译名质量改进计划（合并版）
 
+> 当前实施顺序以 [ADR-0005：文学翻译必须先完成当前版本的全书预处理](docs/adr/0005-literary-preprocessing-before-translation.md) 为准。本文主要记录 Context Graph 与文风质量改进；预处理 readiness、扩展前置检查和服务端最终门禁不再以旧的“创建 Run 后再等待”描述为准。
+
 **状态：** 已实施主要代码修改并完成专用验证；本文同时记录实施范围、剩余限制与验收结果。  
 **适用项目：** \`Shogun\`（项目 ID：\`4fa564de-b0ec-485d-88dc-562ad1bf66d3\`，数据快照见 \`entity-style-quality-plan.md\`）。  
 **涉及仓库：** \`saga/vocal-saga\` 与 \`saga/fanyi-extension\`。  
