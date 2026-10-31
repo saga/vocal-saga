@@ -62,6 +62,10 @@ test('retrieval injects matched graph records and excludes future chapter summar
   insertNode.run('node-ishido', currentSourceRevisionId, 'character', 'Ishido', 'ishido',
     JSON.stringify({ aliases: [], suggestedTranslation: '石堂', role: 'military governor', traits: [], voice: ['formal'] }),
     'candidate', now, now);
+  db.prepare(
+    'INSERT INTO context_graph_edges(edge_id, source_revision_id, source_node_id, target_node_id, kind, attributes_json, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+  ).run('edge-alice-bob', currentSourceRevisionId, 'node-alice', 'node-bob', 'relation',
+    JSON.stringify({ predicate: 'trusts', adoptionSource: 'model-default' }), 'confirmed', now, now);
   const insertEvidence = db.prepare(
     'INSERT INTO context_graph_evidence(source_revision_id, node_id, edge_id, segment_id, quote, role, created_at) VALUES (?, ?, NULL, ?, ?, ?, ?)',
   );
@@ -74,6 +78,9 @@ test('retrieval injects matched graph records and excludes future chapter summar
   // The canonical name is present early, but its analyzed supporting evidence is later.
   // The target name may be reused as a glossary mapping without importing later plot facts.
   insertEvidence.run(currentSourceRevisionId, 'node-ishido', 'chapter-3-seg-1', 'Ishido', 'character', now);
+  db.prepare(
+    'INSERT INTO context_graph_evidence(source_revision_id, node_id, edge_id, segment_id, quote, role, created_at) VALUES (?, NULL, ?, ?, ?, ?, ?)',
+  ).run(currentSourceRevisionId, 'edge-alice-bob', 'chapter-1-seg-1', 'Alice spoke politely to Bob.', 'relationship', now);
   const insertChapter = db.prepare(
     'INSERT INTO context_graph_chapters(source_revision_id, chapter_key, chapter_order, chapter_title, summary, summary_kind, segment_ids_json, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
   );
@@ -86,6 +93,14 @@ test('retrieval injects matched graph records and excludes future chapter summar
   ]);
   assert.ok(bundle);
   assert.deepEqual(bundle.characters.map((item) => item.name).sort(), ['Alice', 'Bob']);
+  assert.deepEqual(bundle.relationships, [{
+    sourceNodeId: 'node-alice',
+    targetNodeId: 'node-bob',
+    kind: 'observed-association',
+    status: 'confirmed',
+    confidence: 'candidate',
+    evidence: [{ segmentId: 'chapter-1-seg-1', quote: 'Alice spoke politely to Bob.' }],
+  }], 'even a confirmed graph co-occurrence is only a weak association unless the user confirmed a specific relation');
   assert.deepEqual(bundle.chapterSummaries.map((item) => item.chapter), ['Chapter 1']);
   assert.ok(!JSON.stringify(bundle).includes('hidden staircase'));
   assert.ok(!JSON.stringify(bundle).includes('secret passage'));
