@@ -149,8 +149,8 @@ test('Chinese literary edits require explicit bilingual coverage and otherwise f
     retryError: 'missing-segment retry failed',
   });
   assert.deepEqual(result.candidates, [
-    { segmentId: 'verified-corrected', text: '双语审校修订乙。' },
     { segmentId: 'verified-unchanged', text: '中文编辑甲。' },
+    { segmentId: 'verified-corrected', text: '双语审校修订乙。' },
   ]);
   assert.deepEqual(result.verified, [
     { segmentId: 'verified-unchanged', text: '中文编辑甲。' },
