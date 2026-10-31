@@ -470,8 +470,7 @@ function buildTemporallyVisibleMemory(
       return true;
     });
     const independentTargetEvidenceCount = new Set(visibleTargetEvidence.map((ref: any) => ref.segmentId)).size;
-    const targetConfidence = entity.reviewStatus === 'confirmed' ? 'confirmed' :
-      independentTargetEvidenceCount >= 2 ? 'corroborated' : 'candidate';
+    const targetConfidence = independentTargetEvidenceCount >= 2 ? 'corroborated' : 'candidate';
     // Dynamic candidates retain exact source and target evidence segments; source-name
     // recognition alone is not enough to make the proposed target a forced canonical mapping.
     const evidenceVisible = explicitCanonicalMapping || (evidenceRefs.length
