@@ -1527,6 +1527,9 @@ export function runProjectQualityAudit(projectId: string, runId?: string): Recor
     context.db, context.currentSourceRevisionId, chineseEditorial.runId,
   );
   const chineseEditorialApplied = chineseEditorialFindings.filter((finding) => finding.applicationStatus === 'applied').length;
+  const chineseEditorialAutoApplied = chineseEditorialFindings.filter((finding) =>
+    finding.applicationStatus === 'applied' && finding.applicationMethod === 'automatic-bilingual-verification').length;
+  const chineseEditorialUserApplied = chineseEditorialApplied - chineseEditorialAutoApplied;
   const chineseEditorialDismissed = chineseEditorialFindings.filter((finding) => finding.applicationStatus === 'dismissed').length;
   const chineseEditorialPending = chineseEditorialFindings.filter((finding) => !['applied', 'dismissed'].includes(finding.applicationStatus)).length;
   const chineseEditorialVerified = chineseEditorialFindings.filter((finding) =>
@@ -1535,7 +1538,7 @@ export function runProjectQualityAudit(projectId: string, runId?: string): Recor
     finding.bilingualReviewStatus === 'corrected').length;
   const chineseEditorialBilingualPending = chineseEditorialFindings.filter((finding) =>
     !['verified', 'corrected'].includes(finding.bilingualReviewStatus)).length;
-  const chineseEditorialDecided = chineseEditorialApplied + chineseEditorialDismissed;
+  const chineseEditorialUserDecided = chineseEditorialUserApplied + chineseEditorialDismissed;
   const chineseEditorialLatestOverrides = chineseEditorialFindings.filter((finding) => {
     if (finding.applicationStatus !== 'applied' || !finding.appliedResultId) return false;
     const latest = context.db.prepare(
@@ -1611,11 +1614,12 @@ export function runProjectQualityAudit(projectId: string, runId?: string): Recor
         bilingualVerifiedFindingCount: chineseEditorialVerified,
         bilingualCorrectedFindingCount: chineseEditorialCorrected,
         bilingualPendingFindingCount: chineseEditorialBilingualPending,
-        userAppliedFindingCount: chineseEditorialApplied,
+        automaticallyAppliedFindingCount: chineseEditorialAutoApplied,
+        userAppliedFindingCount: chineseEditorialUserApplied,
         userDismissedFindingCount: chineseEditorialDismissed,
         pendingUserDecisionFindingCount: chineseEditorialPending,
-        userDecisionAcceptanceRatePercent: chineseEditorialDecided
-          ? Math.round(chineseEditorialApplied / chineseEditorialDecided * 1000) / 10 : null,
+        userDecisionAcceptanceRatePercent: chineseEditorialUserDecided
+          ? Math.round(chineseEditorialUserApplied / chineseEditorialUserDecided * 1000) / 10 : null,
         manuallyOverriddenAfterApplyCount: chineseEditorialLatestOverrides,
       },
       chineseEditorialProfile: editorialProfile ? {
@@ -1639,7 +1643,8 @@ export function runProjectQualityAudit(projectId: string, runId?: string): Recor
       '重复输出 ID、未知输出 ID 和结构不合法的模型响应只从运行事件报告，不接受这些异常行。',
       '同一实体的候选译名冲突来自初译 context_delta 的来源证据，仅作为人工复核项；不会自动统一译名或自动返工。',
       '准确性/遗漏、术语、人物声线与文风提示来自已有 Reviewer 发现；若没有运行相应审校，报告不能证明该类问题不存在。',
-      '所有修订都进入新的候选 Run，不自动覆盖已采纳或人工修改的译文。',
+      '中文单语编辑只有经过双语忠实度 Reviewer 完整验证后才会自动应用；其它可选文风建议仍需用户自行决定。',
+      '自动应用、用户主动应用和用户拒绝分别计数；最终采纳事务不会覆盖更新的人工修订。',
     ],
     findings,
   };
