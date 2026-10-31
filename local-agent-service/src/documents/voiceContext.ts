@@ -365,6 +365,46 @@ export function sanitizeProjectLiteraryMemory(input: unknown): Record<string, an
       origin,
     }] : [];
   }) : [];
+  const rawEditorial = raw.chineseEditorialProfile && typeof raw.chineseEditorialProfile === 'object' &&
+    !Array.isArray(raw.chineseEditorialProfile) ? raw.chineseEditorialProfile : null;
+  const editorialProfileInput = rawEditorial?.profile && typeof rawEditorial.profile === 'object' &&
+    !Array.isArray(rawEditorial.profile) ? rawEditorial.profile : {};
+  const editorialEvidence = Array.isArray(rawEditorial?.evidenceRefs)
+    ? rawEditorial.evidenceRefs.slice(0, 24).flatMap((item: any) => {
+        const segmentId = text(item?.segmentId, 160);
+        const targetExcerpt = text(item?.targetExcerpt, 240);
+        const observation = text(item?.observation, 240);
+        const aspect = ['narrativeVoice', 'register', 'rhythm', 'dialogue', 'diction', 'consistency'].includes(String(item?.aspect))
+          ? String(item.aspect) : '';
+        return segmentId && targetExcerpt.length >= 4 && observation && aspect
+          ? [{ segmentId, targetExcerpt, observation, aspect }] : [];
+      })
+    : [];
+  const editorialStatus = status(rawEditorial?.status, ['candidate', 'confirmed', 'rejected'], 'candidate');
+  const chineseEditorialProfile = rawEditorial ? {
+    version: 1,
+    status: editorialStatus,
+    ...(editorialStatus === 'confirmed' && rawEditorial?.confirmationSource === 'user-confirmed'
+      ? { confirmationSource: 'user-confirmed' } : {}),
+    sourceRevisionId: text(rawEditorial.sourceRevisionId, 200),
+    analysisVersion: text(rawEditorial.analysisVersion, 120),
+    sampleFingerprint: text(rawEditorial.sampleFingerprint, 128),
+    sampleCount: Math.max(0, Math.min(1000, Number(rawEditorial.sampleCount) || 0)),
+    chapterCount: Math.max(0, Math.min(500, Number(rawEditorial.chapterCount) || 0)),
+    generatedAt: text(rawEditorial.generatedAt, 64),
+    ...(editorialStatus === 'confirmed' && rawEditorial.confirmationSource === 'user-confirmed'
+      ? { confirmedAt: text(rawEditorial.confirmedAt, 64) } : {}),
+    profile: {
+      narrativeVoice: text(editorialProfileInput.narrativeVoice, 1000),
+      register: text(editorialProfileInput.register, 1000),
+      rhythm: text(editorialProfileInput.rhythm, 1000),
+      dialogue: text(editorialProfileInput.dialogue, 1000),
+      diction: text(editorialProfileInput.diction, 1000),
+      rules: list(editorialProfileInput.rules, 16, 240),
+      avoid: list(editorialProfileInput.avoid, 12, 240),
+    },
+    evidenceRefs: editorialEvidence,
+  } : null;
   const memory: Record<string, any> = {
     version: 2, entities, relationships, styleGuide, styleGuideStatus,
     ...(styleGuideConfirmationSource ? { styleGuideConfirmationSource } : {}),
@@ -372,6 +412,7 @@ export function sanitizeProjectLiteraryMemory(input: unknown): Record<string, an
     ...(styleGuideAnalysisVersion ? { styleGuideAnalysisVersion } : {}),
     ...(styleGuideSourceRevisionId ? { styleGuideSourceRevisionId } : {}),
     styleGuideAutoDisabled,
+    ...(chineseEditorialProfile ? { chineseEditorialProfile } : {}),
     chapterSummaries, recentExamples, characterVoices, relationshipVoiceRules, voiceAnchors,
     openQuestions: list(raw.openQuestions, 40, 200),
   };
