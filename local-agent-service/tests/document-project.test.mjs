@@ -1001,3 +1001,68 @@ test('Chinese monolingual style proposal remains blocked when bilingual review d
     );
   });
 });
+
+
+test('Chinese editorial profile confirmation is retained only while accepted target evidence is valid', async () => {
+  await withStore((store) => {
+    const profileSegments = [
+      { id: 'ed-p1', text: 'The room was quiet.', kind: 'paragraph', contextPath: 'Chapter 1' },
+      { id: 'ed-p2', text: 'She looked away.', kind: 'paragraph', contextPath: 'Chapter 1' },
+      { id: 'ed-p3', text: 'He did not answer.', kind: 'paragraph', contextPath: 'Chapter 2' },
+    ];
+    const project = store.createProject({
+      title: 'Editorial Profile Evidence',
+      format: 'epub',
+      segments: profileSegments,
+      prompt: { systemPrompt: 'Translate.', sourceLang: 'en', targetLang: 'zh-CN', provider: 'workbuddy', model: 'auto', translationMode: 'literary' },
+    });
+    const run = store.createRun(project.projectId, { scope: { type: 'all' } });
+    store.saveCandidate(project.projectId, run.runId, 'ed-p1', '房间里很安静。');
+    store.saveCandidate(project.projectId, run.runId, 'ed-p2', '她移开了目光。');
+    store.saveCandidate(project.projectId, run.runId, 'ed-p3', '他没有回答。');
+    store.finishRun(project.projectId, run.runId);
+    store.acceptCandidates(project.projectId, run.runId);
+
+    const revisionId = store.getProjectContext(project.projectId).currentSourceRevisionId;
+    const profile = {
+      version: 1,
+      status: 'confirmed',
+      confirmationSource: 'user-confirmed',
+      sourceRevisionId: revisionId,
+      analysisVersion: 'chinese-editorial-profile-v1',
+      sampleFingerprint: 'sample-fingerprint',
+      sampleCount: 3,
+      chapterCount: 2,
+      generatedAt: new Date().toISOString(),
+      confirmedAt: new Date().toISOString(),
+      profile: {
+        narrativeVoice: '叙述克制。',
+        register: '现代书面语。',
+        rhythm: '保留自然停顿。',
+        dialogue: '',
+        diction: '',
+        rules: ['不机械拆短句。'],
+        avoid: [],
+      },
+      evidenceRefs: [
+        { segmentId: 'ed-p1', targetExcerpt: '房间里很安静', observation: '表达简洁克制。', aspect: 'narrativeVoice' },
+        { segmentId: 'ed-p2', targetExcerpt: '移开了目光', observation: '动作描写直接。', aspect: 'diction' },
+        { segmentId: 'ed-p3', targetExcerpt: '他没有回答', observation: '保留简洁叙述。', aspect: 'register' },
+      ],
+    };
+    const saved = store.saveLiteraryMemory(project.projectId, { chineseEditorialProfile: profile });
+    assert.equal(store.getCurrentLiteraryMemory(project.projectId).memory.chineseEditorialProfile.status, 'confirmed');
+
+    const invalidated = store.saveLiteraryMemory(project.projectId, {
+      chineseEditorialProfile: {
+        ...profile,
+        evidenceRefs: profile.evidenceRefs.map((item, index) =>
+          index === 0 ? { ...item, targetExcerpt: '这段话并不存在' } : item),
+      },
+    });
+    const current = store.getCurrentLiteraryMemory(project.projectId).memory.chineseEditorialProfile;
+    assert.equal(current.status, 'candidate');
+    assert.equal(current.evidenceRefs.length, 2);
+    assert.notEqual(invalidated.memoryRevisionId, saved.memoryRevisionId);
+  });
+});
