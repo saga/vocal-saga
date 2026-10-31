@@ -21,6 +21,7 @@
     "check:structured": "node scripts/check-structured-output.mjs",
     "diagnose:character-voice": "node --import tsx scripts/diagnose-character-voice.mjs",
     "diagnose:translation": "node scripts/diagnose-vocal-translation.mjs",
+    "diagnose:bundle": "node scripts/collect-diagnostics.mjs",
     "benchmark:chinese-literary": "node --import tsx scripts/run-chinese-literary-benchmark.mjs"
   },
   "dependencies": {
