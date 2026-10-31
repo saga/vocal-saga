@@ -30,7 +30,7 @@ function status(value: unknown, allowed: string[], fallback = 'candidate'): stri
 type ConfirmationSource = 'model-default' | 'evidence-verified' | 'user-confirmed' | 'legacy-unknown';
 function confirmationSource(value: unknown, active: boolean): ConfirmationSource | undefined {
   if (!active) return undefined;
-  return value === 'model-default' || value === 'evidence-verified' || value === 'user-confirmed' || value === 'legacy-unknown'
+  return value === 'model-default' || value === 'user-modified' || value === 'evidence-verified' || value === 'user-confirmed' || value === 'legacy-unknown'
     ? value : 'legacy-unknown';
 }
 function numericConfidence(value: unknown): number | null {
@@ -339,7 +339,7 @@ export function sanitizeProjectLiteraryMemory(input: unknown): Record<string, an
       speakerId, addresseeId: text(item.addresseeId, 100), source, target, chapter: text(item.chapter, 120), segmentId,
       status: claimedStatus,
       ...(claimedStatus === 'approved' ? { confirmationSource: confirmationSource(item.confirmationSource, true) || 'model-default' } : {}),
-      approvedBy: status(item.approvedBy, ['user','reviewer','manual-edit'], 'reviewer'),
+      approvedBy: status(item.approvedBy, ['user','reviewer','manual-edit','model-default'], 'model-default'),
       ...(attributionEvidence ? { attributionEvidence } : {}),
       ...(Number.isFinite(attributionConfidence) ? { attributionConfidence: Math.max(0, Math.min(1, attributionConfidence)) } : {}),
       tags: list(item.tags, 8, 80),
@@ -415,23 +415,23 @@ export function sanitizeProjectLiteraryMemory(input: unknown): Record<string, an
       evidenceRefs: candidateEvidence,
     };
   };
-  const editorialStatus = status(rawEditorial?.status, ['candidate', 'confirmed', 'rejected'], 'candidate');
+  const editorialStatus = rawEditorial?.status === 'rejected' ? 'rejected' : 'confirmed';
   const pendingEditorialUpdate = normalizeEditorialCandidate(rawEditorial?.pendingUpdate);
+  // Migrate legacy pending updates to the active profile automatically. New updates are already
+  // adopted by the generator; this path handles snapshots created by older versions.
   const chineseEditorialProfile = rawEditorial ? {
     version: 1,
-    profileVersion: Math.max(1, Math.min(1000, Number(rawEditorial.profileVersion) || 1)),
+    profileVersion: Math.max(1, Math.min(1000, Number(rawEditorial.profileVersion) || 1)) + (pendingEditorialUpdate && editorialStatus !== 'rejected' ? 1 : 0),
     status: editorialStatus,
-    ...(editorialStatus === 'confirmed' && rawEditorial?.confirmationSource === 'user-confirmed'
-      ? { confirmationSource: 'user-confirmed' } : {}),
-    sourceRevisionId: text(rawEditorial.sourceRevisionId, 200),
-    analysisVersion: text(rawEditorial.analysisVersion, 120),
-    sampleFingerprint: text(rawEditorial.sampleFingerprint, 128),
-    sampleCount: Math.max(0, Math.min(1000, Number(rawEditorial.sampleCount) || 0)),
-    chapterCount: Math.max(0, Math.min(500, Number(rawEditorial.chapterCount) || 0)),
-    generatedAt: text(rawEditorial.generatedAt, 64),
-    ...(editorialStatus === 'confirmed' && rawEditorial.confirmationSource === 'user-confirmed'
-      ? { confirmedAt: text(rawEditorial.confirmedAt, 64) } : {}),
-    profile: {
+    ...(editorialStatus === 'confirmed' ? { confirmationSource: rawEditorial.confirmationSource || 'model-default' } : {}),
+    sourceRevisionId: pendingEditorialUpdate?.sourceRevisionId || text(rawEditorial.sourceRevisionId, 200),
+    analysisVersion: pendingEditorialUpdate?.analysisVersion || text(rawEditorial.analysisVersion, 120),
+    sampleFingerprint: pendingEditorialUpdate?.sampleFingerprint || text(rawEditorial.sampleFingerprint, 128),
+    sampleCount: pendingEditorialUpdate?.sampleCount ?? Math.max(0, Math.min(1000, Number(rawEditorial.sampleCount) || 0)),
+    chapterCount: pendingEditorialUpdate?.chapterCount ?? Math.max(0, Math.min(500, Number(rawEditorial.chapterCount) || 0)),
+    generatedAt: pendingEditorialUpdate?.generatedAt || text(rawEditorial.generatedAt, 64),
+    ...(pendingEditorialUpdate ? { previousFingerprint: text(rawEditorial.sampleFingerprint, 128), acceptedUpdateAt: new Date().toISOString() } : {}),
+    profile: pendingEditorialUpdate?.profile || {
       narrativeVoice: text(editorialProfileInput.narrativeVoice, 1000),
       register: text(editorialProfileInput.register, 1000),
       rhythm: text(editorialProfileInput.rhythm, 1000),
@@ -440,8 +440,7 @@ export function sanitizeProjectLiteraryMemory(input: unknown): Record<string, an
       rules: list(editorialProfileInput.rules, 16, 240),
       avoid: list(editorialProfileInput.avoid, 12, 240),
     },
-    evidenceRefs: editorialEvidence,
-    ...(pendingEditorialUpdate ? { pendingUpdate: pendingEditorialUpdate } : {}),
+    evidenceRefs: pendingEditorialUpdate?.evidenceRefs || editorialEvidence,
   } : null;
   const memory: Record<string, any> = {
     version: 2, entities, relationships, styleGuide, styleGuideStatus,
