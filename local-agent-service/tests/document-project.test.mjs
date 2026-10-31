@@ -1066,6 +1066,29 @@ test('Run status transitions cannot revive cancelled or completed runs', async (
 });
 
 
+test('service restart automatically finalizes a Run left awaiting acceptance', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'vocal-doc-awaiting-acceptance-'));
+  try {
+    const firstStore = new DocumentProjectStore(root);
+    const project = firstStore.createProject({ title: 'Pending Acceptance Recovery', format: 'epub', segments });
+    const run = firstStore.createRun(project.projectId, { scope: { type: 'ids', ids: ['ch1-p1'] } });
+    firstStore.saveCandidate(project.projectId, run.runId, 'ch1-p1', '服务重启前已生成的候选译文。');
+    const awaiting = firstStore.finishRun(project.projectId, run.runId);
+    assert.equal(awaiting.status, 'awaiting_acceptance');
+
+    // Constructing the service store simulates process startup. Recovery must perform
+    // the same idempotent acceptance instead of leaving the workspace locked indefinitely.
+    const restartedStore = new DocumentProjectStore(root);
+    assert.equal(restartedStore.getRun(project.projectId, run.runId).status, 'completed');
+    assert.equal(
+      restartedStore.getSegments(project.projectId, { limit: 10 }).find((item) => item.id === 'ch1-p1')?.acceptedTranslation,
+      '服务重启前已生成的候选译文。',
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('Run recovery after store re-open preserves candidate revisions and never reopens a terminal Run', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'vocal-doc-restart-'));
   try {
