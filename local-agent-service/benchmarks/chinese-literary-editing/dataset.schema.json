@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Vocal Saga Chinese Literary Editing Benchmark Row",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "source", "draft", "genre", "rights"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "source": { "type": "string", "minLength": 1 },
+    "draft": { "type": "string", "minLength": 1 },
+    "genre": { "type": "string", "minLength": 1, "maxLength": 80 },
+    "targetLang": { "type": "string", "enum": ["zh-CN", "zh-TW"] },
+    "rights": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["basis", "reference"],
+      "properties": {
+        "basis": { "type": "string", "enum": ["public-domain", "user-owned", "licensed"] },
+        "reference": { "type": "string", "minLength": 1 },
+        "notes": { "type": "string" }
+      }
+    }
+  }
+}
