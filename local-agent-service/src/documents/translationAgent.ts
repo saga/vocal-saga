@@ -2179,34 +2179,22 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
     });
     let finishedRun = store.finishRun(projectId, runId);
 
-    // 候选采纳属于服务端 Run 的最终化，不依赖浏览器工作区保持打开。
-    // Store 的事务仍会检查来源版本与更新过的人工修订，不允许自动采纳覆盖人工版本。
-    if (finishedRun.status === 'awaiting_acceptance' && Number(finishedRun.counts?.candidate || 0) > 0) {
-      try {
-        finishedRun = autoAcceptFinishedRunCandidates(projectId, runId);
-        store.appendEvent(projectId, runId, 'translations.auto-accepted', {
-          acceptedCount: Number(finishedRun.counts?.accepted || 0),
-          remainingCandidateCount: Number(finishedRun.counts?.candidate || 0),
-          preservedManualCount: Number(finishedRun.counts?.manualPreserved || 0),
-          policy: 'validated-finalization; manual-edits-and-source-hashes-protected',
-        });
-      } catch (acceptError) {
-        // Translation candidates stay durable and the extension recovery path can retry the same idempotent operation.
-        store.appendEvent(projectId, runId, 'stage.warning', {
-          stage: 'acceptance',
-          warning: '服务端自动采纳未完成，候选已保留供恢复：' +
-            (acceptError instanceof Error ? acceptError.message : String(acceptError)),
-        });
-      }
-    }
-
     // 只把当前来源版本且通过证据校验的模型结果以 model-default 写入项目记忆；
     // 不覆盖用户确认/修改/拒绝的人物、译名或关系。若来源版本已变化，则保留在本 Run 的增量账本中，
     // 不把旧来源证据写入当前项目记忆。
-    if (context.run.translationMode === 'literary' && ['completed', 'partial'].includes(finishedRun.status)) {
+    if (context.run.translationMode === 'literary' && ['awaiting_acceptance', 'completed', 'partial'].includes(finishedRun.status)) {
       try {
         const projectContext = store.getProjectContext(projectId);
-        if (projectContext.currentSourceRevisionId !== context.run.sourceRevisionId) {
+        const db = projectContext.db;
+        db.exec('BEGIN IMMEDIATE');
+        try {
+          const lockedRunStatus = store.getRunStatus(projectId, runId);
+          if (!['awaiting_acceptance', 'completed', 'partial'].includes(lockedRunStatus)) {
+            store.appendEvent(projectId, runId, 'translation.context-memory.skipped', {
+              reason: 'run-left-finalization-before-memory-commit',
+              runStatus: lockedRunStatus,
+            });
+          } else if (store.getProjectContext(projectId).currentSourceRevisionId !== context.run.sourceRevisionId) {
           store.appendEvent(projectId, runId, 'translation.context-memory.skipped', {
             reason: 'source-revision-changed',
             runSourceRevisionId: context.run.sourceRevisionId,
@@ -2234,6 +2222,10 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
               reason: 'no-new-candidates-or-context-changes',
             });
           }
+          db.exec('COMMIT');
+        } catch (transactionError) {
+          try { db.exec('ROLLBACK'); } catch { /* transaction may already have rolled back */ }
+          throw transactionError;
         }
       } catch (memoryError) {
         // Context memory is supplementary to translation delivery. Never turn a completed translation
@@ -2245,6 +2237,29 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
         });
       }
     }
+
+    // 候选采纳属于服务端 Run 的最终化，不依赖浏览器工作区保持打开。
+    // Store 的事务仍会检查来源版本与更新过的人工修订，不允许自动采纳覆盖人工版本。
+    if (finishedRun.status === 'awaiting_acceptance' && Number(finishedRun.counts?.candidate || 0) > 0) {
+      try {
+        finishedRun = autoAcceptFinishedRunCandidates(projectId, runId);
+        store.appendEvent(projectId, runId, 'translations.auto-accepted', {
+          acceptedCount: Number(finishedRun.counts?.accepted || 0),
+          remainingCandidateCount: Number(finishedRun.counts?.candidate || 0),
+          preservedManualCount: Number(finishedRun.counts?.manualPreserved || 0),
+          policy: 'validated-finalization; manual-edits-and-source-hashes-protected',
+        });
+      } catch (acceptError) {
+        // Translation candidates stay durable and the extension recovery path can retry the same idempotent operation.
+        store.appendEvent(projectId, runId, 'stage.warning', {
+          stage: 'acceptance',
+          warning: '服务端自动采纳未完成，候选已保留供恢复：' +
+            (acceptError instanceof Error ? acceptError.message : String(acceptError)),
+        });
+      }
+    }
+
+
 
     store.appendEvent(projectId, runId, 'run.finished', {
       status: finishedRun.status,
