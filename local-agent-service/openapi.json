@@ -12,7 +12,7 @@
   ],
   "x-contract-coverage": {
     "status": "partial",
-    "routeCount": 55,
+    "routeCount": 56,
     "detailedPaths": [
       "/api/documents/projects/{projectId}/runs",
       "/api/documents/projects/{projectId}/runs/{runId}/resume",
@@ -2272,6 +2272,56 @@
           },
           "500": {
             "$ref": "#/components/responses/ApiError"
+          }
+        }
+      }
+    },
+    "/api/documents/projects/{projectId}/literary-memory/chinese-editorial-profile/review": {
+      "post": {
+        "summary": "Confirm or reject the generated Chinese editorial profile",
+        "description": "Reviews the pending book-level Chinese target-voice profile. Confirmation is accepted only when the profile is tied to the current source revision and its accepted-translation evidence remains valid.",
+        "parameters": [
+          {
+            "name": "projectId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "action"
+                ],
+                "properties": {
+                  "action": {
+                    "type": "string",
+                    "enum": [
+                      "confirm",
+                      "reject"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Editorial profile review saved"
+          },
+          "400": {
+            "description": "Invalid review action"
+          },
+          "409": {
+            "description": "Profile is missing, stale, or lacks valid evidence"
           }
         }
       }
