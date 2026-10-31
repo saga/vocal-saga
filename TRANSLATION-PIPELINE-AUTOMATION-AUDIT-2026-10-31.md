@@ -246,3 +246,25 @@
 本轮已修复数据生命周期中最容易造成用户决定丢失的路径：删除复活、旧 Run 覆盖新译文、Run 快照陈旧、记忆合并竞态和重启后采纳停滞。两个仓库的最新代码 CI 均通过。
 
 仍需通过真实长篇样本验证文学质量本身：人物声音跨章节稳定性、语义事实保真、文风修订是否过度改写，以及用户拒绝后经历多轮全书重分析是否仍保持抑制。CI 的合成回归只能证明确定性状态规则，不能替代真实小说的盲审。
+
+## 第六轮：中文单语编辑的双语验证与回退闭环（2026-10-31）
+
+### 发现
+
+中文单语编辑本身不接收原文，必须经过后续 Accuracy/Terminology Reviewer 对照原文验证。旧实现把单语编辑临时放入内存 translations map，再执行双语复核；成功路径会更新候选，但未覆盖片段或 Reviewer 整体异常时，内存 map 仍可能保留未验证编辑，导致后续 context delta/记忆构建有机会消费 provisional text。另一个风险是候选保存逻辑不显式要求 `reviewedIds` 覆盖，验证边界依赖 Reviewer 输出对象的形状。
+
+### ADR 决策
+
+ADR-0007 新增决策 14：双语复核成功覆盖的编辑保留；覆盖但没有修改时保留中文编辑；未覆盖、缺失、空/无效结果、补审失败或复核调用失败时，按 segment 自动退回第一道翻译阶段的初译。部分覆盖独立处理。未经双语复核的编辑不得进入 Run 候选、context delta 或 LiteraryMemory。全程不增加用户确认动作。
+
+### 代码修改
+
+- 新增 `resolveBilingualVerifiedChineseEdits`，显式按 `reviewedIds`、`missingIds` 和完整非空译文确定每个 segment 的验证结果。
+- 双语 Reviewer 候选保存前先执行验证过滤；覆盖成功的候选使用 Reviewer 最终文本，未覆盖片段立即把 translations map 恢复为初译。
+- Reviewer 调用整体失败时，所有本批中文单语 provisional edits 自动恢复初译；原先保存的初译候选不被改写。
+- 双语审校返回部分结果时，只保留明确覆盖的 segment；补审失败不会让未覆盖的 segment 沿用 provisional edit。
+- 新增回归测试覆盖：成功但未修改、成功并修订、未覆盖、补审失败、空结果、整个双语复核失败。
+
+### 验证边界
+
+本轮修改已提交到 `main`，但需要等待 GitHub Actions 对 TypeScript、Local Agent Service 测试和完整 CI 的实际结果。CI 通过后仍应对真实 EPUB 做抽样，确认候选、context delta 和最终译文使用的是同一份双语复核结果，而不是只验证 helper 的单元逻辑。
