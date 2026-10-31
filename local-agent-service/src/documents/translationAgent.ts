@@ -766,7 +766,8 @@ export function buildStandaloneReviewContextGraph(input: Record<string, any>): R
     if (!appearsIn(entity.source, sourceTexts) &&
         !aliases.some((alias) => appearsIn(alias, sourceTexts))) continue;
     // Legacy confirmed mappings predate provenance fields and must retain their prior protected behavior.
-    const userDecidedMapping = ['user-confirmed', 'user-modified', 'legacy-unknown'].includes(String(entity.confirmationSource || ''));
+    const userDecidedMapping = !entity.confirmationSource ||
+      ['user-confirmed', 'user-modified', 'legacy-unknown'].includes(String(entity.confirmationSource));
     nameMappings.push({
       source: entity.source.trim(),
       target: entity.target.trim(),
