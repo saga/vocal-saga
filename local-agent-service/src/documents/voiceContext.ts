@@ -487,6 +487,17 @@ export function sanitizeProjectLiteraryMemory(input: unknown): Record<string, an
     openQuestions: list(raw.openQuestions, 40, 200),
     rejectedItems,
   };
+  const rejectedEntityNames = rejectedItems.filter((item: any) => item.type === 'entity');
+  memory.entities = memory.entities.filter((entity: any) => !rejectedEntityNames.some((rejected: any) => {
+    const kindMatches = rejected.kind === entity.kind || rejected.kind === 'other' || entity.kind === 'other';
+    const names = new Set([rejected.source, ...(Array.isArray(rejected.aliases) ? rejected.aliases : [])].map(normalizeEntityName));
+    return kindMatches && [entity.source, ...(Array.isArray(entity.aliases) ? entity.aliases : [])]
+      .some((name: unknown) => names.has(normalizeEntityName(String(name || ''))));
+  }));
+  const rejectedRelationshipKeys = new Set(rejectedItems.filter((item: any) => item.type === 'relationship')
+    .map((item: any) => [item.subject, item.predicate, item.object].map(normalizeEntityName).join('|')));
+  memory.relationships = memory.relationships.filter((relation: any) =>
+    !rejectedRelationshipKeys.has([relation.subject, relation.predicate, relation.object].map(normalizeEntityName).join('|')));
 
   // The cap applies to the canonical DTO that will actually be persisted, not untrusted
   // input fields that are discarded above. Prune lower-value evidence deterministically;
