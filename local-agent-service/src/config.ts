@@ -59,6 +59,9 @@ export function positiveIntegerEnv(name: string, fallback: number, minimum = 1):
 }
 
 export const REQUEST_TIMEOUT_MS = positiveIntegerEnv('LOCAL_AGENT_TIMEOUT_MS', 180_000, 10_000);
+// Reviewer calls can use high reasoning effort and operate on longer, multi-segment
+// prompts. Keep their deadline separate from ordinary translation/API calls.
+export const REVIEW_TIMEOUT_MS = positiveIntegerEnv('LOCAL_AGENT_REVIEW_TIMEOUT_MS', 300_000, 10_000);
 // 全书预处理要在一个调用里读完数十段样本，输出人物/实体/关系/章节摘要，
 // 单个调用常常超过普通翻译批次的阈值。给这类长任务单独设上限，
 // 避免把「正常的慢」误判成超时；仍然保留硬上限，防止真卡死时无限等待。
