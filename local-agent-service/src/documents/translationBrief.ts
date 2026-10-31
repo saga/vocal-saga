@@ -426,7 +426,7 @@ function buildTemporallyVisibleMemory(
   rawMemory.entities = (Array.isArray(rawMemory.entities) ? rawMemory.entities : []).flatMap((entity: any) => {
     const aliases = Array.isArray(entity?.aliases) ? entity.aliases : [];
     const evidenceRefs = Array.isArray(entity.evidenceRefs) ? entity.evidenceRefs : [];
-    const userConfirmedMapping = entity?.reviewStatus === 'confirmed' && entity?.confirmationSource === 'user-confirmed';
+    const userConfirmedMapping = entity?.reviewStatus === 'confirmed' && ['user-confirmed', 'user-modified'].includes(String(entity?.confirmationSource || ''));
     const confirmedPersonMapping = entity?.kind === 'person' && userConfirmedMapping;
     // Inferred identities still fail closed when a later-only alias appears. A confirmed person
     // translation, however, is the canonical entry in 人物管理: keep it when its source name is
