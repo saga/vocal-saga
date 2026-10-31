@@ -594,6 +594,28 @@ function chineseEditorialStageMetrics(
   return totals;
 }
 
+function chineseEditorialFindingsForRun(db: any, revisionId: string, runId: string | null): any[] {
+  if (!runId) return [];
+  const rows = db.prepare(
+    'SELECT rf.finding_id, rf.segment_id, rf.finding_json, rf.status ' +
+    'FROM review_findings rf JOIN translation_runs tr ON tr.run_id = rf.run_id ' +
+    "WHERE rf.run_id = ? AND tr.source_revision_id = ? AND rf.category = 'style' ORDER BY rf.finding_id"
+  ).all(runId, revisionId) as any[];
+  return rows.flatMap((row) => {
+    let finding: any = {};
+    try { finding = JSON.parse(row.finding_json); } catch { return []; }
+    if (finding.editorialMode !== 'chinese-monolingual') return [];
+    return [{
+      findingId: Number(row.finding_id),
+      segmentId: String(row.segment_id),
+      status: String(row.status),
+      bilingualReviewStatus: typeof finding.bilingualReviewStatus === 'string' ? finding.bilingualReviewStatus : 'pending',
+      applicationStatus: typeof finding.applicationStatus === 'string' ? finding.applicationStatus : 'pending',
+      appliedResultId: typeof finding.appliedResultId === 'string' ? finding.appliedResultId : null,
+    }];
+  });
+}
+
 const GENERIC_CANONICAL_NAME_FORMS = new Set([
   'lord', 'general', 'sire', 'council', 'regent', 'regents', 'ship',
   'sir', 'madam', 'madame', 'captain', 'lady', 'samurai',
@@ -1501,7 +1523,9 @@ export function runProjectQualityAudit(projectId: string, runId?: string): Recor
     proposedTranslation: finding.proposedTranslation,
   }));
   const chineseEditorial = chineseEditorialStageMetrics(context.db, context.currentSourceRevisionId, runId);
-  const chineseEditorialFindings = review.findings.filter((finding) => finding.editorialMode === 'chinese-monolingual');
+  const chineseEditorialFindings = chineseEditorialFindingsForRun(
+    context.db, context.currentSourceRevisionId, chineseEditorial.runId,
+  );
   const chineseEditorialApplied = chineseEditorialFindings.filter((finding) => finding.applicationStatus === 'applied').length;
   const chineseEditorialDismissed = chineseEditorialFindings.filter((finding) => finding.applicationStatus === 'dismissed').length;
   const chineseEditorialPending = chineseEditorialFindings.filter((finding) => !['applied', 'dismissed'].includes(finding.applicationStatus)).length;
