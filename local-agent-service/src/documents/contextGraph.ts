@@ -2054,27 +2054,88 @@ export function getContextGraph(projectId: string): Record<string, unknown> {
  * 明确确认与模型候选必须保持不同状态；当前有翻译 Run 时拒绝修改，避免某批次正在使用的
  * 上下文和随后读取到的图谱版本发生未记录的漂移。
  */
+export function reviewContextGraphItems(
+  projectId: string,
+  items: Array<{ type: 'node' | 'edge'; id: string; status: 'candidate' | 'confirmed' | 'rejected' }>,
+): Array<Record<string, unknown>> {
+  if (!Array.isArray(items) || !items.length || items.length > 500) {
+    throw Object.assign(new Error('review items 必须是 1-500 条记录的数组。'), { status: 400 });
+  }
+  const normalized = items.map((item) => ({
+    type: item?.type,
+    id: typeof item?.id === 'string' ? item.id.trim() : '',
+    status: item?.status,
+  }));
+  const seen = new Set<string>();
+  for (const item of normalized) {
+    if (!['node', 'edge'].includes(String(item.type)) || !item.id ||
+        !['candidate', 'confirmed', 'rejected'].includes(String(item.status))) {
+      throw Object.assign(new Error('每条 review item 需要 type=node|edge、id 和 status=candidate|confirmed|rejected。'), { status: 400 });
+    }
+    const key = String(item.type) + ':' + item.id;
+    if (seen.has(key)) throw Object.assign(new Error('review items 不得包含重复项。'), { status: 400 });
+    seen.add(key);
+  }
+
+  const { db, revisionId } = graphContext(projectId);
+  const reviewed: Array<Record<string, unknown>> = [];
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    // Serialize against Run creation so a batch cannot be partially applied while a translation starts.
+    assertNoActiveTranslation(projectId, db);
+    for (const item of normalized) {
+      const table = item.type === 'node' ? 'context_graph_nodes' : 'context_graph_edges';
+      const key = item.type === 'node' ? 'node_id' : 'edge_id';
+      const row = db.prepare(
+        'SELECT status FROM ' + table + ' WHERE ' + key + ' = ? AND source_revision_id = ?',
+      ).get(item.id, revisionId) as { status?: string } | undefined;
+      if (!row) throw Object.assign(new Error('找不到当前来源版本中的 Context Graph 项：' + item.id), { status: 404 });
+      if (item.status === 'confirmed') {
+        const evidence = db.prepare(
+          'SELECT 1 FROM context_graph_evidence WHERE source_revision_id = ? AND ' + key + ' = ? LIMIT 1',
+        ).get(revisionId, item.id);
+        if (!evidence) throw Object.assign(new Error('没有可核验的原文证据，不能确认此项：' + item.id), { status: 409 });
+      }
+      reviewed.push({
+        type: item.type, id: item.id, previousStatus: row.status,
+        status: item.status, sourceRevisionId: revisionId,
+      });
+    }
+    const now = new Date().toISOString();
+    for (const item of normalized) {
+      const table = item.type === 'node' ? 'context_graph_nodes' : 'context_graph_edges';
+      const key = item.type === 'node' ? 'node_id' : 'edge_id';
+      const sql = 'UPDATE ' + table +
+        ' SET status = ?, attributes_json = json_set(attributes_json, \'$.adoptionSource\', ?), updated_at = ? WHERE ' +
+        key + ' = ? AND source_revision_id = ?';
+      db.prepare(sql).run(
+        item.status,
+        item.status === 'rejected' ? 'user-rejected' : item.status === 'confirmed' ? 'user-confirmed' : 'model-default',
+        now, item.id, revisionId,
+      );
+    }
+    db.exec('COMMIT');
+  } catch (error) {
+    try { db.exec('ROLLBACK'); } catch { /* transaction may already have rolled back */ }
+    throw error;
+  }
+
+  for (const item of reviewed) {
+    getDocumentProjectStore().appendEvent(projectId, null, 'context-graph.reviewed', {
+      type: item.type, id: item.id, previousStatus: item.previousStatus,
+      status: item.status, sourceRevisionId: revisionId,
+    });
+  }
+  return reviewed;
+}
+
 export function reviewContextGraphItem(
   projectId: string,
   type: 'node' | 'edge',
   id: string,
   status: 'candidate' | 'confirmed' | 'rejected',
 ): Record<string, unknown> {
-  if (!['candidate', 'confirmed', 'rejected'].includes(status)) throw Object.assign(new Error('Context Graph 状态无效。'), { status: 400 });
-  const { db, revisionId } = graphContext(projectId);
-  assertNoActiveTranslation(projectId, db);
-  const table = type === 'node' ? 'context_graph_nodes' : 'context_graph_edges';
-  const key = type === 'node' ? 'node_id' : 'edge_id';
-  const row = db.prepare('SELECT status FROM ' + table + ' WHERE ' + key + ' = ? AND source_revision_id = ?').get(id, revisionId) as { status?: string } | undefined;
-  if (!row) throw Object.assign(new Error('找不到当前来源版本中的 Context Graph 项。'), { status: 404 });
-  if (status === 'confirmed') {
-    const evidence = db.prepare('SELECT 1 FROM context_graph_evidence WHERE source_revision_id = ? AND ' + key + ' = ? LIMIT 1').get(revisionId, id);
-    if (!evidence) throw Object.assign(new Error('没有可核验的原文证据，不能确认此项。'), { status: 409 });
-  }
-  db.prepare('UPDATE ' + table + ' SET status = ?, attributes_json = json_set(attributes_json, \'$.adoptionSource\', ?), updated_at = ? WHERE ' + key + ' = ? AND source_revision_id = ?')
-    .run(status, status === 'rejected' ? 'user-rejected' : status === 'confirmed' ? 'user-confirmed' : 'model-default', new Date().toISOString(), id, revisionId);
-  getDocumentProjectStore().appendEvent(projectId, null, 'context-graph.reviewed', { type, id, previousStatus: row.status, status, sourceRevisionId: revisionId });
-  return { type, id, previousStatus: row.status, status, sourceRevisionId: revisionId };
+  return reviewContextGraphItems(projectId, [{ type, id, status }])[0]!;
 }
 
 /**
