@@ -1063,3 +1063,32 @@ Phase 3 的第一批指标已经加入全书 Quality Audit。
 - Benchmark Harness 的单元测试覆盖 rights/ID/目标语言校验、编辑率计算和盲评包模型身份隔离。
 - 正式 100–200 段模型 A/B 运行尚未执行，因为仓库没有被授权的正式文学语料；需要使用公版、用户自有或明确授权数据运行。
 - 根仓库跨项目 CI 仍有 5 个 fanyi-extension 既有用例失败（page cache 版本、source language 默认值、旧 URL 路由）。Local Agent Service 专项工作流通过；这 5 个失败不来自本次新增 local-agent-service 代码。
+
+
+---
+
+## 20. Phase 2 收尾：中文 Editorial Profile 版本演进（2026-10-31）
+
+### 已实现
+
+- 已确认档案不再因为同一来源版本的新译文样本而永久冻结；当抽样 fingerprint 发生变化时，服务端重新生成候选更新。
+- 新候选写入 `chineseEditorialProfile.pendingUpdate`，保留当前已确认的 `profile`、`sampleFingerprint`、`profileVersion` 和证据。
+- 待更新候选记录 `basedOnFingerprint`，防止基于旧基准的候选覆盖更新后的档案。
+- 新增 `accept-update` / `reject-update` 审核动作。接受后版本号递增并切换档案；拒绝后清除待更新项，原版本继续使用。
+- 如果生成期间用户确认了档案，模型结果会在保存前重新读取最新状态；不会覆盖用户确认的版本，而是转为待审更新。
+- Local Agent Service 与 fanyi-extension 的 LiteraryMemory sanitizer 均保留 pending update；Extension 已加入档案展示、证据查看、确认/拒绝和更新切换界面。
+- Extension memory merge 明确保留已有确认版本，避免新候选通过合并流程覆盖它。
+
+### 运行时规则
+
+- 只有 `status=confirmed` 且 `confirmationSource=user-confirmed` 的基础档案注入中文编辑上下文。
+- `pendingUpdate` 只在 UI 展示和等待用户决策，不会进入编辑 Prompt。
+- `accept-update` 必须满足当前 source revision、至少 3 个不同 segment 的证据，以及 `basedOnFingerprint` 与当前基础档案一致。
+- `reject-update` 不影响正在使用的基础档案。
+- 来源文档 revision 改变时，旧版本不应被当作新版本的有效档案；新来源版本需要重新生成并确认。
+
+### 新增测试
+
+- Local Agent Service：确认版本在 pending update 存在时仍然进入 VoiceContext；待更新内容不会替代基础版本。
+- Extension：sanitize 保留版本号和待更新候选；memory merge 不允许新候选覆盖已确认版本。
+- 两个仓库的 CI 分别验证类型检查和测试。
