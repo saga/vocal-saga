@@ -375,7 +375,7 @@ test('literary memory save events retain compact entity and character-voice sync
   assert.equal(firstPayload.literaryEntities[0].source, 'the King');
   assert.equal(firstPayload.characterProfiles[0].canonicalSourceName, 'the King');
   assert.deepEqual(firstPayload.characterProfiles[0].aliases, ['King', 'Corporal King']);
-  assert.equal(firstPayload.characterProfiles[0].status, 'candidate');
+  assert.equal(firstPayload.characterProfiles[0].status, 'confirmed');
   assert.equal(firstPayload.characterProfiles[0].evidenceCount, 1);
   assert.ok(!JSON.stringify(firstPayload).includes('Leave it to me.'),
     'diagnostic events record evidence counts, never full source quotations');
