@@ -18,8 +18,11 @@ const {
 test('literary Run readiness is tied to source revision, analysis version and language direction', () => {
   const run = { sourceRevisionId: 'revision-1', sourceLang: 'en', targetLang: 'zh', translationMode: 'literary' };
   const ready = {
-    sourceRevisionId: 'revision-1', status: 'completed',
-    progress: { analysisVersion: CONTEXT_GRAPH_ANALYSIS_VERSION, sourceLang: 'en', targetLang: 'zh' },
+    sourceRevisionId: 'revision-1', status: 'completed', styleGuideReady: true,
+    progress: {
+      strategy: 'A', sampleCount: 24,
+      analysisVersion: CONTEXT_GRAPH_ANALYSIS_VERSION, sourceLang: 'en', targetLang: 'zh',
+    },
   };
   assert.equal(isContextGraphReadyForTranslationRun(ready, run), true);
   assert.equal(isContextGraphReadyForTranslationRun({ ...ready, sourceRevisionId: 'revision-2' }, run), false);
