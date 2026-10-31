@@ -200,6 +200,14 @@ function buildTemporallyVisibleMemory(
   const rawMemory = context?.memory && typeof context.memory === 'object'
     ? JSON.parse(JSON.stringify(context.memory)) as Record<string, any>
     : empty;
+  const editorialProfile = rawMemory.chineseEditorialProfile;
+  if (!editorialProfile || editorialProfile.status !== 'confirmed' ||
+      editorialProfile.confirmationSource !== 'user-confirmed' ||
+      editorialProfile.sourceRevisionId !== revisionId ||
+      !Array.isArray(editorialProfile.evidenceRefs) ||
+      new Set(editorialProfile.evidenceRefs.map((item: any) => String(item?.segmentId || '')).filter(Boolean)).size < 3) {
+    rawMemory.chineseEditorialProfile = null;
+  }
   const initialMemoryCounts = {
     entities: Array.isArray(rawMemory.entities) ? rawMemory.entities.length : 0,
     relationships: Array.isArray(rawMemory.relationships) ? rawMemory.relationships.length : 0,
