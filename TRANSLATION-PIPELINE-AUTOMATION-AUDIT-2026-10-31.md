@@ -161,3 +161,33 @@
 - 提交：`cc35fe7e03aab09fd8307330575f6d39adc1fce3`、`85e4a3580787d328fe5a6c426f7ef8558eaa25e6`。
 - 验证：Local Agent Service CI run `41165746003` 通过；vocal-saga 完整 CI run `41165746126` 通过全部步骤，包括共享模块检查、类型检查、主项目单测、Local Agent Service 类型检查/单测、fiction quality fixtures 和 library build。
 - Extension 人物删除专项回归 CI run `41165681322` 通过。
+
+## 第四轮续做：删除一致性、弱关系语义与并发写入（2026-10-31）
+
+### 新发现
+
+1. **删除 LiteraryMemory 投影与拒绝 Context Graph 记录不是同一事务。** 如果先拒绝图谱、再保存记忆失败，会出现图谱已拒绝但 UI 仍显示旧人物的部分成功状态；反过来只删除 UI 投影也会在后续图谱刷新时复活。
+2. **关系端点无法唯一定位时，删除不能退化为按 predicate 全局拒绝。** 但也不能因此连 LiteraryMemory 投影都不保存；安全行为是只跳过无法可靠定位的图谱边，仍保存用户明确删除后的记忆 revision。
+3. **普通记忆编辑与删除存在异步写入竞态。** 删除操作如果在较早的记忆写入尚未完成时先生成快照，或者删除完成后被较晚到达的旧快照覆盖，可能重新出现已删除实体。
+4. **图谱共同出现关系的语义过强。** 原文引文同时提到两个人，只能证明二者在该段共同出现，不能证明亲属、阵营、动机或具体行为。即使图谱边状态是模型默认采纳，也不能将其作为已核实剧情事实。
+5. **已拒绝实体必须从所有下游投影排除。** 仅在人物/声音上下文中过滤不够；如果 TranslationBrief 的 canonical name mapping 仍携带该实体，拒绝记录仍可能进入翻译提示。
+
+### 已提交修复
+
+- vocal-saga 的 /context-graph/review batch API 支持同时提交 items 和更新后的 memory。图谱状态、LiteraryMemory revision、项目事件在同一 SQLite 写事务中提交；记忆验证或写入失败会回滚全部图谱决定。
+- fanyi-extension 人物、实体、关系删除统一使用该原子接口；当没有可安全匹配的图谱项时，使用 LiteraryMemory-only 写入，不按模糊 predicate 扩大拒绝范围。
+- 将普通记忆编辑和删除纳入同一串行队列。删除先等待已有编辑完成，再基于最新资料生成快照并排队提交，避免较早的异步保存覆盖删除结果。新增并发回归测试。
+- TranslationBrief 在实体进入任何后续投影前过滤 reviewStatus=rejected，防止已拒绝实体继续成为 canonical mapping。
+- voiceContext 只在关系两端实体都进入当前可见上下文时输出该关系，避免孤立端点关系泄漏。
+- Context Graph 的共同出现关系统一标记为 kind=observed-association、confidence=candidate；翻译 Prompt 明确说明它只是弱连续性线索，不代表具体关系或剧情事实。
+- 更新 vocal-saga/local-agent-service/AGENTS.md 与 fanyi-extension/AGENTS.md，保持默认采纳、用户拒绝持久化、事务边界和自动修正原则一致。
+
+### 回归验证
+
+- vocal-saga：Local Agent Service CI run 41167502941 通过；完整 CI run 41167502938 通过。新增图谱共同出现关系弱语义测试随这两组 CI 通过。
+- fanyi-extension：最新 CI run 41167653389 通过；此前串行队列实现的中间提交曾因删除 helper 在队列内部再次等待同一队列而超时，已修复该自等待死锁。修复后的 run 41167611763、41167629485 和最终并发回归 run 41167653389 均通过。
+- 相关改动均直接提交到两个仓库的 main 分支。
+
+### 当前结论
+
+删除动作现在覆盖服务端图谱事实、LiteraryMemory revision 和扩展端异步写入顺序；共同出现关系不会再被提示词当成已经证实的剧情关系。剩余风险主要在真实长篇样本中的语义质量与跨章节回归覆盖，不是本轮已发现的事务或并发缺陷。后续抽样应重点检查：用户拒绝后重新分析是否仍保持拒绝、关系端点仅出现一端时是否不泄漏、以及模型默认实体译名是否始终保持候选置信度而不被误当作受保护术语。
