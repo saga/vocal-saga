@@ -257,6 +257,7 @@ test('M4 paired-run evaluation uses the real-novel corpus and withholds A/B mapp
     const run = store.createRun(project.projectId, { scope: { type: 'all' } });
     values.forEach((item) => store.saveCandidate(project.projectId, run.runId, item.id, item.translated_text));
     store.finishRun(project.projectId, run.runId);
+    store.acceptCandidates(project.projectId, run.runId);
     return store.getRun(project.projectId, run.runId);
   };
   // The M0 control deliberately contains one missing item. The M4 API requires two completed
@@ -266,8 +267,8 @@ test('M4 paired-run evaluation uses the real-novel corpus and withholds A/B mapp
   const before = createRunWithTranslations(completeBefore);
   const after = createRunWithTranslations(realNovelFixture.improvedExampleTranslations);
   assert.equal(before.sourceRevisionId, after.sourceRevisionId);
-  assert.equal(before.status, 'awaiting_acceptance');
-  assert.equal(after.status, 'awaiting_acceptance');
+  assert.equal(before.status, 'completed');
+  assert.equal(after.status, 'completed');
 
   const created = createProjectQualityEvaluation(project.projectId, before.runId, after.runId);
   assert.equal(created.comparable, true);
@@ -314,6 +315,7 @@ test('paired-run evaluation withholds A/B mapping until every sampled segment ha
     const run = store.createRun(project.projectId, { scope: { type: 'all' } });
     values.forEach(([id, translation]) => store.saveCandidate(project.projectId, run.runId, id, translation));
     store.finishRun(project.projectId, run.runId);
+    store.acceptCandidates(project.projectId, run.runId);
     return store.getRun(project.projectId, run.runId);
   };
   const before = createRunWithTranslations([
@@ -326,8 +328,8 @@ test('paired-run evaluation withholds A/B mapping until every sampled segment ha
     ['eval-2', '伊文关上那扇沉重的门。'],
     ['eval-3', '让西侧的灯一直亮着。'],
   ]);
-  assert.equal(before.status, 'awaiting_acceptance');
-  assert.equal(after.status, 'awaiting_acceptance');
+  assert.equal(before.status, 'completed');
+  assert.equal(after.status, 'completed');
 
   const created = createProjectQualityEvaluation(project.projectId, before.runId, after.runId);
   assert.equal(created.comparable, true);
