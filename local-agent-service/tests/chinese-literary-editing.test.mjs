@@ -84,6 +84,10 @@ test('Chinese literary editor receives only Chinese draft text and target-langua
   assert.doesNotMatch(prompt, /最近/);
   assert.match(systemPrompt, /不会收到外文原文/);
   assert.match(systemPrompt, /原稿已经自然、准确/);
+  assert.match(systemPrompt, /保守型中文文学编辑/);
+  assert.match(systemPrompt, /最小必要修改/);
+  assert.match(systemPrompt, /不得为了体现编辑工作而强行修改/);
+  assert.match(systemPrompt, /不能明确证明自然度、声音或节奏有所改善/);
 });
 
 test('target-only voice projection removes source identity, quotations, summaries and relationships', () => {
