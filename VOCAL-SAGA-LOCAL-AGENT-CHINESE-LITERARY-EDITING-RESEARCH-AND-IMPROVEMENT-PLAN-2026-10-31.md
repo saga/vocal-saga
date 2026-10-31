@@ -1092,3 +1092,10 @@ Phase 3 的第一批指标已经加入全书 Quality Audit。
 - Local Agent Service：确认版本在 pending update 存在时仍然进入 VoiceContext；待更新内容不会替代基础版本。
 - Extension：sanitize 保留版本号和待更新候选；memory merge 不允许新候选覆盖已确认版本。
 - 两个仓库的 CI 分别验证类型检查和测试。
+
+
+### 版本演进实现验证补充（2026-10-31）
+
+- Local Agent Service 在包含 `applyChineseEditorialProfileReview` 状态迁移单元测试的提交 `8ab3e14a5d31e5bbf33c5acb034ad5c5b21f7c6a` 上通过全部专项测试、TypeScript typecheck、API manifest 和 BookScan synthetic benchmark。
+- fanyi-extension 在包含 LiteraryMemory sanitizer、merge 保护、档案卡片和更新审核按钮的提交 `05508c804f2294ae8a4ea60dd78d60f1be00735a` 上 CI 通过。
+- 本轮没有运行真实作品的模型重分析；档案更新行为由状态迁移、序列化和运行上下文隔离测试覆盖。正式效果仍需真实作品数据验证。
