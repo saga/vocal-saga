@@ -438,6 +438,20 @@ test('literary voice profiles auto-activate after independent source evidence co
     assert.equal(saved.evidence.length, 3);
     assert.equal(saved.confidence, null,
       'activation is based on independently verified source evidence, never model self-reported confidence');
+
+    store.createSourceRevision(project.projectId, {
+      title: project.title,
+      format: 'epub',
+      segments: [
+        { id: 'voice-1', text: 'Alice answered in a measured tone.', contextPath: 'Chapter 1' },
+        { id: 'voice-2', text: 'She paused, then asked a short question.', contextPath: 'Chapter 2' },
+        { id: 'voice-3', text: 'Alice replied with a different sentence.', contextPath: 'Chapter 3' },
+      ],
+    });
+    const afterSourceChange = store.getCurrentLiteraryMemory(project.projectId).memory.characterVoices[0];
+    assert.equal(afterSourceChange.status, 'candidate');
+    assert.equal(afterSourceChange.confirmationSource, undefined,
+      'machine activation must be revoked when current-source evidence no longer meets the threshold');
   });
 });
 
