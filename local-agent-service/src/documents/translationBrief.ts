@@ -622,6 +622,12 @@ function buildTemporallyVisibleMemory(
     temporallyVisibleCharacterVoices: rawMemory.characterVoices.length,
     characterVoicesExcludedByBoundary: Math.max(0, initialMemoryCounts.characterVoices - rawMemory.characterVoices.length),
     acceptedExampleCandidates: scoredExamples.length,
+    acceptedExampleRowsRetrieved: acceptedExampleRows.length,
+    acceptedExampleManualCandidates: acceptedExampleRows.filter((row) => row.origin === 'manual').length,
+    acceptedExampleSameChapterCandidates: acceptedExampleRows.filter((row) => currentChapters.has(String(row.chapter || ''))).length,
+    acceptedExampleRecentWindowCandidates: acceptedExampleRows.filter((row) => Number(row.ordinal) >= recentOrdinalBoundary).length,
+    acceptedExampleCandidateTermCount: candidateTerms.length,
+    acceptedExampleSourceTokenCount: currentTokens.size,
     selectedAcceptedExamples: retrievedExamples.length,
   };
   return rawMemory;
@@ -786,6 +792,8 @@ export function buildTranslationBrief(
   const graphRetrievalDiagnostics = (graph as any)?.retrievalDiagnostics &&
     typeof (graph as any).retrievalDiagnostics === 'object'
     ? { ...(graph as any).retrievalDiagnostics } : {};
+  let graphMappingCandidatesBeforeBatchFilter = 0;
+  let graphMappingsExcludedNotMentioned = 0;
   if (graph && Object.prototype.hasOwnProperty.call(graph, 'retrievalDiagnostics')) {
     delete (graph as any).retrievalDiagnostics;
   }
@@ -987,20 +995,31 @@ export function buildTranslationBrief(
       graph.nameMappings = graph.nameMappings.filter((mapping: any) => !matches(mapping));
       graph.nameMappings.unshift({ ...incoming, aliases: mergedAliases });
     }
+    const isVisibleInBatch = (name: unknown) => typeof name === 'string' && !!name.trim() &&
+      [...visiblePrecedingSegments, ...items].some((item) => sourceNameMatches(item.text, name));
+    graphMappingCandidatesBeforeBatchFilter = graph.nameMappings.length;
+    graph.nameMappings = graph.nameMappings.flatMap((mapping: any) => {
+      const source = typeof mapping?.source === 'string' ? mapping.source.trim() : '';
+      const aliases = safeCanonicalSourceAliases(source, mapping?.aliases).filter(isVisibleInBatch);
+      if (!isVisibleInBatch(source) && !aliases.length) return [];
+      return [{ ...mapping, aliases }];
+    });
+    graphMappingsExcludedNotMentioned = graphMappingCandidatesBeforeBatchFilter - graph.nameMappings.length;
     graph.nameMappings.sort((a: any, b: any) => {
       const rank = (mapping: any) => {
-        const statusRank = ['confirmed', 'confirmed-memory'].includes(String(mapping?.sourceStatus || '')) ? 5 :
-          mapping?.sourceStatus === 'auto' ? 4 : mapping?.sourceStatus === 'run-canonical' ? 3 : 1;
-        const names = [mapping?.source, ...(Array.isArray(mapping?.aliases) ? mapping.aliases : [])];
+        const names = [mapping.source, ...(Array.isArray(mapping.aliases) ? mapping.aliases : [])];
         const inCurrent = names.some((name: unknown) => items.some((item) => sourceNameMatches(item.text, name))) ? 2 : 0;
         const inPreceding = names.some((name: unknown) => visiblePrecedingSegments.some((item) =>
           sourceNameMatches(item.text, name))) ? 1 : 0;
+        const statusRank = ['confirmed', 'confirmed-memory'].includes(String(mapping.sourceStatus)) ? 5 :
+          mapping.sourceStatus === 'auto' ? 4 : mapping.sourceStatus === 'run-canonical' ? 3 : 1;
         return statusRank + inCurrent + inPreceding;
       };
       return rank(b) - rank(a);
     });
-    // Keep every source-visible mapping; relevance ordering is useful, but a fixed count can
-    // discard a confirmed name needed later in the same batch.
+    // Retain every mapping actually mentioned in this batch or its visible preceding context.
+    // A mapping for an unrelated person mentioned hundreds of pages earlier is retrieved again
+    // when that name becomes relevant; it does not need to inflate every intervening request.
     if (characterProfileMappingConflictCount) {
       logInfo('translation-brief', 'confirmed character profile mapping conflicts=' + characterProfileMappingConflictCount);
     }
@@ -1032,6 +1051,41 @@ export function buildTranslationBrief(
   // Graph chapter order is derived from source segment order and therefore is the canonical
   // boundary. Do not use memory-only summaries when chapter matching could be ambiguous.
   voiceContext.chapterSummaries = graph && chapterPath ? graph.chapterSummaries : [];
+
+  // Size attribution is metadata-only: it lets diagnostics identify which retrieved
+  // component dominates a prompt without exporting source, translation, or memory text.
+  const jsonChars = (value: unknown) => JSON.stringify(value ?? null)?.length || 0;
+  const sectionStats = (value: unknown) => {
+    const chars = jsonChars(value);
+    if (!Array.isArray(value)) return { chars, count: value && typeof value === 'object' ? Object.keys(value as object).length : 0 };
+    const itemChars = value.map((item) => jsonChars(item)).sort((a, b) => a - b);
+    return {
+      chars, count: value.length,
+      itemCharsTotal: itemChars.reduce((sum, item) => sum + item, 0),
+      itemCharsMax: itemChars[itemChars.length - 1] || 0,
+      itemCharsMedian: itemChars.length ? itemChars[Math.floor(itemChars.length / 2)] : 0,
+    };
+  };
+  const componentDiagnostics = {
+    glossary: sectionStats(glossary),
+    precedingSegments: sectionStats(visiblePrecedingSegments),
+    contextGraph: {
+      chars: jsonChars(graph),
+      sections: Object.fromEntries(Object.entries(graph || {}).map(([key, value]) => [key, sectionStats(value)])),
+    },
+    voiceContext: {
+      chars: jsonChars(voiceContext),
+      sections: Object.fromEntries(Object.entries(voiceContext).map(([key, value]) => [key, sectionStats(value)])),
+    },
+  };
+  const componentLargest = [
+    ['glossary', componentDiagnostics.glossary.chars],
+    ['precedingSegments', componentDiagnostics.precedingSegments.chars],
+    ['contextGraph', componentDiagnostics.contextGraph.chars],
+    ['voiceContext', componentDiagnostics.voiceContext.chars],
+  ].sort((a, b) => Number(b[1]) - Number(a[1])).slice(0, 4)
+    .map(([key, chars]) => key + ':' + chars).join(',');
+
   const brief: TranslationBrief = {
     version: 1,
     policyVersion: TRANSLATION_BRIEF_POLICY_VERSION,
@@ -1054,6 +1108,8 @@ export function buildTranslationBrief(
         ? (temporalMemory as any).__translationBriefDiagnostics : {}),
       ...graphRetrievalDiagnostics,
       characterProfileMappingConflictCount,
+      graphMappingCandidatesBeforeBatchFilter,
+      graphMappingsExcludedNotMentioned,
       precedingContextAvailable: precedingSegments.length,
       precedingContextConfigured: strategy.precedingContextSegments,
       precedingContextInjected: visiblePrecedingSegments.length,
@@ -1107,6 +1163,7 @@ export function buildTranslationBrief(
   diagnostic.glossaryTermsAfterBudget = finalCount((brief.glossary as any)?.document_terms);
   diagnostic.glossaryTermsTrimmedByBudget = 0;
   diagnostic.contextDeltaCandidatesAvailable = Math.max(0, Number(brief.contextDeltaCount || 0));
+  diagnostic.contextComponents = componentDiagnostics;
   brief.contextChars = serialized.length;
   brief.contextHash = createHash('sha256').update(serialized, 'utf8').digest('hex');
   logInfo('translation-brief', 'assembled · segments=' + brief.sourceSegmentIds.length +
@@ -1115,7 +1172,8 @@ export function buildTranslationBrief(
     ' (strong=' + (Array.isArray((brief.contextGraph as any)?.nameMappings) ? (brief.contextGraph as any).nameMappings.filter((m: any) => ['confirmed','confirmed-memory','auto','run-canonical'].includes(String(m.sourceStatus))).length : 0) + ')' +
     ' · voiceEntities=' + (Array.isArray((brief.voiceContext as any)?.entities) ? (brief.voiceContext as any).entities.length : 0) +
     ' · voiceCharacters=' + (Array.isArray((brief.voiceContext as any)?.characterVoices) ? (brief.voiceContext as any).characterVoices.length : 0) +
-    ' · preceding=' + brief.precedingSegments.length);
+    ' · preceding=' + brief.precedingSegments.length +
+    ' · componentChars=' + componentLargest);
   return brief;
 }
 

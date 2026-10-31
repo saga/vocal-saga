@@ -109,7 +109,7 @@ sequenceDiagram
 - **状态转换以 SQLite 为准**：内存中的 `activeRuns` 只用于本进程去重，不是持久化状态来源。服务重启后应从 Store 恢复状态或重试失败范围。
 - **停止边界是写入边界**：模型调用前、调用返回后、候选写入前都需要再次检查 Run 状态；数据库事务还会拒绝在取消/暂停后提交迟到结果。
 - **审校不是翻译成功的前置条件**：审校失败会写入 warning，并保留有效初译候选。审校修订和 supporting findings 应一起原子提交。
-- **上下文快照可追溯**：同一批次的初译和 Reviewer 使用同一份 TranslationBrief；保存的 revision IDs、hash 和字符数用于审计，不代表完整模型请求的全部长度。
+- **上下文快照可追溯**：同一批次的初译和 Reviewer 使用同一份 TranslationBrief；保存的 revision IDs、hash 和字符数用于审计，不代表完整模型请求的全部长度。TranslationBrief 同时记录不含正文的组件大小统计（glossary、preceding segments、Context Graph、voice context 及各自子项），人物声音检索还记录 accepted-example 候选数、筛选数和最终注入数。诊断包只导出这些计数、字符数和条目长度分布，不导出原文、译文或记忆正文。
 
 ## 4. 文档抽取与预处理
 

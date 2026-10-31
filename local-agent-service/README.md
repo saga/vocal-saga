@@ -71,7 +71,7 @@ npm run diagnose:bundle -- --out /tmp/vocal-saga-diagnostics
 npm run diagnose:bundle -- --no-logs
 ```
 
-脚本按 `catalog.sqlite` 中 `document_projects.updated_at DESC` 选择最近更新的两个未归档项目。v2 只导出诊断所需的紧凑信息：来源版本与片段数量/长度、Prompt 和 LiteraryMemory 版本指纹、Run scope/status、run-segment 状态计数、译文记录数量/长度、Reviewer 分类、TranslationBrief 大小、Context Graph 统计与阶段耗时、质量审计指标和有界事件时间线。不会导出原文/译文正文、完整 Prompt、Context Graph Source Feature 行、原始 TranslationBrief、上下文增量、质量 finding 正文或完整事件 payload。
+脚本按 `catalog.sqlite` 中 `document_projects.updated_at DESC` 选择最近更新的两个未归档项目。v3 导出来源版本与片段数量/长度、Prompt 和 LiteraryMemory 版本指纹、Run scope/status、run-segment 状态计数、译文记录数量/长度、Reviewer 输入/输出/失败/补审覆盖统计、TranslationBrief 各组成部分的字符数和条目数、Context Graph 检索统计、质量审计指标、SQLite 查询错误及有界事件时间线。诊断器只在内存中解析已保存的 TranslationBrief，导出组件大小/数量/最大条目长度/重复条目计数，不导出任何组件正文。不会导出原文/译文正文、完整 Prompt、Context Graph Source Feature 行、原始 TranslationBrief、上下文增量、质量 finding 正文或完整事件 payload。
 
 默认还会从 `LOCAL_AGENT_LOG_FILE`（未设置时为 `~/.vocal-saga-local-agent/logs/local-agent.log`）读取**末尾最多 512 KiB**，筛选至多 180 行服务生命周期、重启、异常和 Provider 超时相关日志；上传包前仍应检查这些错误信息。可使用 `--no-logs` 完全排除日志。脚本设置 `COPYFILE_DISABLE=1`，避免 macOS tar 将 `._*` AppleDouble 元数据附加到归档。`--analyze` 只把紧凑摘要和日志计数发送给本机 CodeBuddy，不会把书稿正文发送给分析模型。
 
