@@ -2177,18 +2177,16 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
       stage: 'validate',
       label: '结果结构与片段映射检查完成',
     });
-    let finishedRun = store.finishRun(projectId, runId);
-
-    // 只把当前来源版本且通过证据校验的模型结果以 model-default 写入项目记忆；
-    // 在 Run 释放 awaiting_acceptance 状态前完成事务，避免下一轮 Run 捕获旧记忆快照。
-    if (context.run.translationMode === 'literary' && ['awaiting_acceptance', 'completed', 'partial'].includes(finishedRun.status)) {
+    // Keep the Run in 'running' until the context-memory transaction commits. This prevents
+    // a new Run from snapshotting stale memory in the gap between translation completion and finalization.
+    if (context.run.translationMode === 'literary') {
       try {
         const projectContext = store.getProjectContext(projectId);
         const db = projectContext.db;
         db.exec('BEGIN IMMEDIATE');
         try {
           const lockedRunStatus = store.getRunStatus(projectId, runId);
-          if (!['awaiting_acceptance', 'completed', 'partial'].includes(lockedRunStatus)) {
+          if (lockedRunStatus !== 'running') {
             store.appendEvent(projectId, runId, 'translation.context-memory.skipped', {
               reason: 'run-left-finalization-before-memory-commit',
               runStatus: lockedRunStatus,
@@ -2240,6 +2238,8 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
         });
       }
     }
+
+    let finishedRun = store.finishRun(projectId, runId);
 
     // 候选采纳属于服务端 Run 的最终化，不依赖浏览器工作区保持打开。
     // Store 的事务仍会检查来源版本与更新过的人工修订，不允许自动采纳覆盖人工版本。
