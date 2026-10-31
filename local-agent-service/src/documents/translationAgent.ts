@@ -19,6 +19,7 @@ import { buildTranslationBrief, summarizeTranslationBrief, type TranslationBrief
 import { runProjectQualityAudit, createQualityRepairRun } from './qualityAudit.ts';
 import { CONTEXT_GRAPH_ANALYSIS_VERSION, getContextGraphStatus, startContextGraphAnalysis } from './contextGraph.ts';
 import { logError, logInfo, logWarn } from '../log.ts';
+import { scheduleChineseEditorialProfileRefresh } from './chineseEditorialProfile.ts';
 import { isWorthCanonicalEntityMapping, validateCanonicalTarget } from './canonicalEntityPolicy.ts';
 import {
   combineTranslationContextDeltas,
@@ -2168,6 +2169,9 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
       // 本运行累计 token 消耗（仅初译模型调用；审校/预处理各自有 model.usage 事件）。
       usage: summarizeTurnUsage(takeRunUsage(runId)),
     });
+    if (['completed', 'partial'].includes(finishedRun.status)) {
+      scheduleChineseEditorialProfileRefresh(projectId, runId);
+    }
 
     // 完整/部分运行结束后自动检查全书；只自动返工确定性缺译，最多一轮。
     // 启发式英文残留、数字差异、重复表达和规范名冲突留给有界 Reviewer/非阻塞报告处理。
