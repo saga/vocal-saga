@@ -176,7 +176,7 @@ LOCAL_AGENT_ALLOWED_HOSTS=local.sunxiunan.com
 - `POST /api/cache/translation/delete`：删除指定缓存 key，用于清除检测到的缺失片段/无效译文缓存，防止一直重复命中不完整结果。
 - `DELETE /api/cache/translation`：清空本机翻译缓存；扩展的“清空缓存”会同时清理本机缓存。
 - `POST /api/documents/batches`：把结构化文档片段交给本机服务计算批次边界。支持字符数、片段数、章节/PDF 页边界约束，返回片段 ID 而不是重复传回全文；服务不可用时扩展才使用同一套确定性本地计算作为降级，不会调用远程服务。
-- `POST /api/documents/session/save` / `POST /api/documents/session/get`：服务端 reader-session。Local Agent 扩展的新写入只保存 `projectBacked: true`、`projectId`、来源文件名、阅读位置、语言/视图和轻量进度状态；不保存正文、译文、LiteraryMemory 或 Context Graph。恢复时通过 projectId 读取项目数据库，再分页加载来源片段、已采纳译文和 LiteraryMemory。旧版包含全文/译文/记忆的 session payload 仅为历史迁移兼容保留，不再作为新写入格式。
+- `POST /api/documents/session/save` / `POST /api/documents/session/get`：服务端 reader-session。Local Agent 扩展的新写入只保存 `projectBacked: true`、`projectId`、来源文件名、阅读位置、语言/视图和轻量进度状态；不保存正文、译文、LiteraryMemory 或 Context Graph。恢复时通过 projectId 读取项目数据库，再分页加载来源片段、已采纳译文和 LiteraryMemory。旧版包含全文/译文/记忆的 session payload 可能仍存在于旧数据库中，但当前扩展不再读取或恢复它们；下一次成功写入 project-backed reader-session 时会以 `mergeExisting: false` 覆盖旧 payload。它们不属于当前项目事实来源。
 - `POST /api/documents/session/summary`：只返回恢复卡片所需的标题、格式与更新时间，不传回项目正文。Local Agent 模式下该 reader-session 是服务端保存的轻量项目引用，不是扩展 IndexedDB 的备份副本。
 - Local Agent 阅读器由扩展负责文件选择和 UI；EPUB/PDF 原始文件通过 `POST /api/documents/projects/import-file` 上传，由服务端解析、分段和持久化。扩展只读取分页内容，不保存第二份全书解析结果。非 Local Agent 兼容路径仍可使用浏览器解析器。
 
