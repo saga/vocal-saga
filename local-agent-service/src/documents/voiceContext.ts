@@ -641,6 +641,7 @@ export function buildProjectVoiceContext(
       return bSameChapter - aSameChapter;
     });
   const entities = memory.entities.filter((entity: any) =>
+    entity.reviewStatus !== 'rejected' &&
     [entity.source, ...entity.aliases].some((name: string) => name && containsEntityName(source, name)))
     .sort((a: any, b: any) => {
       const score = (entity: any) => [entity.source, ...entity.aliases]
@@ -653,7 +654,14 @@ export function buildProjectVoiceContext(
   const names = new Set(entities.flatMap((entity: any) =>
     [entity.source, ...entity.aliases].map((name: string) => normalizeEntityName(name)).filter(Boolean)));
   const relationships = memory.relationships.filter((relation: any) =>
-    names.has(normalizeEntityName(relation.subject)) || names.has(normalizeEntityName(relation.object)));
+    relation.reviewStatus !== 'rejected' &&
+    (names.has(normalizeEntityName(relation.subject)) || names.has(normalizeEntityName(relation.object))))
+    .map((relation: any) => ({
+      ...relation,
+      // Model-default relationships are active continuity hints, not user-verified plot facts.
+      confidence: ['user-confirmed', 'user-modified'].includes(String(relation.confirmationSource || ''))
+        ? 'user-confirmed' : 'candidate',
+    }));
 
   // Chapter summaries are durable book context, but should not grow into a full-book prompt
   // or leak later chapters into the current one. Include summaries only when the current chapter
@@ -684,8 +692,9 @@ export function buildProjectVoiceContext(
     entities: entities.map((entity: any) => ({
       source: entity.source, target: entity.target, kind: entity.kind, aliases: entity.aliases,
       reviewStatus: entity.reviewStatus,
-      targetConfidence: entity.reviewStatus === 'confirmed' ? 'confirmed' :
-        entity.targetConfidence === 'corroborated' ? 'corroborated' : 'candidate',
+      targetConfidence: ['user-confirmed', 'user-modified'].includes(String(entity.confirmationSource || ''))
+        ? 'confirmed' : entity.targetConfidence === 'corroborated' ? 'corroborated' : 'candidate',
+      confirmationSource: entity.confirmationSource || 'legacy-unknown',
       targetEvidenceCount: new Set((Array.isArray(entity.targetEvidenceRefs) ? entity.targetEvidenceRefs : [])
         .filter((ref: any) => normalizeEntityName(String(ref?.targetSurface || '')) === normalizeEntityName(String(entity.target || '')))
         .map((ref: any) => String(ref?.segmentId || '')).filter(Boolean)).size,
@@ -714,7 +723,8 @@ export function buildProjectVoiceContext(
       'styleGuide 默认启用，只约束叙述语域、节奏、措辞与表达习惯，不提供剧情事实。',
       'dialogueParticipants 只表示由已批准声音锚点或明确关联当前前文对白的关系规则支持的参与者；这不是自由推断。没有此类证据时不得猜测说话人或听话人。',
       'recentExamples 只来自同一来源版本、当前片段之前且已经采纳的译文；它们是表达参考，不是必须逐字复用的模板。',
-      'entities 中 targetConfidence=candidate 的目标译名只是待核对参考，不能被视为已确认译名或强制约束；只有 confirmed 或已独立佐证的 corroborated 映射可获得更高优先级。',
+      'entities 中 targetConfidence=candidate 的目标译名只是弱参考，不能被视为已确认译名或强制约束；只有用户确认/修改的映射或已独立佐证的 corroborated 映射可获得更高优先级。',
+      'relationships 中 confidence=candidate 表示模型默认采纳的低置信度连续性提示，不是已核实剧情事实；当前原文优先，不得仅凭该关系补写行为、动机或背景。用户明确确认/修改的关系可作为较强参考，但仍不能覆盖当前原文。'
       '不确定说话人或听话人时，不得猜测身份或强行套用人物画像；原意、叙事事实与当前场景优先，不添加无证据口头禅、方言、情绪或修辞。',
     ],
   };
