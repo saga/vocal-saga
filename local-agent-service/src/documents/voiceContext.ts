@@ -659,7 +659,7 @@ export function buildProjectVoiceContext(
 
   const result = {
     version: 1, policyVersion: 'character-voice-v4-dialogue-participants',
-    styleGuide: memory.styleGuideAutoDisabled !== true ? memory.styleGuide : {},
+    styleGuide: memory.styleGuideAutoDisabled !== true && ['context-graph', 'user-edited', 'user-confirmed'].includes(String(memory.styleGuideOrigin || '')) ? memory.styleGuide : {},
     styleGuideStatus: memory.styleGuideStatus,
     styleGuideOrigin: memory.styleGuideOrigin,
     chineseEditorialProfile: memory.chineseEditorialProfile?.status !== 'rejected'
