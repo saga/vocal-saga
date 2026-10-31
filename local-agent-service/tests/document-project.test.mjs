@@ -400,7 +400,7 @@ test('one workspace cannot run two translation jobs concurrently', async () => {
 });
 
 
-test('literary voice profiles auto-activate after independent source evidence covers multiple dimensions', async () => {
+test('literary voice profiles are default-adopted regardless of evidence count', async () => {
   await withStore((store) => {
     const project = store.createProject({
       title: 'Evidence Verified Voice',
@@ -434,10 +434,10 @@ test('literary voice profiles auto-activate after independent source evidence co
 
     const saved = store.getCurrentLiteraryMemory(project.projectId).memory.characterVoices[0];
     assert.equal(saved.status, 'confirmed');
-    assert.equal(saved.confirmationSource, 'evidence-verified');
+    assert.equal(saved.confirmationSource, 'model-default');
     assert.equal(saved.evidence.length, 3);
     assert.equal(saved.confidence, null,
-      'activation is based on independently verified source evidence, never model self-reported confidence');
+      'model self-reported confidence remains uncalibrated metadata and does not control adoption');
 
     store.createSourceRevision(project.projectId, {
       title: project.title,
@@ -449,13 +449,14 @@ test('literary voice profiles auto-activate after independent source evidence co
       ],
     });
     const afterSourceChange = store.getCurrentLiteraryMemory(project.projectId).memory.characterVoices[0];
-    assert.equal(afterSourceChange.status, 'candidate');
-    assert.equal(afterSourceChange.confirmationSource, undefined,
-      'machine activation must be revoked when current-source evidence no longer meets the threshold');
+    assert.equal(afterSourceChange.status, 'confirmed');
+    assert.equal(afterSourceChange.confirmationSource, 'model-default');
+    assert.equal(afterSourceChange.evidence.length, 2,
+      'stale excerpts are removed, but the remaining model-default profile is not sent for human approval');
   });
 });
 
-test('candidate literary voice profiles remain candidates when evidence is sparse or one-dimensional', async () => {
+test('sparse literary voice profiles are still default-adopted', async () => {
   await withStore((store) => {
     const project = store.createProject({
       title: 'Insufficient Voice Evidence',
@@ -481,12 +482,12 @@ test('candidate literary voice profiles remain candidates when evidence is spars
       }],
     });
     const saved = store.getCurrentLiteraryMemory(project.projectId).memory.characterVoices[0];
-    assert.equal(saved.status, 'candidate');
-    assert.equal(saved.confirmationSource, undefined);
+    assert.equal(saved.status, 'confirmed');
+    assert.equal(saved.confirmationSource, 'model-default');
   });
 });
 
-test('literary memory confirms only current-source evidence and accepted translation anchors', async () => {
+test('literary memory default-adopts profiles while validating source and translation anchors', async () => {
   await withStore((store) => {
     const source = [
       { id: 'ch1-p1', text: 'Alice asked Bob, “Really?”', kind: 'dialogue', contextPath: 'Chapter 1' },
@@ -538,10 +539,12 @@ test('literary memory confirms only current-source evidence and accepted transla
     store.saveLiteraryMemory(project.projectId, memory);
     const saved = store.getCurrentLiteraryMemory(project.projectId).memory;
     assert.equal(saved.characterVoices.find((item) => item.characterId === 'char-alice').status, 'confirmed');
-    assert.equal(saved.characterVoices.some((item) => item.characterId === 'char-bob'), false,
-      'a profile with no source-grounded evidence is discarded instead of becoming an executable guess');
-    assert.equal(saved.relationshipVoiceRules.length, 0,
-      'relationship voice rules cannot survive when one of the referenced characters has no valid profile');
+    assert.equal(saved.characterVoices.find((item) => item.characterId === 'char-bob').status, 'confirmed',
+      'a model profile remains default-adopted even when its evidence excerpt needs correction');
+    assert.equal(saved.characterVoices.find((item) => item.characterId === 'char-bob').evidence.length, 0);
+    assert.equal(saved.relationshipVoiceRules.length, 1,
+      'a directional relationship rule remains active without a human approval step');
+    assert.deepEqual(saved.relationshipVoiceRules[0].evidenceSegmentIds, ['ch1-p1']);
     assert.equal(saved.voiceAnchors.find((item) => item.anchorId === 'anchor-valid').status, 'approved');
     assert.equal(saved.voiceAnchors.find((item) => item.anchorId === 'anchor-wrong-target').status, 'candidate',
       'an anchor target must exist in the accepted translation for the referenced segment');
@@ -1095,7 +1098,7 @@ test('Chinese monolingual style proposal remains blocked when bilingual review d
 });
 
 
-test('Chinese editorial profile confirmation is retained only while accepted target evidence is valid', async () => {
+test('default-adopted Chinese editorial profile retains surviving accepted evidence', async () => {
   await withStore((store) => {
     const profileSegments = [
       { id: 'ed-p1', text: 'The room was quiet.', kind: 'paragraph', contextPath: 'Chapter 1' },
@@ -1153,7 +1156,8 @@ test('Chinese editorial profile confirmation is retained only while accepted tar
       },
     });
     const current = store.getCurrentLiteraryMemory(project.projectId).memory.chineseEditorialProfile;
-    assert.equal(current.status, 'candidate');
+    assert.equal(current.status, 'confirmed');
+    assert.equal(current.confirmationSource, 'model-default');
     assert.equal(current.evidenceRefs.length, 2);
     assert.notEqual(invalidated.memoryRevisionId, saved.memoryRevisionId);
   });
