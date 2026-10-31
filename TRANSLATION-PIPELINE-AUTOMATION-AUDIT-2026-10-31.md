@@ -191,3 +191,58 @@
 ### 当前结论
 
 删除动作现在覆盖服务端图谱事实、LiteraryMemory revision 和扩展端异步写入顺序；共同出现关系不会再被提示词当成已经证实的剧情关系。剩余风险主要在真实长篇样本中的语义质量与跨章节回归覆盖，不是本轮已发现的事务或并发缺陷。后续抽样应重点检查：用户拒绝后重新分析是否仍保持拒绝、关系端点仅出现一端时是否不泄漏、以及模型默认实体译名是否始终保持候选置信度而不被误当作受保护术语。
+
+
+## 第五轮：跨阶段状态生命周期与 Run 最终化审查（2026-10-31）
+
+### 审查范围
+
+本轮从项目创建、Run 快照、跨批次上下文增量、LiteraryMemory 合并、候选持久化、自动采纳、服务重启恢复和用户事后修改/拒绝逐段检查两个仓库。重点不再是单个 API 是否正确，而是同一项状态能否在后续阶段保持一致。
+
+### 新发现与修复
+
+1. **P1 — 用户删除后仍可能被下一批 context_delta 重新创建。**
+   - 之前扩展删除会物理移除 LiteraryMemory 的 entity/relation 投影，并拒绝当前 Context Graph node/edge。
+   - 但后续 mergeTranslationContextDeltasIntoMemory 在找不到旧投影时，会把同名实体/同一关系三元组作为新项插回去；如果图谱中原本没有对应 edge，图谱拒绝也无法覆盖这个路径。
+   - 修复：增加隐藏 LiteraryBookMemory.rejectedItems tombstone。删除实体时保存规范名、kind 和 aliases；删除关系时保存 subject/predicate/object；人物删除同时保存 profile canonical name 与被连带删除的关系。Extension sanitize/merge、服务端 sanitize 和跨批次 delta merge 都保留 tombstone，并在活动投影生成前过滤同一项。用户明确重新编辑该项时清除对应 tombstone。保留上限提高到每个项目最近 2,000 条。
+   - 新增服务端 context delta 回归测试、服务端 sanitize 测试、扩展 sanitize/merge 测试。
+
+2. **P1 — 旧 Run 延迟采纳可能覆盖更新的 Agent 译文。**
+   - 之前 acceptCandidates 只保护同来源版本的 manual edit；较早 Run 的候选如果晚于较新 Run 完成采纳，仍可能覆盖较新的 Agent 结果。
+   - 修复：采纳时在同一 SQLite 事务内校验 Run 的 source revision 仍是当前版本；对同一 segment/source hash，任何 rowid 更新的 accepted result 都优先，不限于 manual。记录区分 preservedManualSegmentIds 与 preservedNewerAcceptedSegmentIds。
+
+3. **P1 — Run 创建时存在快照竞态。**
+   - 旧实现先读取原文 revision、Prompt 和 LiteraryMemory，再获取写锁创建 Run；期间如果用户修改记忆或 Prompt，Run 可能静默绑定旧快照。
+   - 修复：在 BEGIN IMMEDIATE 后重新校验当前 source revision、LiteraryMemory revision，以及隐式选择的最新 Prompt。快照准备期间发生变化时返回 409，不创建 Run。增加竞态回归测试。
+
+4. **P1 — Run 自动采纳与项目记忆合并之间存在窗口。**
+   - 旧顺序先 finishRun 并采纳候选，再异步合并 context_delta。此时 Run 已成为 completed，下一轮可以启动并读取尚未更新的 LiteraryMemory。
+   - 修复：Run 保持 running，先在 SQLite 写事务中读取最新 LiteraryMemory、合并本轮 source-ordered context_delta 并保存 revision；该事务完成后才调用 finishRun，再自动采纳候选。awaiting_acceptance 也被视为未完成最终化状态，不能启动下一轮 Run。
+   - 记忆合并读取的是事务内最新状态，保留期间发生的用户决定和 tombstone。
+
+5. **P1 — 服务重启可能留下永久 awaiting_acceptance。**
+   - 旧恢复逻辑只处理 queued/running；如果进程在 finishRun 后、自动采纳前退出，Run 会长期停在 awaiting_acceptance，而新 Run 又无法安全开始。
+   - 修复：启动恢复时扫描 awaiting_acceptance Run，幂等合并尚未持久化的 context_delta，然后自动执行候选采纳；恢复结果写入项目事件。新增重启回归测试，验证重建 Store 后候选自动变成 accepted。
+
+### 其他已核对的生命周期约束
+
+- 用户确认/修改/拒绝仍由服务端持久化状态决定，Extension 的 UI 投影不是事实来源。
+- model-default 的目标译名保持 evidence-scoped candidate confidence；不会仅因默认采纳就升级为用户确认或强制术语。
+- observed-association 仅代表原文共同出现，是弱连续性提示，不作为具体剧情关系。
+- Context Graph 删除、LiteraryMemory revision 和项目事件在同一 SQLite 事务中提交。
+- Extension 普通记忆编辑和删除使用同一串行队列，避免旧异步写入覆盖删除。
+- 质量修复仍创建独立 selected-ID Run；采纳时沿用 source revision 和 newer accepted result 保护。
+
+### CI 与回归验证
+
+- vocal-saga Local Agent Service CI：run 41169580648 通过。
+- vocal-saga 完整 CI：run 41169580569 通过。
+- 自动恢复 pending acceptance 的回归测试：run 41169454269、41169454290 均通过。
+- fanyi-extension tombstone sanitize/merge、删除队列与人物 profile canonical name 回归：run 41169295959、41169284808、41169270511、41168943342 均通过。
+- 中间提交曾暴露 TypeScript 类型错误、Run 锁测试断言过时，以及配对评测未完成 Run 最终化的问题；均已根据 CI 失败日志修正。不能把这些中间失败误报为最终通过。
+
+### 当前结论与剩余边界
+
+本轮已修复数据生命周期中最容易造成用户决定丢失的路径：删除复活、旧 Run 覆盖新译文、Run 快照陈旧、记忆合并竞态和重启后采纳停滞。两个仓库的最新代码 CI 均通过。
+
+仍需通过真实长篇样本验证文学质量本身：人物声音跨章节稳定性、语义事实保真、文风修订是否过度改写，以及用户拒绝后经历多轮全书重分析是否仍保持抑制。CI 的合成回归只能证明确定性状态规则，不能替代真实小说的盲审。
