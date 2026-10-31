@@ -136,6 +136,9 @@ test('a dynamic target stays a candidate until actual translated surfaces corrob
   const second = makeDelta('segment-b', 'attempt-b:');
   const single = mergeTranslationContextDeltasIntoMemory({ entities: [] }, [first.delta]);
   assert.equal(single.memory.entities[0].targetConfidence, 'candidate');
+  assert.equal(single.memory.entities[0].reviewStatus, 'confirmed',
+    'a source-validated entity is default-adopted even while its target confidence remains weak');
+  assert.equal(single.memory.entities[0].confirmationSource, 'model-default');
   assert.equal(single.memory.entities[0].targetEvidenceRefs.length, 1);
 
   const combined = combineTranslationContextDeltas([first.delta, second.delta]);
@@ -143,6 +146,61 @@ test('a dynamic target stays a candidate until actual translated surfaces corrob
   assert.equal(corroborated.memory.entities[0].targetConfidence, 'corroborated');
   assert.equal(corroborated.memory.entities[0].targetEvidenceRefs.length, 2);
   assert.equal(new Set(corroborated.memory.entities[0].targetEvidenceRefs.map((item) => item.segmentId)).size, 2);
+});
+
+test('default-adopts grounded relationships while preserving explicit user rejections', () => {
+  const delta = emptyTranslationContextDelta();
+  delta.relationshipDeltas.push({
+    subjectSource: 'Alice', predicate: 'trusts', objectSource: 'Bob',
+    evidence: [{ segmentId: 's-1', sourceQuote: 'Alice trusts Bob.' }],
+  });
+  const added = mergeTranslationContextDeltasIntoMemory({ entities: [], relationships: [], openQuestions: [] }, [delta]);
+  assert.equal(added.memory.relationships[0].reviewStatus, 'confirmed');
+  assert.equal(added.memory.relationships[0].confirmationSource, 'model-default');
+
+  const rejected = mergeTranslationContextDeltasIntoMemory({
+    entities: [],
+    relationships: [{
+      subject: 'Alice', predicate: 'trusts', object: 'Bob',
+      reviewStatus: 'rejected', confirmationSource: 'user-rejected',
+      evidenceRefs: [{ segmentId: 's-old', sourceQuote: 'Alice trusts Bob.' }],
+    }],
+    openQuestions: [],
+  }, [delta]);
+  assert.equal(rejected.memory.relationships[0].reviewStatus, 'rejected');
+  assert.equal(rejected.memory.relationships[0].confirmationSource, 'user-rejected');
+  assert.deepEqual(rejected.memory.relationships[0].evidenceRefs, [
+    { segmentId: 's-old', sourceQuote: 'Alice trusts Bob.' },
+  ]);
+});
+
+test('promotes matching legacy suggestions to model-default without overwriting user decisions', () => {
+  const delta = emptyTranslationContextDelta();
+  delta.entityCandidates.push({
+    localId: 'king', canonicalSource: 'The King', aliases: ['His Majesty'],
+    kind: 'person', targetProposal: '国王',
+    evidence: [{ segmentId: 's-1', sourceQuote: 'The King addressed Max.' }],
+  });
+  const merged = mergeTranslationContextDeltasIntoMemory({
+    entities: [{
+      source: 'The King', target: '国王', kind: 'person', aliases: [],
+      reviewStatus: 'suggested', evidenceRefs: [],
+    }],
+    relationships: [], openQuestions: [],
+  }, [delta]);
+  assert.equal(merged.memory.entities[0].reviewStatus, 'confirmed');
+  assert.equal(merged.memory.entities[0].confirmationSource, 'model-default');
+  assert.ok(merged.memory.entities[0].aliases.includes('His Majesty'));
+
+  const rejected = mergeTranslationContextDeltasIntoMemory({
+    entities: [{
+      source: 'The King', target: '国王', kind: 'person', aliases: [],
+      reviewStatus: 'rejected', confirmationSource: 'user-rejected',
+    }],
+    relationships: [], openQuestions: [],
+  }, [delta]);
+  assert.equal(rejected.memory.entities[0].reviewStatus, 'rejected');
+  assert.equal(rejected.memory.entities[0].confirmationSource, 'user-rejected');
 });
 
 test('filters common terms from canonical memory while preserving normal translations', () => {
