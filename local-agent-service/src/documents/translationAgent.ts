@@ -174,6 +174,38 @@ export function selectVerifiedStyleReviewCandidates(
   });
 }
 
+/**
+ * A Chinese-only edit is provisional until the bilingual source comparison covers that segment.
+ * Missing, malformed, or failed review results fall back to the original first-pass translation.
+ */
+export function resolveBilingualVerifiedChineseEdits(
+  initialDrafts: Map<string, string>,
+  chineseEditorialEdits: Map<string, string>,
+  bilingualReview: Record<string, any>,
+): {
+  candidates: Array<{ segmentId: string; text: string }>;
+  fallbacks: Array<{ segmentId: string; text: string }>;
+} {
+  const reviewed = new Set(Array.isArray(bilingualReview.reviewedIds) ? bilingualReview.reviewedIds : []);
+  const missing = new Set(Array.isArray(bilingualReview.missingIds) ? bilingualReview.missingIds : []);
+  const translations = bilingualReview.translations && typeof bilingualReview.translations === 'object'
+    ? bilingualReview.translations : {};
+  const candidates: Array<{ segmentId: string; text: string }> = [];
+  const fallbacks: Array<{ segmentId: string; text: string }> = [];
+  for (const [segmentId, edited] of chineseEditorialEdits) {
+    const initial = initialDrafts.get(segmentId);
+    const reviewedText = translations[segmentId];
+    if (initial === undefined) continue;
+    if (reviewed.has(segmentId) && !missing.has(segmentId) &&
+        typeof reviewedText === 'string' && reviewedText.trim()) {
+      if (reviewedText !== initial) candidates.push({ segmentId, text: reviewedText });
+    } else {
+      fallbacks.push({ segmentId, text: initial });
+    }
+  }
+  return { candidates, fallbacks };
+}
+
 export interface DocumentRunConcurrencyBudget {
   poolSize: number;
   translationConcurrency: number;
@@ -1809,10 +1841,43 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
           return;
         }
         const revisedCandidates: Array<{ segmentId: string; text: string }> = [];
-        for (const [id, revised] of Object.entries(review.translations)) {
+        const reviewedIds = new Set(Array.isArray(review.reviewedIds) ? review.reviewedIds : []);
+        const missingIds = new Set(Array.isArray(review.missingIds) ? review.missingIds : []);
+        for (const [id, revised] of Object.entries(review.translations || {})) {
           const draft = translations.get(id);
-          if (!draft || typeof revised !== 'string' || !revised.trim() || revised === draft) continue;
+          if (!reviewedIds.has(id) || missingIds.has(id) || !draft ||
+              typeof revised !== 'string' || !revised.trim() || revised === draft) continue;
           revisedCandidates.push({ segmentId: id, text: revised });
+        }
+        // Chinese-only edits remain provisional until bilingual review explicitly covers
+        // each segment. Successful coverage keeps the bilingual review's final text;
+        // missing/failed coverage restores the first-pass translation in memory and candidates.
+        const chineseEditorialEdits = new Map<string, string>();
+        for (const id of chineseEditorialCandidateIds) {
+          const edited = translations.get(id);
+          if (typeof edited === 'string') chineseEditorialEdits.set(id, edited);
+        }
+        const chineseVerification = resolveBilingualVerifiedChineseEdits(
+          initialDrafts, chineseEditorialEdits, review,
+        );
+        const chineseCandidateIds = new Set(chineseEditorialCandidateIds);
+        for (const item of chineseVerification.fallbacks) {
+          translations.set(item.segmentId, item.text);
+        }
+        for (const item of chineseVerification.candidates) {
+          translations.set(item.segmentId, item.text);
+          if (!revisedCandidates.some((candidate) => candidate.segmentId === item.segmentId)) {
+            revisedCandidates.push(item);
+          } else {
+            const existing = revisedCandidates.find((candidate) => candidate.segmentId === item.segmentId)!;
+            existing.text = item.text;
+          }
+        }
+        for (let index = revisedCandidates.length - 1; index >= 0; index--) {
+          if (chineseCandidateIds.has(revisedCandidates[index]!.segmentId) &&
+              !chineseVerification.candidates.some((item) => item.segmentId === revisedCandidates[index]!.segmentId)) {
+            revisedCandidates.splice(index, 1);
+          }
         }
         const reviewFindings = review.findings.map((finding: any) => ({
           segmentId: finding.id,
@@ -1832,11 +1897,8 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
         for (const item of revisedCandidates) translations.set(item.segmentId, item.text);
         if (chineseEditorialCandidateIds.size) {
           const correctedIds = new Set(revisedCandidates.map((item) => item.segmentId));
-          const reviewedIds = new Set(review.reviewedIds || []);
-          const missingIds = new Set(review.missingIds || []);
-          const editorialResults = Array.from(chineseEditorialCandidateIds)
-            .filter((id) => reviewedIds.has(id) && !missingIds.has(id) && typeof translations.get(id) === 'string')
-            .map((segmentId) => ({
+          const editorialResults = chineseVerification.candidates
+            .map(({ segmentId }) => ({
               segmentId,
               status: correctedIds.has(segmentId) ? 'corrected' as const : 'verified' as const,
               proposedTranslation: translations.get(segmentId)!,
@@ -1878,6 +1940,12 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
     } catch (error) {
         // Review is a quality improvement, not a gate on translation progress.
         try {
+          // If bilingual review failed as a whole, discard all provisional Chinese-only edits.
+          // The persisted first-pass candidates remain untouched and will be auto-finalized.
+          for (const id of chineseEditorialCandidateIds) {
+            const initial = initialDrafts.get(id);
+            if (initial !== undefined) translations.set(id, initial);
+          }
           if (store.getRunStatus(projectId, runId) !== 'cancelled') {
             store.appendEvent(projectId, runId, 'stage.warning', {
               stage: 'review', batchIndex,
