@@ -987,7 +987,8 @@ export class DocumentProjectStore {
       // A candidate voice profile can become evidence-verified without a user click only
       // when several independently located source excerpts support multiple voice dimensions.
       // Model-reported confidence is deliberately not part of this decision.
-      const evidenceVerified = profile.status === 'candidate' &&
+      const evidenceVerified = (profile.status === 'candidate' ||
+          (profile.status === 'confirmed' && profile.confirmationSource === 'evidence-verified')) &&
         profile.evidenceTruncated !== true &&
         evidenceSegmentCount >= 3 &&
         evidenceDimensionCount >= 2 &&
