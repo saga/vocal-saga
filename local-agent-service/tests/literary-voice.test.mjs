@@ -304,3 +304,69 @@ test('confirmed Chinese editorial profile is projected into voice context while 
   const candidateProjection = buildProjectVoiceContext(candidate, sourceSegments);
   assert.deepEqual(candidateProjection.chineseEditorialProfile, {});
 });
+
+
+test('confirmed Chinese editorial profile remains active while a newer profile waits for review', () => {
+  const memory = sanitizeProjectLiteraryMemory({
+    entities: [], relationships: [], styleGuide: {}, chapterSummaries: [], recentExamples: [],
+    characterVoices: [], relationshipVoiceRules: [], voiceAnchors: [],
+    chineseEditorialProfile: {
+      version: 1,
+      profileVersion: 2,
+      status: 'confirmed',
+      confirmationSource: 'user-confirmed',
+      sourceRevisionId: 'revision-1',
+      sampleFingerprint: 'base-fingerprint',
+      profile: {
+        narrativeVoice: '克制、疏离，不主动解释人物心理。',
+        register: '现代书面语，避免过度口语化。',
+        rhythm: '保留原文长句和有意重复。',
+        dialogue: '对白简洁，不替人物补充情绪。',
+        diction: '准确、节制。',
+        rules: ['不擅自拆分有节奏作用的长句。'],
+        avoid: ['避免无依据增加形容词。'],
+      },
+      evidenceRefs: [
+        { segmentId: 'p1', targetExcerpt: '克制的叙述', observation: '叙述保持距离', aspect: 'narrativeVoice' },
+        { segmentId: 'p2', targetExcerpt: '没有回答', observation: '对白简洁', aspect: 'dialogue' },
+        { segmentId: 'p3', targetExcerpt: '仍然重复', observation: '保留重复节奏', aspect: 'rhythm' },
+      ],
+      pendingUpdate: {
+        version: 1,
+        status: 'candidate',
+        sourceRevisionId: 'revision-1',
+        analysisVersion: 'chinese-editorial-profile-v1',
+        sampleFingerprint: 'new-fingerprint',
+        basedOnFingerprint: 'base-fingerprint',
+        sampleCount: 18,
+        chapterCount: 4,
+        generatedAt: '2026-10-31T00:00:00.000Z',
+        profile: {
+          narrativeVoice: '更新后的叙述声音。',
+          register: '更新后的语域。',
+          rhythm: '更新后的节奏。',
+          dialogue: '更新后的对白。',
+          diction: '更新后的措辞。',
+          rules: ['新增规则。'],
+          avoid: [],
+        },
+        evidenceRefs: [
+          { segmentId: 'p4', targetExcerpt: '仍旧沉默', observation: '新的叙述证据', aspect: 'narrativeVoice' },
+          { segmentId: 'p5', targetExcerpt: '慢慢地说', observation: '新的对白证据', aspect: 'dialogue' },
+          { segmentId: 'p6', targetExcerpt: '没有改变', observation: '新的节奏证据', aspect: 'rhythm' },
+        ],
+      },
+    },
+  });
+
+  assert.equal(memory.chineseEditorialProfile.profileVersion, 2);
+  assert.equal(memory.chineseEditorialProfile.pendingUpdate.sampleFingerprint, 'new-fingerprint');
+  const context = buildProjectVoiceContext(
+    memory,
+    [{ id: 'p7', text: 'He remained silent.', contextPath: 'Chapter 5' }],
+    'Chapter 5',
+    [],
+  );
+  assert.equal(context.chineseEditorialProfile.narrativeVoice, '克制、疏离，不主动解释人物心理。');
+  assert.notEqual(context.chineseEditorialProfile.narrativeVoice, '更新后的叙述声音。');
+});
