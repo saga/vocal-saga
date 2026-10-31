@@ -612,6 +612,7 @@ function chineseEditorialFindingsForRun(db: any, revisionId: string, runId: stri
       status: String(row.status),
       bilingualReviewStatus: typeof finding.bilingualReviewStatus === 'string' ? finding.bilingualReviewStatus : 'pending',
       applicationStatus: typeof finding.applicationStatus === 'string' ? finding.applicationStatus : 'pending',
+      applicationMethod: typeof finding.applicationMethod === 'string' ? finding.applicationMethod : null,
       appliedResultId: typeof finding.appliedResultId === 'string' ? finding.appliedResultId : null,
     }];
   });
