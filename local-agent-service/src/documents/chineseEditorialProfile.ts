@@ -136,10 +136,14 @@ export async function refreshChineseEditorialProfile(projectId: string, runId: s
   });
   const current = store.getCurrentLiteraryMemory(projectId);
   const existing = current.memory.chineseEditorialProfile;
-  if (existing?.status === 'confirmed' && existing.sourceRevisionId === revisionId) {
+  if (existing?.status === 'confirmed' && existing.sourceRevisionId === revisionId &&
+      (existing.sampleFingerprint === sampleFingerprint ||
+       existing.pendingUpdate?.sampleFingerprint === sampleFingerprint)) {
     store.appendEvent(projectId, runId, 'chinese-editorial-profile.skipped', {
-      reason: 'confirmed-profile-is-protected',
+      reason: existing.sampleFingerprint === sampleFingerprint
+        ? 'confirmed-profile-sample-unchanged' : 'same-pending-update-already-exists',
       profileFingerprint: existing.sampleFingerprint || null,
+      pendingUpdateFingerprint: existing.pendingUpdate?.sampleFingerprint || null,
     });
     return;
   }
@@ -227,31 +231,65 @@ export async function refreshChineseEditorialProfile(projectId: string, runId: s
     throw new Error('中文 Editorial Profile 输出缺少有效风格内容或至少 3 个不同片段的可核验证据。');
   }
 
-  // Reload after the model call: never overwrite a profile the user confirmed while analysis was running.
+  // Reload after the model call. If the user confirmed the base profile while analysis ran,
+  // preserve it and attach the newly generated profile as a separately reviewable update.
   const latest = store.getCurrentLiteraryMemory(projectId);
-  if (latest.memory.chineseEditorialProfile?.status === 'confirmed' &&
-      latest.memory.chineseEditorialProfile?.sourceRevisionId === revisionId) {
-    store.appendEvent(projectId, runId, 'chinese-editorial-profile.analysis.discarded', {
-      reason: 'profile-was-confirmed-during-analysis',
+  const latestProfile = latest.memory.chineseEditorialProfile;
+  const generatedAt = new Date().toISOString();
+  const candidate = {
+    version: 1,
+    status: 'candidate',
+    confirmationSource: null,
+    sourceRevisionId: revisionId,
+    analysisVersion: ANALYSIS_VERSION,
+    sampleFingerprint,
+    sampleCount: samples.length,
+    chapterCount: distinctChapters.size || 1,
+    generatedAt,
+    profile,
+    evidenceRefs,
+  };
+  const isConfirmedBase = latestProfile?.status === 'confirmed' &&
+    latestProfile.sourceRevisionId === revisionId;
+  if (isConfirmedBase) {
+    if (latestProfile.sampleFingerprint === sampleFingerprint ||
+        latestProfile.pendingUpdate?.sampleFingerprint === sampleFingerprint) {
+      store.appendEvent(projectId, runId, 'chinese-editorial-profile.analysis.discarded', {
+        reason: 'profile-or-pending-update-became-current-during-analysis',
+        durationMs: Date.now() - startedAt,
+      });
+      return;
+    }
+    const nextMemory = {
+      ...latest.memory,
+      chineseEditorialProfile: {
+        ...latestProfile,
+        profileVersion: Math.max(1, Number(latestProfile.profileVersion) || 1),
+        pendingUpdate: {
+          ...candidate,
+          basedOnFingerprint: latestProfile.sampleFingerprint || null,
+          generatedFromMemoryRevisionId: latest.memoryRevisionId || null,
+        },
+      },
+    };
+    const saved = store.saveLiteraryMemory(projectId, nextMemory);
+    store.appendEvent(projectId, runId, 'chinese-editorial-profile.update.candidate-created', {
+      memoryRevisionId: saved.memoryRevisionId,
+      baseProfileFingerprint: latestProfile.sampleFingerprint || null,
+      pendingUpdateFingerprint: sampleFingerprint,
+      analysisVersion: ANALYSIS_VERSION,
+      sampleCount: samples.length,
+      evidenceCount: evidenceRefs.length,
+      evidenceSegmentCount,
       durationMs: Date.now() - startedAt,
+      requiresUserConfirmation: true,
+      usage: result.usage || null,
     });
     return;
   }
   const nextMemory = {
     ...latest.memory,
-    chineseEditorialProfile: {
-      version: 1,
-      status: 'candidate',
-      confirmationSource: null,
-      sourceRevisionId: revisionId,
-      analysisVersion: ANALYSIS_VERSION,
-      sampleFingerprint,
-      sampleCount: samples.length,
-      chapterCount: distinctChapters.size || 1,
-      generatedAt: new Date().toISOString(),
-      profile,
-      evidenceRefs,
-    },
+    chineseEditorialProfile: candidate,
   };
   const saved = store.saveLiteraryMemory(projectId, nextMemory);
   store.appendEvent(projectId, runId, 'chinese-editorial-profile.candidate.created', {
