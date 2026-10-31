@@ -166,7 +166,7 @@ test('older Run acceptance cannot overwrite a newer accepted Agent translation',
       '新 Run 的候选。',
       'a delayed recovery/accept call for an older Run must not replace a newer accepted result',
     );
-    assert.equal(store.getRun(older.runId ? project.projectId : '', older.runId).status, 'completed');
+    assert.equal(store.getRun(project.projectId, older.runId).status, 'completed');
   });
 });
 
