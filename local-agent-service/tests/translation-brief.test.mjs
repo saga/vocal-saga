@@ -89,6 +89,8 @@ test('TranslationBrief excludes rejected entities and preserves model-default ta
     'a rejected entity must not leak into the canonical-name mapping projection');
   assert.equal(brief.contextGraph.nameMappings.some((mapping) => mapping.source === 'Daphne'), false,
     'an unrelated character mentioned only in earlier chapters must not be injected into this batch');
+  assert.ok(brief.contextDiagnostics.graphMappingsExcludedNotMentioned >= 1,
+    'the retrieval diagnostic should report mappings excluded because they are not mentioned in this batch context');
   const alice = brief.voiceContext.entities.find((entity) => entity.source === 'Alice');
   assert.equal(alice?.targetConfidence, 'candidate',
     'default adoption must not turn a weak target mapping into a protected canonical term');
