@@ -154,7 +154,7 @@ readiness 不是单看数据库 `status=completed`。它还要求 source revisio
 5. 每个批次的已验证增量写入项目 SQLite 的 `translation_context_deltas` 表，幂等键为 `(run_id, first_segment_id)`，同时保存 `batch_index`、来源 ordinal、来源片段 ID、增量 JSON、验证计数及时间。重试同一批时可更新这一批的记录，其他批次记录不删除。
 6. 只有 Run 成功完成且项目当前来源 revision 仍与 Run 一致时，才把最终候选合并进当前文学记忆 revision。新增实体和关系同时保留 `evidenceRefs: [{ segmentId, sourceQuote }]`。每次构建 TranslationBrief 时，实体/关系证据都必须通过来源版本、segment ID、引文匹配和 ordinal 过滤；不能因为同一称谓在早期出现过，就把后文才有证据的映射注入早期片段。来源证据和结构校验通过的新实体/关系以 `model-default` 默认采纳并参与后续批次；置信度和证据覆盖单独记录，低置信度只作弱提示。来源已经改变或 Run 中断时不把旧证据写入当前项目记忆，而保留在原 Run 账本里。
 
-项目记忆合并只更新可复用的结构化候选，不直接改写历史译文。全局质量审计新增 `context-delta-conflict` finding，用于定位多个批次提出的冲突译名；finding 是人工审查入口，不自动启动返工，也不自动应用译文修改。
+项目记忆合并将通过来源证据校验的实体/关系以 `model-default` 默认采纳，不直接改写历史译文；目标译名置信度、证据覆盖和来源序号仍独立控制其使用强度。用户修改、确认和拒绝优先于机器默认结果。全局质量审计新增 `context-delta-conflict` finding，用于定位多个批次提出的冲突译名；finding 是人工审查入口，不自动启动返工，也不自动应用译文修改。
 
 ### 3.4 作品级 Chinese Editorial Profile
 
