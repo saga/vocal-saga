@@ -1071,11 +1071,11 @@ export function buildTranslationBrief(
     precedingSegments: sectionStats(visiblePrecedingSegments),
     contextGraph: {
       chars: jsonChars(graph),
-      sections: Object.fromEntries(Object.entries(graph || {}).map(([key, value]) => [key, sectionStats(value)])),
+      sections: Object.fromEntries(Object.entries(graph || {}).map(([key, value]) => [key, sectionStats(value)] as const)),
     },
     voiceContext: {
       chars: jsonChars(voiceContext),
-      sections: Object.fromEntries(Object.entries(voiceContext).map(([key, value]) => [key, sectionStats(value)])),
+      sections: Object.fromEntries(Object.entries(voiceContext).map(([key, value]) => [key, sectionStats(value)] as const)),
     },
   };
   const componentLargest = [
