@@ -242,8 +242,7 @@ export async function refreshChineseEditorialProfile(projectId: string, runId: s
     throw new Error('中文 Editorial Profile 输出缺少可用的风格内容。');
   }
 
-  // Reload after the model call. If the user confirmed the base profile while analysis ran,
-  // preserve it and attach the newly generated profile as a separately reviewable update.
+  // Reload after the model call. Preserve user-managed profiles; replace machine-default profiles automatically.
   const latest = store.getCurrentLiteraryMemory(projectId);
   const latestProfile = latest.memory.chineseEditorialProfile;
   const generatedAt = new Date().toISOString();
@@ -262,6 +261,17 @@ export async function refreshChineseEditorialProfile(projectId: string, runId: s
   };
   const isConfirmedBase = latestProfile?.status === 'confirmed' &&
     latestProfile.sourceRevisionId === revisionId;
+  const isUserManagedBase = latestProfile?.confirmationSource === 'user-modified' ||
+    latestProfile?.confirmationSource === 'user-confirmed';
+  if (isConfirmedBase && isUserManagedBase) {
+    store.appendEvent(projectId, runId, 'chinese-editorial-profile.update.skipped', {
+      reason: 'user-managed-profile-has-priority',
+      profileFingerprint: latestProfile.sampleFingerprint || null,
+      generatedFingerprint: sampleFingerprint,
+      adoptionSource: latestProfile.confirmationSource,
+    });
+    return;
+  }
   if (isConfirmedBase) {
     if (latestProfile.sampleFingerprint === sampleFingerprint ||
         latestProfile.pendingUpdate?.sampleFingerprint === sampleFingerprint) {
