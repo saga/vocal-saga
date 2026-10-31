@@ -208,7 +208,7 @@ test('explicit entity aliases retain a single canonical translation in local-age
   assert.equal(context.entities[0].target, '吉莉');
 });
 
-test('project voice context includes confirmed profiles and approved anchors only', () => {
+test('project voice context includes default-adopted profiles and anchors', () => {
   const memory = sanitizeProjectLiteraryMemory({
     version: 2,
     entities: [{ source: 'Alice', target: '艾丽丝', kind: 'person', aliases: [], reviewStatus: 'confirmed' }],
@@ -244,13 +244,13 @@ test('project voice context includes confirmed profiles and approved anchors onl
   assert.deepEqual(roundTrip.scene.segmentIds, ['ch1-a1']);
   assert.equal(roundTrip.characterVoices.length, 1);
   assert.equal(roundTrip.characterVoices[0].characterId, 'char-alice');
-  assert.deepEqual(roundTrip.voiceAnchors.map((anchor) => anchor.anchorId), ['approved']);
+  assert.deepEqual(roundTrip.voiceAnchors.map((anchor) => anchor.anchorId), ['approved', 'candidate']);
   assert.ok(JSON.stringify(roundTrip).length < 9000);
   assert.match(roundTrip.constraints.join(' '), /不确定说话人/);
 });
 
 
-test('confirmed Chinese editorial profile is projected into voice context while candidates stay out', () => {
+test('default-adopted Chinese editorial profiles are projected into voice context', () => {
   const memory = sanitizeProjectLiteraryMemory({
     version: 2,
     chineseEditorialProfile: {
@@ -302,11 +302,11 @@ test('confirmed Chinese editorial profile is projected into voice context while 
     },
   });
   const candidateProjection = buildProjectVoiceContext(candidate, sourceSegments);
-  assert.deepEqual(candidateProjection.chineseEditorialProfile, {});
+  assert.match(JSON.stringify(candidateProjection.chineseEditorialProfile), /候选风格/);
 });
 
 
-test('confirmed Chinese editorial profile remains active while a newer profile waits for review', () => {
+test('new Chinese editorial profile versions are automatically adopted', () => {
   const memory = sanitizeProjectLiteraryMemory({
     entities: [], relationships: [], styleGuide: {}, chapterSummaries: [], recentExamples: [],
     characterVoices: [], relationshipVoiceRules: [], voiceAnchors: [],
@@ -359,14 +359,14 @@ test('confirmed Chinese editorial profile remains active while a newer profile w
     },
   });
 
-  assert.equal(memory.chineseEditorialProfile.profileVersion, 2);
-  assert.equal(memory.chineseEditorialProfile.pendingUpdate.sampleFingerprint, 'new-fingerprint');
+  assert.equal(memory.chineseEditorialProfile.profileVersion, 3);
+  assert.equal(memory.chineseEditorialProfile.sampleFingerprint, 'new-fingerprint');
+  assert.equal(memory.chineseEditorialProfile.pendingUpdate, undefined);
   const context = buildProjectVoiceContext(
     memory,
     [{ id: 'p7', text: 'He remained silent.', contextPath: 'Chapter 5' }],
     'Chapter 5',
     [],
   );
-  assert.equal(context.chineseEditorialProfile.narrativeVoice, '克制、疏离，不主动解释人物心理。');
-  assert.notEqual(context.chineseEditorialProfile.narrativeVoice, '更新后的叙述声音。');
+  assert.equal(context.chineseEditorialProfile.narrativeVoice, '更新后的叙述声音。');
 });
