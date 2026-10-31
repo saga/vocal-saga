@@ -33,6 +33,9 @@
    - 结构损坏、必需输入缺失、任务不可执行等技术异常仍可暂停。
 9. **时间边界与人工审批严格区分。** 不允许未来章节揭示的身份、关系或剧情反转提前进入早期 TranslationBrief，这是知识边界，不是要求用户确认。对于人物译名，只有在较早译文已经建立该目标，或当前可见上下文足以确定时才可作为稳定 canonical mapping；否则仍可把模型当前判断作为普通翻译建议，而不能把未来揭示变成早期强约束。
 10. **服务端负责状态合并。** Local Agent 是持久化与 TranslationBrief 的权威；Extension 只负责展示、编辑和拒绝。服务端必须在 sanitize、merge、save、read 和 Run snapshot 中保留 provenance、用户覆盖和拒绝状态。
+11. **删除使用持久化 tombstone。** 用户删除实体或关系时，除删除可见投影外，还必须写入隐藏的 `rejectedItems` tombstone；Context Graph、LiteraryMemory、TranslationBrief、跨批次 context delta merge 均以 tombstone 为否决依据。模型后续再次提出同一名称/别名或同一关系三元组时不得重新激活。只有用户明确编辑/重新建立该项，才可清除对应 tombstone。
+12. **Run 快照与最终化必须串行。** Run 创建时在 SQLite 写锁内重新校验原文、Prompt 和 LiteraryMemory revision；Run 保持 running 直到 context delta 与 LiteraryMemory 合并事务提交，再进入 awaiting_acceptance 并自动采纳。awaiting_acceptance 阶段阻止新 Run。服务重启时自动恢复这一最终化，不要求用户点击 accept。
+13. **旧候选不得覆盖新结果。** 采纳候选时必须校验 Run 的 source revision 仍是当前版本；对同一 segment/source hash，任何比候选更新的 accepted result（不只 manual）都优先。
 
 ## 后果
 
@@ -50,6 +53,9 @@
 - 证据为空、部分有效或低于旧门槛时，不触发人工确认，也不阻断翻译。
 - 用户修改后 provenance 为 user-modified，机器重新分析不得覆盖该修改。
 - 用户拒绝后该项不再自动激活。
+- 删除后 tombstone 在 Extension sanitize/merge、服务端 sanitize、context delta merge 和 TranslationBrief 生成中持续生效；重新分析不能复活。
+- Run 创建快照与原文/Prompt/记忆 revision 一致；运行结束前完成记忆合并，重启后自动完成 pending acceptance。
+- 较旧 Run 的候选不能覆盖更新的 accepted Agent/imported/manual 译文；旧原文 revision 的候选拒绝采纳。
 - 旧版中文文学编辑档案 pending update 自动升级为当前生效版本。
 - 原文版本变化会使过期引文和声音锚点失效，但不会把普通证据不足重新变成审批任务。
 - 未来章节身份、别名、剧情事实不会进入早期 TranslationBrief。
