@@ -1044,8 +1044,8 @@ test('confirmed character-profile names enter the translation mapping while unsa
     'generic titles, aliases referring to another person, and later-only aliases must not be injected');
   const omi = mappings.find((item) => item.source === 'Omi');
   assert.equal(omi?.target, '近江');
-  assert.equal(omi?.sourceStatus, 'candidate',
-    'enabled candidate profiles may guide translation but remain non-authoritative and are not hard-protected');
+  assert.equal(omi?.sourceStatus, 'confirmed-memory',
+    'model-default character mappings are adopted immediately; provenance remains distinct from user confirmation');
   const visibleYabuProfile = brief.voiceContext.characterVoices.find((item) => item.canonicalSourceName === 'Yabu');
   if (visibleYabuProfile) {
     assert.deepEqual(visibleYabuProfile.aliases, ['Yabu-san'],
