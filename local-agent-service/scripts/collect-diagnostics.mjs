@@ -203,7 +203,12 @@ async function runCodeBuddyAnalysis(summary) {
     selection: summary.selection,
     documents: summary.documents.map((doc) => ({
       title: doc.title, format: doc.format, updatedAt: doc.updatedAt,
-      metrics: doc.metrics, signals: doc.analysisSignals ? {\n        runs: doc.analysisSignals.runs,\n        eventTimeline: doc.analysisSignals.eventTimeline.slice(-250),\n        reviewFindingCategories: doc.analysisSignals.reviewFindingCategories,\n        qualityAuditSummaries: doc.analysisSignals.qualityAuditSummaries,\n      } : null,
+      metrics: doc.metrics, signals: doc.analysisSignals ? {
+        runs: doc.analysisSignals.runs,
+        eventTimeline: doc.analysisSignals.eventTimeline.slice(-250),
+        reviewFindingCategories: doc.analysisSignals.reviewFindingCategories,
+        qualityAuditSummaries: doc.analysisSignals.qualityAuditSummaries,
+      } : null,
     })),
     instructions: [
       '只分析这两个最近更新的文档项目，不要扩展到其他项目或系统日志。',
