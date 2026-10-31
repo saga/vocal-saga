@@ -119,7 +119,7 @@ export async function refreshChineseEditorialProfile(projectId: string, runId: s
   const targetById = new Map(rows.map((row) => [String(row.id), String(row.targetText || '')]));
   const samples = samplePlan.samples.flatMap(({ segment }) => {
     const targetText = targetById.get(segment.id) || '';
-    return targetText.trim() ? [{ segmentId: segment.id, targetText }] : [];
+    return targetText.trim() ? [{ segmentId: segment.id, targetText: targetText.slice(0, 1600) }] : [];
   });
   if (samples.length < 8) {
     store.appendEvent(projectId, runId, 'chinese-editorial-profile.skipped', {
