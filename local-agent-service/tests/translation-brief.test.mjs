@@ -33,6 +33,12 @@ test('TranslationBrief excludes rejected entities and preserves model-default ta
         contextPath: 'Chapter 1',
       },
       {
+        id: 'memory-projection-unrelated',
+        text: 'Daphne left the room before dawn.',
+        kind: 'paragraph',
+        contextPath: 'Chapter 1',
+      },
+      {
         id: 'memory-projection-1',
         text: 'Alice and Bob returned. Carol was absent.',
         kind: 'paragraph',
@@ -59,6 +65,12 @@ test('TranslationBrief excludes rejected entities and preserves model-default ta
         reviewStatus: 'rejected', confirmationSource: 'user-rejected',
         evidenceRefs: [{ segmentId: 'memory-projection-1', sourceQuote: 'Carol was absent.' }],
       },
+      {
+        source: 'Daphne', target: '达芙妮', kind: 'person', aliases: [],
+        reviewStatus: 'confirmed', confirmationSource: 'model-default',
+        description: 'A character mentioned in an earlier unrelated segment',
+        evidenceRefs: [{ segmentId: 'memory-projection-unrelated', sourceQuote: 'Daphne left the room before dawn.' }],
+      },
     ],
     relationships: [],
     styleGuide: {}, chapterSummaries: [], recentExamples: [],
@@ -75,6 +87,8 @@ test('TranslationBrief excludes rejected entities and preserves model-default ta
   assert.equal(brief.voiceContext.entities.some((entity) => entity.source === 'Carol'), false);
   assert.equal(brief.contextGraph.nameMappings.some((mapping) => mapping.source === 'Carol'), false,
     'a rejected entity must not leak into the canonical-name mapping projection');
+  assert.equal(brief.contextGraph.nameMappings.some((mapping) => mapping.source === 'Daphne'), false,
+    'an unrelated character mentioned only in earlier chapters must not be injected into this batch');
   const alice = brief.voiceContext.entities.find((entity) => entity.source === 'Alice');
   assert.equal(alice?.targetConfidence, 'candidate',
     'default adoption must not turn a weak target mapping into a protected canonical term');
