@@ -4,7 +4,7 @@
 - 日期：2026-10-31
 - 适用范围：Local Agent 文档项目中的文学模式（小说、散文、回忆录及其他文学类长文）
 - 关联仓库：[vocal-saga](https://github.com/saga/vocal-saga)、[fanyi-extension](https://github.com/saga/fanyi-extension)
-- 相关决策：[ADR-0003：服务端项目权威与扩展离线副本](0003-server-authoritative-project-state.md)、[ADR-0004：全书文风基准采用分维度、可审阅的分析契约](0004-evidence-grounded-style-guide.md)
+- 相关决策：[ADR-0001：统一本地翻译管线与初译上下文增量](0001-unified-local-translation-context-delta.md)、[ADR-0003：服务端项目权威与扩展离线副本](0003-server-authoritative-project-state.md)、[ADR-0004：全书文风基准采用分维度、可审阅的分析契约](0004-evidence-grounded-style-guide.md)
 
 ## 背景
 
