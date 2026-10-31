@@ -51,6 +51,10 @@
 - EPUB 按 OPF manifest/spine 顺序读取，保留章节/内容路径、标题与稳定片段 ID。解析必须有文件大小、解压大小、片段数、超时及路径安全边界；不得将 ZIP 条目解压到用户可控的任意路径。
 - Context Graph 是来源版本级的持久化状态，SQLite 为事实来源。模型生成的人物、别名、实体、关系与摘要先经过服务端来源证据校验；校验通过后默认以 `model-default` 生效，证据强度决定置信度和使用范围。证据必须包含稳定 segment ID 和能在对应原文片段中验证的连续引文；模型自称“确认”不能代替证据校验，机器默认采纳也不能伪装成人工确认。
 - 用户删除/拒绝人物、实体或关系时，服务端必须在同一 SQLite 写事务中更新 Context Graph 节点/边状态、LiteraryMemory revision 和项目事件；扩展通过 `/context-graph/review` 的 batch `items` + `memory` 一次提交。任何校验或持久化失败都必须整体回滚，禁止两个接口分步写入造成部分成功。
+- LiteraryMemory 可见列表删除后，必须保留隐藏 `rejectedItems` tombstone（实体按规范名/别名与 kind 匹配，关系按 subject/predicate/object 匹配）。服务端 sanitize、Extension sanitize/merge 和 translation context delta merge 必须保留 tombstone 并先过滤对应活动项；只有用户明确编辑/重新建立同一项才清除对应 tombstone。不得只依赖当前 Context Graph node/edge ID，因为后续分析可能生成不同 ID。
+- Run 创建必须在 SQLite 写锁内重新校验 source revision、Prompt revision 和 LiteraryMemory revision；快照准备期间任何一项变化都返回 409，不得静默绑定旧快照。
+- Run 必须保持 running 直到本轮 context delta 与 LiteraryMemory 的合并事务完成，再进入 awaiting_acceptance 并自动采纳。awaiting_acceptance 是未完成最终化状态，阻止创建下一 Run；服务重启时自动恢复 context-memory merge 与 candidate acceptance。
+- Candidate acceptance 必须验证 Run source revision 仍是当前版本，并保护同一 source hash 上所有更新的 accepted result（agent/imported/manual），不能只保护 manual。旧 Run 延迟恢复不得覆盖新 Run 的已采纳结果。
 - 全书图谱、原文证据、章节摘要与人物/关系候选必须留在服务端；不得复制到扩展 LiteraryMemory。扩展轮询使用轻量 /context-graph/status 投影，不轮询完整节点/证据载荷。
 - 文学翻译必须先完成当前来源版本的全书预处理，再开始翻译模型调用。扩展通过轻量 /context-graph/status 投影做正常 UI 前置检查：未 ready、版本/语言不匹配或状态未知时不创建文学翻译 Run；新项目首次分析自动启动，失败/过期由用户显式重分析。服务端 executeRun 在进入 running 前保留最终门禁；旧客户端或直接 API 创建的 queued Run 可以等待/自动准备 Context Graph，但 readiness 通过前绝不调用翻译模型。扩展不得复制图谱或实现第二套分析算法。详见 ADR-0005。
 - 抽样不得只取开头、章节标题或最近章节。长文档至少覆盖开头/中部/结尾、分布式章节样本以及对白或专名较密集的片段；其余章节可以先生成抽取式摘要，再逐步补充模型摘要。
