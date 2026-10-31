@@ -268,3 +268,11 @@ ADR-0007 新增决策 14：双语复核成功覆盖的编辑保留；覆盖但�
 ### 验证边界
 
 本轮修改已提交到 `main`，但需要等待 GitHub Actions 对 TypeScript、Local Agent Service 测试和完整 CI 的实际结果。CI 通过后仍应对真实 EPUB 做抽样，确认候选、context delta 和最终译文使用的是同一份双语复核结果，而不是只验证 helper 的单元逻辑。
+
+### 第六轮补充：Finding 与候选状态同步
+
+继续沿真实持久化路径检查后发现，`markChineseEditorialFindingsReviewed` 通过 `finding.editorialMode === 'chinese-monolingual'` 识别待验证编辑，但 style-review 写入 finding 时没有保存该字段。结果是候选文本可能已被双语复核更新，Finding 却仍停留在 pending，旧的自动更新分支不会执行。现已在保存 style finding 时写入 `editorialMode`。
+
+另外，双语复核可能明确将编辑改回第一道初译。此时不能只把译文回退而遗留 pending finding。现已增加 `reverted` 结果：事务内将候选恢复为初译、将 Finding 标记为 dismissed，并记录 `automatic-bilingual-review-reverted`；这代表机器依据原文自动否决该编辑，不伪装成人工点击。新增 Store 集成测试验证回退后 Finding 不再 pending，且候选仍是初译。
+
+新增代码回归覆盖了双语复核成功且不改动、成功并修订、审校改回初译、未覆盖、空结果、补审失败、整体审校失败，以及候选保存被取消/拒绝的分支。GitHub Actions 已确认 helper 回归和 Store 回退集成测试通过；完整 validate workflow 仍在运行，最终 CI 结论以其完成状态为准。
