@@ -101,18 +101,32 @@ flowchart TD
     C --> E[统一成 Source Segments]
     D --> E
     E --> F[固定 source revision 与 source hash]
-    F --> G{启动文学预处理?}
-    G -- 是 --> H[startContextGraphAnalysis]
-    H --> I[scanBookSegmentsConcurrent]
-    I --> J[planBookSamples]
-    J --> K[runAgentStructured 生成图谱候选]
-    K --> L[validateEvidence 对齐原文 segment / quote]
-    L --> M[事务写入 nodes / edges / evidence / chapter snapshots]
-    M --> N[completed 事件与预处理报告]
-    G -- 否 --> O[等待创建翻译 Run]
+    F --> G{翻译模式}
+    G -- 技术文档 --> T[创建技术翻译 Run]
+    G -- 文学 --> H[读取 Context Graph 状态投影]
+    H --> I{当前来源/版本/语言/完整性 ready?}
+    I -- 否：首次分析 --> J[自动启动全书预处理]
+    I -- 否：失败或过期 --> R[用户显式重新分析]
+    J --> K[scanBookSegmentsConcurrent + planBookSamples]
+    R --> K
+    K --> L[runAgentStructured 生成图谱候选]
+    L --> M[validateEvidence 对齐原文 segment / quote]
+    M --> N[事务写入 nodes / edges / evidence / chapter snapshots]
+    N --> O[五阶段/文风/样本/版本完整性检查]
+    O --> P{预处理完整?}
+    P -- 否 --> Q[失败诊断；禁止文学翻译]
+    P -- 是 --> S[扩展开放文学翻译入口]
+    S --> U[创建文学翻译 Run]
+    T --> V[executeRun]
+    U --> V
+    V --> W{服务端最终 readiness gate}
+    W -- 否 --> X[queued 等待/自动准备；不调用翻译模型]
+    W -- 是 --> Y[进入 running 并执行批次翻译]
 ```
 
 预处理分为两个不同职责：`bookScan.ts` 是确定性、低成本的原文特征索引与抽样规划器；`contextGraph.ts` 通过模型分析选中的原文样本，但模型输出只能成为候选，服务端会重新验证证据。候选图谱不是可直接信任的全书真相，也不应绕过按批次的时间边界。
+
+**文学翻译的顺序约束（ADR-0005）：** 正常扩展路径在当前原文版本的 Context Graph 完整通过后才开放创建 Run；新项目首次打开时自动启动预处理，失败、旧版本或语言方向不匹配时由用户显式重新分析。扩展读取轻量状态投影并做 UI 前置门禁，不复制图谱数据。服务端 `executeRun` 仍是最终防线：旧客户端或直接 API 调用即使先持久化 queued Run，也必须在 readiness 通过前保持 queued，不得进入 running、读取翻译片段或调用翻译模型。技术模式不受此门禁影响。
 
 ## 5. Context Graph 与 TranslationBrief 如何协作
 
