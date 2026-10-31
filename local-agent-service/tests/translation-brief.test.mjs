@@ -156,7 +156,7 @@ test('TranslationBrief is revision-pinned, bounded and hashes the source selecti
   assert.equal(first.memoryRevisionId, run.literaryMemoryRevisionId);
   assert.deepEqual(first.sourceSegmentIds, ['c1-1']);
   assert.equal(first.chapterPath, 'Chapter 1');
-  assert.equal(first.policyVersion, 'translation-brief-v8-default-adoption');
+  assert.equal(first.policyVersion, 'translation-brief-v10-bounded-examples');
   assert.ok(first.contextChars <= MAX_TRANSLATION_BRIEF_CHARS);
   assert.match(first.contextHash, /^[a-f0-9]{64}$/);
   assert.notEqual(first.contextHash, second.contextHash, 'context identity changes when source IDs and preceding context change');
@@ -166,7 +166,7 @@ test('TranslationBrief is revision-pinned, bounded and hashes the source selecti
   assert.equal(snapshots.length, 1);
   assert.equal(snapshots[0].contextHash, first.contextHash);
   assert.deepEqual(snapshots[0].sourceSegmentIds, ['c1-1']);
-  assert.equal(snapshots[0].brief.policyVersion, 'translation-brief-v8-default-adoption');
+  assert.equal(snapshots[0].brief.policyVersion, 'translation-brief-v10-bounded-examples');
 
   const configuredContext = {
     ...context,
@@ -187,6 +187,42 @@ test('TranslationBrief is revision-pinned, bounded and hashes the source selecti
   assert.equal(configuredBrief.precedingSegments[0]?.id, source[1]?.id,
     'context count setting should retain only the closest earlier segment');
   assert.ok(configuredBrief.contextChars <= 8000);
+});
+
+
+test('historical accepted examples are bounded and never duplicate preceding segments', () => {
+  const store = getDocumentProjectStore();
+  const segments = Array.from({ length: 13 }, (_, index) => ({
+    id: 'bounded-example-' + index,
+    text: index === 12
+      ? 'Mara archive lantern secret. The current passage needs consistent terminology.'
+      : 'Mara archive lantern secret. ' + ('distinctive passage detail ' + index + ' ').repeat(35),
+    kind: 'paragraph',
+    contextPath: 'Chapter 1',
+  }));
+  const project = store.createProject({
+    title: 'Bounded Accepted Examples',
+    format: 'txt',
+    sourceFileName: 'bounded-accepted-examples.txt',
+    prompt: { translationMode: 'literary', sourceLang: 'en', targetLang: 'zh' },
+    segments,
+  });
+  ensureTestContextGraph(store, project);
+  for (let index = 0; index < 12; index++) {
+    store.saveManualEdit(project.projectId, segments[index].id, '玛拉档案灯笼秘密。' + '这是已采纳译文风格示例。'.repeat(35));
+  }
+  const run = store.createRun(project.projectId, { scope: { type: 'ids', ids: [segments[12].id] } });
+  const context = store.getRunContext(project.projectId, run.runId);
+  const source = store.getSegments(project.projectId, { limit: 20 }).find((item) => item.id === segments[12].id);
+  const preceding = store.getSegments(project.projectId, { limit: 20 }).find((item) => item.id === segments[11].id);
+  const brief = buildTranslationBrief(context, [source], [preceding]);
+
+  assert.ok(brief.voiceContext.recentExamples.length <= 8);
+  assert.ok(JSON.stringify(brief.voiceContext.recentExamples).length <= 4_000);
+  assert.equal(brief.voiceContext.recentExamples.some((item) => item.segmentId === segments[11].id), false,
+    'a segment already present in precedingSegments must not be repeated as a style example');
+  assert.ok(brief.contextDiagnostics.acceptedExamplesExcludedAsPreceding >= 1);
+  assert.equal(brief.contextDiagnostics.acceptedExampleBudgetChars, 4_000);
 });
 
 test('literary batch planner never crosses a chapter boundary', () => {
