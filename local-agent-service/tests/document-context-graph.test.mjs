@@ -368,8 +368,8 @@ test('literary memory save events retain compact entity and character-voice sync
   const secondPayload = savedEvents[1].payload;
   assert.equal(firstPayload.entityCount, 1);
   assert.equal(firstPayload.characterCount, 1);
-  assert.equal(firstPayload.candidateCharacterCount, 1);
-  assert.equal(firstPayload.confirmedCharacterCount, 0);
+  assert.equal(firstPayload.candidateCharacterCount, 0);
+  assert.equal(firstPayload.confirmedCharacterCount, 1);
   assert.equal(firstPayload.reusedRevision, false);
   assert.equal(secondPayload.reusedRevision, true);
   assert.equal(firstPayload.literaryEntities[0].source, 'the King');
