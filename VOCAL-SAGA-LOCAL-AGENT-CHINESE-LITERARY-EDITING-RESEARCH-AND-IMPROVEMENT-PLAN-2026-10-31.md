@@ -1055,3 +1055,11 @@ Phase 3 的第一批指标已经加入全书 Quality Audit。
 - 当前还没有真实模型 A/B 运行结果和人工评分；CI 只验证 harness 的数据校验、摘要计算、盲评映射和代码构建。
 - 人工评分需至少双人独立完成，先锁定结果再揭盲；报告 inter-rater agreement，并对关键忠实度问题进行人工仲裁。
 - LLM fidelity reviewer 仅用于筛查，不代替人工判断文学创造性、隐喻、反讽和作者声音。
+
+
+### 最新自动化验证状态（2026-10-31）
+
+- Local Agent Service 工作流在当前代码提交 `610150474c14a86019e214b9a1fdb2e069801fa0` 上通过：完整 Node 测试、TypeScript typecheck、API route manifest 检查、BookScan synthetic benchmark。
+- Benchmark Harness 的单元测试覆盖 rights/ID/目标语言校验、编辑率计算和盲评包模型身份隔离。
+- 正式 100–200 段模型 A/B 运行尚未执行，因为仓库没有被授权的正式文学语料；需要使用公版、用户自有或明确授权数据运行。
+- 根仓库跨项目 CI 仍有 5 个 fanyi-extension 既有用例失败（page cache 版本、source language 默认值、旧 URL 路由）。Local Agent Service 专项工作流通过；这 5 个失败不来自本次新增 local-agent-service 代码。
