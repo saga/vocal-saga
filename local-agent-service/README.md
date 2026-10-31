@@ -214,7 +214,7 @@ The ordinary /v1/chat/completions endpoint remains the single-call provider inte
 
 ### Service-side original-file import and Context Graph
 
-The local service parses original documents directly; Local Agent document import does not persist a browser-side copy of the parsed document.
+The local service parses original documents directly; Local Agent document import does not persist a browser-side copy of the parsed document. The importer accepts EPUB, DOCX, text-layer PDF, TXT, Markdown and HTML. It caps uploaded source files at 20 MiB, expanded ZIP content at 80 MiB and normalized input at 20,000 segments. EPUB/DOCX ZIP entries are read in memory without extracting archive paths to disk. Encrypted and ZIP64 archives are rejected rather than silently producing incomplete text.
 
 For PDFs, the importer uses Poppler's `pdftotext` command in text-only mode. Install it on macOS with `brew install poppler`. There is no OCR path. A PDF without a usable text layer returns an explicit error.
 
