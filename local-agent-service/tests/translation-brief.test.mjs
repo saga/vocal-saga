@@ -17,6 +17,59 @@ const { contextGraphCandidateDisposition } = await import('../src/documents/cont
 const { buildTranslationBrief, summarizeTranslationBrief, MAX_TRANSLATION_BRIEF_CHARS } = await import('../src/documents/translationBrief.ts');
 const { buildBatches, buildCanonicalTermProtections, buildUserPrompt } = await import('../src/documents/translationAgent.ts');
 
+test('TranslationBrief excludes rejected entities and preserves model-default target uncertainty', () => {
+  const store = getDocumentProjectStore();
+  const project = store.createProject({
+    title: 'Rejected Memory Projection',
+    format: 'txt',
+    sourceFileName: 'rejected-memory-projection.txt',
+    prompt: { translationMode: 'literary', sourceLang: 'en', targetLang: 'zh' },
+    segments: [{
+      id: 'memory-projection-1',
+      text: 'Alice met Bob. Carol was absent.',
+      kind: 'paragraph',
+      contextPath: 'Chapter 1',
+    }],
+  });
+  ensureTestContextGraph(store, project);
+  store.saveLiteraryMemory(project.projectId, {
+    version: 2,
+    entities: [
+      {
+        source: 'Alice', target: '艾丽丝', kind: 'person', aliases: [],
+        reviewStatus: 'confirmed', confirmationSource: 'model-default',
+        evidenceRefs: [{ segmentId: 'memory-projection-1', sourceQuote: 'Alice met Bob.' }],
+        targetConfidence: 'candidate',
+      },
+      {
+        source: 'Bob', target: '鲍勃', kind: 'person', aliases: [],
+        reviewStatus: 'confirmed', confirmationSource: 'user-confirmed',
+      },
+      {
+        source: 'Carol', target: '卡罗尔', kind: 'person', aliases: [],
+        reviewStatus: 'rejected', confirmationSource: 'user-rejected',
+        evidenceRefs: [{ segmentId: 'memory-projection-1', sourceQuote: 'Carol was absent.' }],
+      },
+    ],
+    relationships: [],
+    styleGuide: {}, chapterSummaries: [], recentExamples: [],
+    characterVoices: [], relationshipVoiceRules: [], voiceAnchors: [],
+  });
+  const run = store.createRun(project.projectId, { scope: { type: 'ids', ids: ['memory-projection-1'] } });
+  const context = store.getRunContext(project.projectId, run.runId);
+  const source = store.getSegments(project.projectId, { limit: 10 })
+    .find((item) => item.id === 'memory-projection-1');
+  const brief = buildTranslationBrief(context, [source], []);
+
+  assert.equal(brief.voiceContext.entities.some((entity) => entity.source === 'Carol'), false);
+  assert.equal(brief.contextGraph.nameMappings.some((mapping) => mapping.source === 'Carol'), false,
+    'a rejected entity must not leak into the canonical-name mapping projection');
+  const alice = brief.voiceContext.entities.find((entity) => entity.source === 'Alice');
+  assert.equal(alice?.targetConfidence, 'candidate',
+    'default adoption must not turn a weak target mapping into a protected canonical term');
+  assert.equal(brief.contextGraph.nameMappings.find((mapping) => mapping.source === 'Alice')?.sourceStatus, 'candidate');
+});
+
 test('TranslationBrief is revision-pinned, bounded and hashes the source selection', () => {
   const store = getDocumentProjectStore();
   const project = store.createProject({
