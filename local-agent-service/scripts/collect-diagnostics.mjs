@@ -102,6 +102,30 @@ function summarizeDocument(project, db) {
     reviewEnabled: Boolean(run.review_enabled), error: run.error,
     scope: parseJson(run.scope_json), sourceRevisionId: run.source_revision_id,
   })) : [];
+  const reviewFindingCategories = {};
+  if (Array.isArray(tables.reviewFindings)) {
+    for (const finding of tables.reviewFindings) {
+      const key = finding.category + '/' + finding.priority + '/' + finding.status;
+      reviewFindingCategories[key] = (reviewFindingCategories[key] || 0) + 1;
+    }
+  }
+  const eventTimeline = Array.isArray(tables.events) ? tables.events.map((event) => {
+    const payload = parseJson(event.payload_json);
+    return {
+      eventId: event.event_id, runId: event.run_id, type: event.event_type, createdAt: event.created_at,
+      payload: Object.fromEntries(Object.entries(payload).filter(([key, value]) =>
+        !/(text|content|prompt|translation|source|excerpt|quote|response|body)/i.test(key) &&
+        (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' || value == null)
+      )),
+    };
+  }) : [];
+  const analysisSignals = {
+    runs: runSummary, eventTimeline, reviewFindingCategories,
+    qualityAuditSummaries: Array.isArray(tables.qualityAudits) ? tables.qualityAudits.map((item) => ({
+      auditId: item.audit_id, runId: item.run_id, createdAt: item.created_at,
+      report: parseJson(item.report_json),
+    })) : [],
+  };
   return {
     document: {
       projectId: project.project_id, title: project.title, format: project.format,
@@ -178,7 +202,7 @@ async function runCodeBuddyAnalysis(summary) {
     selection: summary.selection,
     documents: summary.documents.map((doc) => ({
       title: doc.title, format: doc.format, updatedAt: doc.updatedAt,
-      metrics: doc.metrics, runs: doc.runSummary,
+      metrics: doc.metrics, signals: doc.analysisSignals,
     })),
     instructions: [
       '只分析这两个最近更新的文档项目，不要扩展到其他项目或系统日志。',
