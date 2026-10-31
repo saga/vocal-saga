@@ -504,6 +504,9 @@ function summarizeDocument(project, db) {
     })() : undefined,
   }));
   const graphChapter = Array.isArray(graphChapterStats) ? graphChapterStats[0] : graphChapterStats;
+  const qualityEvaluationRows = rows(db, 'SELECT COUNT(*) AS count FROM quality_evaluations');
+  const qualityEvaluationCount = Array.isArray(qualityEvaluationRows)
+    ? Number(qualityEvaluationRows[0]?.count || 0) : 0;
   const diagnostics = {
     document: {
       projectId: project.project_id, title: project.title, format: project.format,
@@ -534,8 +537,7 @@ function summarizeDocument(project, db) {
       eventCount: eventRows.length,
       eventTypeCounts,
       qualityAuditCount: auditRows.length,
-      qualityEvaluationCount: Number(Array.isArray(rows(db, 'SELECT COUNT(*) AS count FROM quality_evaluations')) 
-        ? rows(db, 'SELECT COUNT(*) AS count FROM quality_evaluations')[0]?.count || 0 : 0),
+      qualityEvaluationCount,
       contextGraph: {
         metaKeyCount: graphMetaRows.length,
         nodeCounts: graphNodeCounts,
