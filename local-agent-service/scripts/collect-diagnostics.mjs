@@ -51,6 +51,7 @@ function redact(input) {
   return text;
 }
 function write(name, data) {
+  fs.mkdirSync(path.dirname(path.join(bundleDir, name)), { recursive: true, mode: 0o700 });
   fs.writeFileSync(path.join(bundleDir, name), data, { encoding: 'utf8', mode: 0o600 });
 }
 function copyRecentLog(source, targetName) {
