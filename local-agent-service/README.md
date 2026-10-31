@@ -282,7 +282,7 @@ The reader page and Agent Workspace share the same project/run executor, as do C
 
 For literary runs, each initial translation response contains `translations` plus a bounded `context_delta` proposal. The Local Agent validates every source quote against the current batch and requires entity mentions to point to text that actually occurs in the corresponding translation. Invalid context metadata is rejected independently; it does not discard a valid translation. Accepted deltas are stored in the project SQLite `translation_context_deltas` table and exposed to later batches through source-ordered, frozen waves. Batches in one wave share a context snapshot, preventing race-dependent terminology and future-context leakage.
 
-After a successful run, grounded candidates are merged into a new literary memory revision only if the project still has the same source revision. Model-generated entities and relationships remain `suggested`; confirmed names, accepted/manual translations and prior Run records are not overwritten. Cross-batch target-name disagreements are kept as open questions and surfaced by the whole-book quality audit as `context-delta-conflict` findings. No global replacement or automatic translation repair is performed.
+After a successful run, grounded candidates are merged into a new literary memory revision only if the project still has the same source revision. 通过来源证据和结构校验的模型实体/关系以 `model-default` 默认采纳；`user-modified`、`user-confirmed` 和 `user-rejected` 优先，重新分析不得覆盖用户决定、已采纳译文或旧 Run 记录。 Cross-batch target-name disagreements are kept as open questions and surfaced by the whole-book quality audit as `context-delta-conflict` findings. No global replacement or automatic translation repair is performed.
 
 ### API
 
@@ -343,7 +343,7 @@ The normalized JSON import accepts title, format, an optional sourceFileName, a 
 - 批次翻译和 Reviewer 使用独立的只读 `voiceContext` 字段。它按本批原文检索相关已确认人物、方向性关系规则和 approved 锚点；`contextPath` 继续只表示章节/文档结构。
 - 上下文按完整条目裁剪，避免序列化 JSON 被字符切片。扩展端缓存指纹包含 voiceContext hash；普通网页没有该字段时，仍使用原来的 cache identity。
 - 文学记忆位于每个项目的 `literary_memory_revisions` 表。每次 Run 固定保存 `literary_memory_revision_id`，可从运行记录还原该次使用的角色档案；记忆修改不创建新的静态 Prompt revision。
-- Reviewer 可在现有 `style` finding 上标记 `dimension=character_voice|register|narrative_style|pacing`，并引用角色 ID 与证据片段。准确性/术语仍沿用 must-fix 规则，人物声音与纯文风修订仍为候选，不自动覆盖译文。
+- Reviewer 可在现有 `style` finding 上标记 `dimension=character_voice|register|narrative_style|pacing`，并引用角色 ID 与证据片段。准确性/术语问题按证据进行 must-fix 修订；有原文/译文证据的文风修订自动保存为 Run 候选，中文单语编辑经双语复核后自动更新候选，Run 完成时统一自动采纳。用户可事后修改。
 
 - The Project Store is the final trust boundary: it rechecks profile evidence against the current source revision; requires both confirmed profiles for a confirmed directional rule; and keeps an anchor approved only when its attribution evidence matches the source, confidence is at least 0.7, speaker is confirmed, and target is present in the accepted translation. Legacy/unverified anchors are downgraded to candidates.
 - Each literary batch now loads up to four preceding source segments from the same source revision (same chapter first) as a read-only context for pronouns/dialogue turns. They do not enter `run_segments` and must never appear as translation output IDs.
