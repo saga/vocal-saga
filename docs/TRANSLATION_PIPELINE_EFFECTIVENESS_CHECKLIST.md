@@ -33,6 +33,12 @@
 - [ ] TXT / Markdown / HTML / EPUB / PDF 的解析结果、章节边界、标题、对话、列表、页码和结构元数据真实进入 Run；解析完成不等于正文已正确抽取。
 - [ ] 来源版本、稳定 segment ID、ordinal、source hash 和 contextPath 在首次导入、恢复、重新导入及文件变化后保持一致；不把旧版本的证据或译文匹配到新版本。
 - [ ] 全书预处理确实完成了计划中的样本选择、分析、证据验证和持久化；队列/运行状态不能只显示完成而实际保存零项或只保存部分项。
+- [ ] 文学模式的正常扩展路径先读取轻量 Context Graph readiness DTO；状态未知、请求失败、source revision / analysis version / 语言方向不匹配时，不创建开始/重译/重试/恢复 Run。
+- [ ] 首次未分析的当前 source revision 会自动触发一次预处理；failed / stale / language mismatch 不会被轮询无限重试，显式重新分析可创建新的可追踪 run。
+- [ ] readiness 不只看 status=completed：验证策略 A/B、sampleCount > 0、styleGuideReady、五项必需文风字段和至少一条 style rule；B 策略还必须具备 style / characters / entities / relationships / chapters 五个完成检查点。
+- [ ] 直接 API/旧客户端先创建 queued Run 时，服务端 executeRun 在进入 running、读取待译片段、调用翻译模型和写入候选前再次校验；预处理未 ready 时不得产生任何翻译模型调用。
+- [ ] 预处理失败不会退化为旧的逐章文学分析后继续翻译；技术文档模式不受文学 Context Graph readiness 门禁影响。
+
 - [ ] 分析模型的每个实体、人物、别名、关系、章节摘要都校验了证据确实出自允许的原文片段；无效、越界、空证据、错 ID、截断引文有明确拒绝计数或事件。
 - [ ] 源语言与目标语言来自当前项目/Prompt 配置；更改语言后会重做或使旧分析失效，不能把中文旧译名错误复用于其他目标语言。
 - [ ] 规范名称映射的状态含义明确：有证据的自动规范译名、人工修改、候选、拒绝不能在扩展与服务端合并时被互相降级、升级或覆盖。
