@@ -248,7 +248,8 @@ function summarizeBriefComposition(row) {
   const graph = brief.contextGraph || {};
   return {
     available: true,
-    storedChars: Number(row.briefChars || 0),
+    contextChars: Number(row.contextChars || 0),
+    storedJsonChars: Number(row.storedJsonChars || 0),
     serializedChars: JSON.stringify(brief).length,
     topLevel: {
       glossary: measure(brief.glossary),
@@ -348,7 +349,8 @@ function summarizeDocument(project, db) {
     'SELECT finding_id, category, priority, status FROM review_findings ORDER BY finding_id'));
   const rawBriefs = asArray(rows(db,
     'SELECT run_id, batch_index, source_revision_id, memory_revision_id, brief_hash, brief_json, ' +
-    'length(brief_json) AS briefChars, length(source_segment_ids_json) AS segmentIdsJsonChars, created_at ' +
+    'brief_chars AS contextChars, length(brief_json) AS storedJsonChars, ' +
+    'length(source_segment_ids_json) AS segmentIdsJsonChars, created_at ' +
     'FROM translation_briefs ORDER BY run_id, batch_index'));
   const rawDeltas = asArray(rows(db,
     'SELECT * FROM translation_context_deltas ORDER BY run_id, first_ordinal'));
@@ -519,7 +521,7 @@ function summarizeDocument(project, db) {
       reviewFindingCount: rawFindings.length,
       reviewFindingCategories,
       translationBriefCount: rawBriefs.length,
-      translationBriefChars: rawBriefs.reduce((sum, item) => sum + Number(item.briefChars || 0), 0),
+      translationBriefChars: rawBriefs.reduce((sum, item) => sum + Number(item.contextChars || 0), 0),
       translationContextDeltaCount: rawDeltas.length,
       translationContextDeltaJsonChars: rawDeltas.reduce((sum, item) =>
         sum + Object.values(item).reduce((n, value) => n + (typeof value === 'string' ? value.length : 0), 0), 0),
@@ -548,7 +550,8 @@ function summarizeDocument(project, db) {
       sourceRevisionId: item.source_revision_id,
       memoryRevisionId: item.memory_revision_id,
       briefHash: item.brief_hash,
-      briefChars: item.briefChars,
+      briefChars: item.contextChars,
+      storedJsonChars: item.storedJsonChars,
       sourceSegmentIdsJsonChars: item.segmentIdsJsonChars,
       contextComposition: summarizeBriefComposition(item),
       createdAt: item.created_at,
