@@ -965,6 +965,7 @@ test('book audit reports Chinese literary editing coverage, edit rate and biling
   assert.equal(report.metrics.chineseEditorial.unchangedRatePercent, 50);
   assert.equal(report.metrics.chineseEditorial.bilingualVerifiedFindingCount, 1);
   assert.equal(report.metrics.chineseEditorial.bilingualPendingFindingCount, 0);
-  assert.equal(report.metrics.chineseEditorial.pendingUserDecisionFindingCount, 1);
+  assert.equal(report.metrics.chineseEditorial.automaticallyAppliedFindingCount, 1);
+  assert.equal(report.metrics.chineseEditorial.pendingUserDecisionFindingCount, 0);
   assert.equal(report.metrics.chineseEditorial.userAppliedFindingCount, 0);
 });
