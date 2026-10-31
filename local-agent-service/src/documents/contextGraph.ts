@@ -2304,6 +2304,7 @@ export function buildProjectContextGraphBundle(
         targetNodeId: edge.target_node_id,
         kind: 'observed-association',
         status: edge.status,
+        confidence: 'candidate',
         evidence: [{ segmentId: grounded.segmentId, quote: grounded.quote }],
       }];
     }).slice(0, 6);
