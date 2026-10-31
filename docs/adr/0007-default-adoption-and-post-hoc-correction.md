@@ -36,6 +36,7 @@
 11. **删除使用持久化 tombstone。** 用户删除实体或关系时，除删除可见投影外，还必须写入隐藏的 `rejectedItems` tombstone；Context Graph、LiteraryMemory、TranslationBrief、跨批次 context delta merge 均以 tombstone 为否决依据。模型后续再次提出同一名称/别名或同一关系三元组时不得重新激活。只有用户明确编辑/重新建立该项，才可清除对应 tombstone。
 12. **Run 快照与最终化必须串行。** Run 创建时在 SQLite 写锁内重新校验原文、Prompt 和 LiteraryMemory revision；Run 保持 running 直到 context delta 与 LiteraryMemory 合并事务提交，再进入 awaiting_acceptance 并自动采纳。awaiting_acceptance 阶段阻止新 Run。服务重启时自动恢复这一最终化，不要求用户点击 accept。
 13. **旧候选不得覆盖新结果。** 采纳候选时必须校验 Run 的 source revision 仍是当前版本；对同一 segment/source hash，任何比候选更新的 accepted result（不只 manual）都优先。
+14. **中文单语编辑必须经过双语复核，失败自动回退初译。** 中文文学编辑器没有原文输入，其修改只能作为 provisional edit，不能直接进入 Run 候选或自动采纳。后续双语准确性/术语审校必须明确覆盖对应 segment，并返回完整、非空的最终译文；覆盖成功时保留双语审校最终文本（包括审校修订后的文本），自动进入 Run 候选并随 Run 最终化采纳。若双语审校明确覆盖但未修改，保留中文编辑文本。未覆盖、缺少结果、结果为空/格式无效、补审失败或整个双语审校调用失败时，自动丢弃该 segment 的中文单语编辑并恢复第一道翻译阶段的初译；不得把 provisional edit 留在候选、context delta 或后续记忆合并中。按 segment 独立判断：部分覆盖时只保留已覆盖片段，其余片段回退初译。整个过程不增加用户点击、人工审批或等待状态。
 
 ## 后果
 
@@ -56,6 +57,9 @@
 - 删除后 tombstone 在 Extension sanitize/merge、服务端 sanitize、context delta merge 和 TranslationBrief 生成中持续生效；重新分析不能复活。
 - Run 创建快照与原文/Prompt/记忆 revision 一致；运行结束前完成记忆合并，重启后自动完成 pending acceptance。
 - 较旧 Run 的候选不能覆盖更新的 accepted Agent/imported/manual 译文；旧原文 revision 的候选拒绝采纳。
+- 中文单语编辑不会直接成为候选；双语审校明确覆盖且返回完整译文时才进入候选，保留双语审校最终结果。
+- 双语审校未覆盖、缺失、空结果、补审失败或调用失败时，受影响片段自动回退到初译；部分覆盖按片段分别保留/回退。
+- 未经双语复核的中文编辑不得进入自动采纳、context delta 或 LiteraryMemory 更新；全过程不要求用户点击。
 - 旧版中文文学编辑档案 pending update 自动升级为当前生效版本。
 - 原文版本变化会使过期引文和声音锚点失效，但不会把普通证据不足重新变成审批任务。
 - 未来章节身份、别名、剧情事实不会进入早期 TranslationBrief。
