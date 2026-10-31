@@ -1037,7 +1037,7 @@ test('automatic quality repair rejects non-missing findings even when they are i
       { id: 'term-1', text: 'Captain Vale entered the room.', kind: 'paragraph', contextPath: 'Chapter 1' },
     ],
   });
-  store.saveManualEdit(project.projectId, 'term-1', '维尔船长走进了房间。');
+  store.saveManualEdit(project.projectId, 'term-1', '维尔上尉走进了房间。');
   ensureTestContextGraph(store, project);
   const parent = store.createRun(project.projectId, { scope: { type: 'ids', ids: ['term-1'] } });
   store.setRunStatus(project.projectId, parent.runId, 'partial', 'simulated partial completion');
