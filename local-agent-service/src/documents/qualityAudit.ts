@@ -547,6 +547,7 @@ function currentReviewFindings(
       editorialMode: typeof finding.editorialMode === 'string' ? finding.editorialMode : null,
       bilingualReviewStatus: typeof finding.bilingualReviewStatus === 'string' ? finding.bilingualReviewStatus : 'not-required',
       applicationStatus: typeof finding.applicationStatus === 'string' ? finding.applicationStatus : 'pending',
+      applicationMethod: typeof finding.applicationMethod === 'string' ? finding.applicationMethod : null,
       appliedResultId: typeof finding.appliedResultId === 'string' ? finding.appliedResultId : null,
       targetExcerpt: typeof finding.targetExcerpt === 'string' ? finding.targetExcerpt : null,
       sourceExcerpt: String(finding.sourceExcerpt || ''),
