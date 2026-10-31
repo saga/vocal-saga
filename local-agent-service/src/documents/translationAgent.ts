@@ -1916,11 +1916,11 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
         const revisedCount = revisedCandidates.length;
         for (const item of revisedCandidates) translations.set(item.segmentId, item.text);
         if (chineseEditorialCandidateIds.size) {
-          const correctedIds = new Set(revisedCandidates.map((item) => item.segmentId));
-          const editorialResults = chineseVerification.candidates
+          const correctedIds = new Set(chineseVerification.candidates.map((item) => item.segmentId));
+          const editorialResults = chineseVerification.verified
             .map(({ segmentId }) => ({
               segmentId,
-              status: correctedIds.has(segmentId) ? 'corrected' as const : 'verified' as const,
+              status: correctedIds.has(segmentId) ? 'corrected' as const : 'reverted' as const,
               proposedTranslation: translations.get(segmentId)!,
             }));
           const marked = store.markChineseEditorialFindingsReviewed(projectId, runId, editorialResults);
