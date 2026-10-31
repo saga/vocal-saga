@@ -15,6 +15,7 @@ const { buildProjectContextGraphBundle } = await import('../src/documents/contex
 const { selectRecentPriorChapterSummaries } = await import('../src/documents/contextGraph.ts');
 const { contextGraphCandidateDisposition } = await import('../src/documents/contextGraph.ts');
 const { buildTranslationBrief, summarizeTranslationBrief, MAX_TRANSLATION_BRIEF_CHARS } = await import('../src/documents/translationBrief.ts');
+const { sanitizeProjectLiteraryMemory } = await import('../src/documents/voiceContext.ts');
 const { buildBatches, buildCanonicalTermProtections, buildUserPrompt } = await import('../src/documents/translationAgent.ts');
 
 test('TranslationBrief excludes rejected entities and preserves model-default target uncertainty', () => {
@@ -79,6 +80,26 @@ test('TranslationBrief excludes rejected entities and preserves model-default ta
     'default adoption must not turn a weak target mapping into a protected canonical term');
   assert.notEqual(brief.contextGraph.nameMappings.find((mapping) => mapping.source === 'Alice')?.sourceStatus, 'confirmed-memory',
     'a model-default mapping must never become a protected user-confirmed canonical term');
+});
+
+test('server LiteraryMemory sanitizer makes deletion tombstones authoritative', () => {
+  const memory = sanitizeProjectLiteraryMemory({
+    entities: [{
+      source: 'The King', target: '国王', kind: 'person', aliases: ['His Majesty'],
+      reviewStatus: 'confirmed', confirmationSource: 'model-default',
+    }],
+    relationships: [{
+      subject: 'Alice', predicate: 'trusts', object: 'Bob',
+      reviewStatus: 'confirmed', confirmationSource: 'model-default',
+    }],
+    rejectedItems: [
+      { type: 'entity', source: 'The King', kind: 'person', aliases: ['His Majesty'] },
+      { type: 'relationship', subject: 'Alice', predicate: 'trusts', object: 'Bob' },
+    ],
+  });
+  assert.deepEqual(memory.entities, []);
+  assert.deepEqual(memory.relationships, []);
+  assert.equal(memory.rejectedItems.length, 2);
 });
 
 test('TranslationBrief is revision-pinned, bounded and hashes the source selection', () => {
