@@ -184,6 +184,7 @@ export function resolveBilingualVerifiedChineseEdits(
   bilingualReview: Record<string, any>,
 ): {
   candidates: Array<{ segmentId: string; text: string }>;
+  verified: Array<{ segmentId: string; text: string }>;
   fallbacks: Array<{ segmentId: string; text: string }>;
 } {
   const reviewed = new Set(Array.isArray(bilingualReview.reviewedIds) ? bilingualReview.reviewedIds : []);
