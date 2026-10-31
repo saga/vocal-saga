@@ -18,7 +18,12 @@ test('startup recovery marks orphaned runs failed and appends terminal events at
     format: 'txt',
     sourceFileName: 'run-recovery.txt',
     prompt: { translationMode: 'literary' },
-    segments: [{ id: 's1', text: 'Alice entered the room.', kind: 'paragraph', contextPath: 'Chapter 1' }],
+    segments: [
+      { id: 's1', text: 'Alice entered the room.', kind: 'paragraph', contextPath: 'Chapter 1' },
+      { id: 's2', text: 'She closed the door.', kind: 'paragraph', contextPath: 'Chapter 1' },
+      { id: 's3', text: 'The hall was silent.', kind: 'paragraph', contextPath: 'Chapter 1' },
+      { id: 's4', text: 'A clock struck midnight.', kind: 'paragraph', contextPath: 'Chapter 1' },
+    ],
   });
 
   // Initialize the Context Graph schema before simulating a process that died mid-analysis.
@@ -52,6 +57,9 @@ test('startup recovery marks orphaned runs failed and appends terminal events at
 
   const translationRun = store.createRun(project.projectId, { scope: { type: 'all' } });
   db.prepare("UPDATE translation_runs SET status = 'running' WHERE run_id = ?").run(translationRun.runId);
+  db.prepare("UPDATE run_segments SET status = 'candidate' WHERE run_id = ? AND segment_id = 's1'").run(translationRun.runId);
+  db.prepare("UPDATE run_segments SET status = 'running' WHERE run_id = ? AND segment_id = 's2'").run(translationRun.runId);
+  db.prepare("UPDATE run_segments SET status = 'failed', error = 'simulated failure' WHERE run_id = ? AND segment_id = 's3'").run(translationRun.runId);
   store.appendEvent(project.projectId, translationRun.runId, 'batch.started', { batchIndex: 1 });
 
   // A second store instance simulates the next service process opening the same project catalog.
@@ -83,9 +91,12 @@ test('startup recovery marks orphaned runs failed and appends terminal events at
   assert.equal(legacyTranslationRow.status, 'failed');
   assert.ok(legacyTranslationRow.finished_at);
   const legacyTranslationEvents = restartedStore.getEvents(project.projectId, legacyTranslationRun.runId, 0, 100);
-  assert.ok(legacyTranslationEvents.some((event) =>
+  const legacyBackfillEvent = legacyTranslationEvents.find((event) =>
     event.type === 'run.finished' && event.payload.status === 'failed' && event.payload.recovery === 'terminal-event-backfill',
-  ));
+  );
+  assert.ok(legacyBackfillEvent);
+  assert.deepEqual(legacyBackfillEvent.payload.counts, { total: 4, pending: 4 },
+    'legacy terminal-event backfill must calculate real run-segment counts');
 
   const legacyPausedRow = db.prepare('SELECT status, error, finished_at FROM translation_runs WHERE run_id = ?').get(legacyPausedRun.runId);
   assert.equal(legacyPausedRow.status, 'failed');
@@ -99,7 +110,21 @@ test('startup recovery marks orphaned runs failed and appends terminal events at
   assert.equal(translationRow.status, 'failed');
   assert.ok(translationRow.finished_at);
   const translationEvents = restartedStore.getEvents(project.projectId, translationRun.runId, 0, 100);
-  assert.ok(translationEvents.some((event) =>
+  const recoveredTranslationEvent = translationEvents.find((event) =>
     event.type === 'run.finished' && event.payload.status === 'failed' && event.payload.recovery === 'service-restart',
-  ));
+  );
+  assert.ok(recoveredTranslationEvent);
+  assert.deepEqual(recoveredTranslationEvent.payload.counts, {
+    total: 4, candidate: 1, pending: 2, failed: 1,
+  }, 'recovery event must report real persisted counts after running segments become pending');
+
+  const normalizedSegments = db.prepare(
+    'SELECT segment_id, status FROM run_segments WHERE run_id = ? ORDER BY segment_id',
+  ).all(translationRun.runId);
+  assert.deepEqual(normalizedSegments, [
+    { segment_id: 's1', status: 'candidate' },
+    { segment_id: 's2', status: 'pending' },
+    { segment_id: 's3', status: 'failed' },
+    { segment_id: 's4', status: 'pending' },
+  ]);
 });
