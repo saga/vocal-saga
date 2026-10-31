@@ -723,7 +723,7 @@ const logSummary = summarizeLogExcerpt();
 if (logSummary.content) writeText('service-log-excerpt.txt', logSummary.content + '\n');
 delete logSummary.content;
 const summary = {
-  schemaVersion: 2,
+  schemaVersion: 3,
   generatedAt,
   selection: collection.selection || '最新两个未归档文档项目',
   selectedCount: collection.selectedCount || 0,
@@ -736,7 +736,7 @@ const readme = [
   'Vocal Saga Local Agent - compact diagnostic bundle',
   'Generated: ' + generatedAt,
   'Selection: latest two non-archived document projects by document_projects.updated_at.',
-  'Schema version: 2',
+  'Schema version: 3',
   '',
   'Included: source revision metadata; source segment counts and lengths; Prompt/LiteraryMemory revision fingerprints and compact metadata; Run scopes/statuses; run-segment state counts; translation result counts and text lengths; Reviewer input/output/failure coverage metadata; TranslationBrief per-component character/count breakdown (no content); Context Graph counts and compact analysis progress; quality-audit metrics; SQLite collection query errors; filtered project event timeline; bounded service lifecycle/error log excerpt when available.',
   '',
