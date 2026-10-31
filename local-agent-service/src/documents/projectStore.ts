@@ -73,7 +73,7 @@ export interface DocumentTranslationStrategy {
   reviewStrength: DocumentReviewStrength;
   /** Number of earlier source segments offered for disambiguation, never translated again. */
   precedingContextSegments: number;
-  /** Upper bound for the assembled TranslationBrief context. */
+  /** Soft character budget for optional historical accepted-translation examples in TranslationBrief. */
   contextBudgetChars: number;
   /** Total attempts for a batch, including the initial model request. */
   maxModelAttempts: number;
