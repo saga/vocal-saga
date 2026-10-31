@@ -259,6 +259,14 @@ export async function refreshChineseEditorialProfile(projectId: string, runId: s
     profile,
     evidenceRefs,
   };
+  if (latestProfile?.status === 'rejected' && latestProfile.sourceRevisionId === revisionId) {
+    store.appendEvent(projectId, runId, 'chinese-editorial-profile.update.skipped', {
+      reason: 'user-rejected-profile-remains-disabled',
+      profileFingerprint: latestProfile.sampleFingerprint || null,
+      generatedFingerprint: sampleFingerprint,
+    });
+    return;
+  }
   const isConfirmedBase = latestProfile?.status === 'confirmed' &&
     latestProfile.sourceRevisionId === revisionId;
   const isUserManagedBase = latestProfile?.confirmationSource === 'user-modified' ||
