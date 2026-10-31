@@ -156,6 +156,8 @@ function compactEventPayload(raw) {
     'segmentCount', 'maximumAutomaticPasses', 'findingType',
     'automatic', 'humanAcceptanceRequired', 'findingCount',
     'automaticRepairSkipped', 'remainingFindingsAreNonBlocking',
+    'parentRunScopeSegmentCount', 'inScopeMissingTranslationCount',
+    'outOfScopeMissingTranslationCount', 'scopePolicy',
     'inputChars', 'outputChars', 'inputTokens', 'outputTokens',
     'cacheReadTokens', 'cacheCreationTokens', 'totalTokens', 'numTurns',
     'contextDiagnostics', 'contextComponents', 'contextHash', 'contextChars',
@@ -256,6 +258,7 @@ function summarizeBriefComposition(row) {
     },
     voiceContext: sectionMap(voice),
     contextGraph: sectionMap(graph),
+    retrievalDiagnostics: brief.contextDiagnostics || {},
   };
 }
 function summarizeReviewEvents(events) {
@@ -297,7 +300,7 @@ function summarizeReviewEvents(events) {
     if (item.eventType.endsWith('input')) group.inputCalls++;
     if (item.eventType.endsWith('output')) group.outputCalls++;
     if (item.eventType === 'review.audit.failed') group.failedCalls++;
-    if (item.eventType.includes('.retry-')) group.retryCalls++;
+    if (item.eventType === 'review.audit.retry-input') group.retryCalls++;
     group.inputSegments += Number(item.inputSegmentCount || 0);
     group.returnedTranslations += Number(item.returnedTranslationCount || 0);
     group.missingIds += Number(item.missingIdCount || 0);
