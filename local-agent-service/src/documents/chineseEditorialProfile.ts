@@ -61,6 +61,57 @@ function fingerprint(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex');
 }
 
+export type ChineseEditorialProfileReviewAction = 'confirm' | 'reject' | 'accept-update' | 'reject-update';
+
+export function applyChineseEditorialProfileReview(
+  profile: Record<string, any> | null | undefined,
+  action: ChineseEditorialProfileReviewAction,
+  currentSourceRevisionId: string,
+  now = new Date().toISOString(),
+): Record<string, any> {
+  const hasEvidence = (candidate: any) => candidate &&
+    candidate.sourceRevisionId === currentSourceRevisionId &&
+    Array.isArray(candidate.evidenceRefs) &&
+    new Set(candidate.evidenceRefs.map((item: any) => String(item?.segmentId || '')).filter(Boolean)).size >= 3;
+  if (action === 'accept-update' || action === 'reject-update') {
+    const pending = profile?.pendingUpdate;
+    if (profile?.status !== 'confirmed' || !hasEvidence(pending)) {
+      throw Object.assign(new Error('没有当前来源版本下可处理的中文编辑档案更新，或更新证据已失效。'), { status: 409 });
+    }
+    if (pending.basedOnFingerprint && pending.basedOnFingerprint !== profile.sampleFingerprint) {
+      throw Object.assign(new Error('待更新档案的基准版本已变化，请重新生成更新候选。'), { status: 409 });
+    }
+    return action === 'accept-update'
+      ? {
+          ...pending,
+          status: 'confirmed',
+          confirmationSource: 'user-confirmed',
+          confirmedAt: now,
+          profileVersion: Math.max(1, Number(profile.profileVersion) || 1) + 1,
+          previousFingerprint: profile.sampleFingerprint || null,
+          acceptedUpdateAt: now,
+        }
+      : {
+          ...profile,
+          pendingUpdate: undefined,
+          lastRejectedUpdate: { sampleFingerprint: pending.sampleFingerprint, rejectedAt: now },
+        };
+  }
+  if (!hasEvidence(profile)) {
+    throw Object.assign(new Error('当前来源版本没有可确认的中文编辑档案，或档案证据已失效。'), { status: 409 });
+  }
+  if (action === 'confirm' && profile.status === 'rejected') {
+    throw Object.assign(new Error('已拒绝的编辑档案不能直接确认，请先重新分析生成新候选。'), { status: 409 });
+  }
+  return {
+    ...profile,
+    status: action === 'confirm' ? 'confirmed' : 'rejected',
+    ...(action === 'confirm'
+      ? { confirmationSource: 'user-confirmed', confirmedAt: now }
+      : { confirmationSource: undefined, confirmedAt: undefined }),
+  };
+}
+
 /**
  * Build a book-level Chinese target voice from accepted translations only.
  * Source text is used locally for deterministic sample selection and is never placed in the model prompt.
