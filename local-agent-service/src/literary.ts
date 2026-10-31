@@ -678,12 +678,15 @@ export async function runLiteraryReview(body: any, requestId: string, sessionSco
       }
     }
     findings.push(...candidateFindings);
-    // Facts/terminology must be fixed, but style-only suggestions must not silently replace the draft.
+    // 已通过原文/译文证据校验的 Reviewer 文风修订默认应用；机器建议不是用户确认，
+    // 用户仍可在译文中事后修改。中文单语编辑同样先产出候选，随后由双语审校验证。
     const hasGroundedChineseEdit = chineseMonolingualEdit && candidateUsable &&
       candidateText !== original.draft && candidateFindings.length > 0;
+    const hasGroundedStyleEdit = reviewFocus === 'style' && candidateUsable &&
+      candidateText !== original.draft && candidateFindings.some((finding) => finding.category === 'style');
     translations[raw.id] = hasMustFixFinding && candidateUsable
       ? candidateText
-      : hasGroundedChineseEdit ? candidateText : original.draft;
+      : hasGroundedChineseEdit || hasGroundedStyleEdit ? candidateText : original.draft;
   }
   const expectedIds = segments.map((item) => item.id);
   return {
