@@ -26,6 +26,10 @@ GET /api/codebuddy/config-options?model=deepseek-v4.1-flash
 
 注意：`autoCompactWindow`、`/autocompact` 等控制压缩触发点，不提供窗口档位，也不替代上下文窗口选择。
 
+## 中文文学编辑的双语复核规则
+
+中文单语文学编辑只产生 provisional edit，不直接写入 Run 候选。后续双语准确性/术语复核必须明确覆盖对应片段并返回完整、非空的最终译文；覆盖成功时保留双语复核最终文本（包括复核修订），并随 Run 自动采纳。未覆盖、缺少结果、空/无效结果、补审失败或复核调用失败时，该片段自动恢复第一道翻译阶段的初译。部分覆盖按片段分别处理。未经双语复核的中文编辑不得进入候选、context delta 或项目记忆；不要求用户点击确认。
+
 ## 环境要求
 
 - macOS 与 Node.js >= 22.13（使用 Node 内置 `node:sqlite`，不需要另外安装 sqlite3）。
