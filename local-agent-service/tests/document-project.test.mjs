@@ -1173,6 +1173,36 @@ test('Chinese monolingual style proposals cannot be applied before bilingual ver
   });
 });
 
+test('bilingual review automatically reverts a rejected Chinese edit without leaving a pending finding', async () => {
+  await withStore((store) => {
+    const project = store.createProject({ title: 'Chinese Editorial Revert', format: 'epub', segments });
+    const run = store.createRun(project.projectId, { scope: { type: 'ids', ids: ['ch1-p1'] } });
+    store.saveCandidate(project.projectId, run.runId, 'ch1-p1', '第一道初译。');
+    store.saveFinding(project.projectId, run.runId, 'ch1-p1', {
+      category: 'style',
+      priority: 'optional',
+      editorialMode: 'chinese-monolingual',
+      bilingualReviewStatus: 'pending',
+      reason: '单语编辑提出的修改。',
+      targetExcerpt: '第一道初译。',
+      proposedTranslation: '中文单语编辑。',
+      applicationStatus: 'pending',
+    });
+
+    assert.equal(store.markChineseEditorialFindingsReviewed(project.projectId, run.runId, [{
+      segmentId: 'ch1-p1',
+      status: 'reverted',
+      proposedTranslation: '第一道初译。',
+    }]), true);
+
+    const finalized = store.getRun(project.projectId, run.runId);
+    assert.equal(finalized.findings[0].status, 'dismissed');
+    assert.equal(finalized.findings[0].finding.applicationStatus, 'dismissed');
+    assert.equal(finalized.findings[0].finding.applicationMethod, 'automatic-bilingual-review-reverted');
+    assert.equal(finalized.segments.find((item) => item.id === 'ch1-p1')?.candidateTranslation, '第一道初译。');
+  });
+});
+
 test('Chinese monolingual style proposal remains blocked when bilingual review did not complete', async () => {
   await withStore((store) => {
     const project = store.createProject({ title: 'Unverified Chinese Editorial', format: 'epub', segments });
