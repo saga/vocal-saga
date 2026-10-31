@@ -123,7 +123,7 @@ function summarizeDocument(project, db) {
     runs: runSummary, eventTimeline, reviewFindingCategories,
     qualityAuditSummaries: Array.isArray(tables.qualityAudits) ? tables.qualityAudits.map((item) => ({
       auditId: item.audit_id, runId: item.run_id, createdAt: item.created_at,
-      report: parseJson(item.report_json),
+      reportPreview: JSON.stringify(parseJson(item.report_json)).slice(0, 6000),
     })) : [],
   };
   return {
@@ -203,7 +203,7 @@ async function runCodeBuddyAnalysis(summary) {
     selection: summary.selection,
     documents: summary.documents.map((doc) => ({
       title: doc.title, format: doc.format, updatedAt: doc.updatedAt,
-      metrics: doc.metrics, signals: doc.analysisSignals,
+      metrics: doc.metrics, signals: doc.analysisSignals ? {\n        runs: doc.analysisSignals.runs,\n        eventTimeline: doc.analysisSignals.eventTimeline.slice(-250),\n        reviewFindingCategories: doc.analysisSignals.reviewFindingCategories,\n        qualityAuditSummaries: doc.analysisSignals.qualityAuditSummaries,\n      } : null,
     })),
     instructions: [
       '只分析这两个最近更新的文档项目，不要扩展到其他项目或系统日志。',
