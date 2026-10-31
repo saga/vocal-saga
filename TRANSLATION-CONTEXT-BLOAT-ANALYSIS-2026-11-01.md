@@ -3,7 +3,8 @@
 - 日期：2026-11-01
 - 范围：`local-agent-service` 文学翻译的 TranslationBrief 组装与注入
 - 触发问题：单批仅 5 个待译片段，`translation-brief assembled` 却报出 101,842 字符，`voice-context built` 报出 78,736 字符
-- 结论：**上下文已失控。10 万字符的 prompt 里，真正要翻译的原文只占 6.6%。**
+- 原始诊断结论：**上下文已失控。10 万字符的 prompt 里，真正要翻译的原文只占 6.6%。**
+- 后续状态：本报告第 8 节记录了基于证据实施的代码修改；原始统计仍代表修改前的历史运行。
 
 本报告只做诊断，不含代码改动。所有数字来自本机 SQLite（`translation_briefs`、`project_events`）与 `~/.vocal-saga-local-agent/logs/local-agent.log`。
 
@@ -259,3 +260,52 @@ sqlite3 ... "SELECT json_extract(payload_json,'$.sourceChars'),
 | 对照 run | `23e4932f-5ae9-4fba-900f-3bc1b257b154`（14 批） |
 | 源书 | À la recherche du temps perdu（fr → zh），章节 `d3e211` |
 | 模型 | `glm-5.3-flash`，thinkingMode=enabled，effort=low |
+
+
+---
+
+## 8. 代码修改与复核结果（2026-11-01）
+
+根据上述证据，已在 `main` 实施以下修改：
+
+### 已实施
+
+1. **限制历史译例注入**
+   - `recentExamples` 最多 8 条。
+   - 字符预算最高 4,000；实际预算为 `min(4,000, max(1,000, floor(contextBudgetChars × 25%)))`。
+   - 继续使用原有相关性得分排序和 Jaccard 多样性去重；超预算时保留高分项，不按数据库返回顺序截断。
+   - 预算按每条完整 JSON 译例计算，并预留数组分隔符/括号开销。
+
+2. **消除 preceding 重复**
+   - 已进入当前批次配置的 `precedingSegments` 的 segment ID，会从 `recentExamples` 中排除。
+   - 增加 `acceptedExamplesExcludedAsPreceding` 诊断计数。
+
+3. **让 contextBudgetChars 有实际作用**
+   - 该设置现在控制可选历史译例预算，不再是完全空转的配置。
+   - 明确它是软预算，不是整个 TranslationBrief 的硬截断值。当前原文、前文、术语、当前可见名称映射和有证据的人物声音信息不会为了满足该预算而被删除。
+   - README 和架构文档已同步修正字段语义，避免把它描述成整个上下文的硬上限。
+
+4. **补充诊断与回归测试**
+   - 记录 `acceptedExampleBudgetChars`、`acceptedExampleChars`、`acceptedExamplesInjected`、`acceptedExamplesTrimmedByBudget` 和 `acceptedExamplesExcludedAsPreceding`。
+   - 新增回归测试覆盖历史译例预算和 preceding 去重。
+   - 更新 TranslationBrief policy version 为 `translation-brief-v10-bounded-examples`。
+
+### 对原报告其他建议的复核
+
+- **nameMappings：不重复修改。** 当前 main 的 `translationBrief.ts` 已在合并动态记忆和人物映射后，再按当前 batch + 配置 preceding segments 做最终过滤；`contextGraph.ts` 也有源文可见性过滤。原始 Bundle 中的 82 条全量映射属于旧运行行为。没有再添加数量 cap，避免误删当前上下文真正命中的专名。
+- **styleGuide：不按旧 Bundle 的 legacy 状态推断当前行为。** 当前组装逻辑要求机器分析版本匹配且字段完整，或存在用户确认/编辑的 style guide，才会将其注入；旧的 `legacy-unknown` 数据不会仅凭存在就获得注入资格。
+- **Reviewer：复用同一份 TranslationBrief。** 历史译例在 brief 构建阶段已被限制，翻译和 Reviewer 共用这份快照，因此无需另造一套 Reviewer 侧裁剪逻辑。
+- **短批次合并：暂不实施。** batch 合并会改变原有章节边界、批次并发和失败重试粒度；目前的 token 统计说明多轮调用放大成本，但不足以证明合并批次不会损害运行语义。应先用新诊断数据确认上下文收敛后的实际请求轮数和 token，再单独评估。
+- **不降低 Reviewer 的质量阈值，也不删除 recentExamples。** 历史译例仍提供已采纳译文的风格参考，只限制数量和体量。
+
+### 预期验收
+
+下一次运行应重点核对：
+
+- `acceptedExamplesInjected <= 8`
+- `acceptedExampleChars <= acceptedExampleBudgetChars <= 4000`
+- `acceptedExamplesExcludedAsPreceding` 在前文也命中已采纳译文时大于 0
+- `graphMappingsExcludedNotMentioned` 继续反映批次外映射的排除数量
+- TranslationBrief 字符数和 Reviewer input tokens 应明显下降；具体降幅以新 Bundle 为准，不以旧数据推算为测试结果。
+
+本次代码通过 GitHub 直接提交到 `main`。由于当前执行环境未能运行仓库测试，新增回归测试尚未得到本地执行结果；不能将其标记为已通过。
