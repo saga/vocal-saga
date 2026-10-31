@@ -27,7 +27,7 @@ function status(value: unknown, allowed: string[], fallback = 'candidate'): stri
   return typeof value === 'string' && allowed.includes(value) ? value : fallback;
 }
 
-type ConfirmationSource = 'model-default' | 'evidence-verified' | 'user-confirmed' | 'legacy-unknown';
+type ConfirmationSource = 'model-default' | 'user-modified' | 'evidence-verified' | 'user-confirmed' | 'legacy-unknown';
 function confirmationSource(value: unknown, active: boolean): ConfirmationSource | undefined {
   if (!active) return undefined;
   return value === 'model-default' || value === 'user-modified' || value === 'evidence-verified' || value === 'user-confirmed' || value === 'legacy-unknown'
