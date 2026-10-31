@@ -58,7 +58,9 @@ const DIAGNOSTIC_EVENT_TYPES = new Set([
   'context-graph.completed', 'quality-audit.completed', 'quality-repair.planned',
   'quality-audit.auto-repair-scheduled', 'quality-audit.auto-disposition',
   'translations.accepted', 'translations.auto-accepted',
-  'translation.context-memory.persisted',
+  'translation.context-memory.persisted', 'translation-brief.ready',
+  'review.batchContext.ready', 'review.audit.input', 'review.audit.output',
+  'review.audit.retry-input', 'review.audit.retry-output',
 ]);
 
 function redact(value) {
@@ -127,7 +129,7 @@ function compactValue(key, value, depth = 0) {
     return { count: value.length };
   }
   if (typeof value === 'object') {
-    if (depth >= 3) return { keys: Object.keys(value).length };
+    if (depth >= 5) return { keys: Object.keys(value).length };
     const result = {};
     for (const [childKey, childValue] of Object.entries(value).slice(0, 40)) {
       if (OMIT_KEYS.test(childKey)) continue;
@@ -156,6 +158,11 @@ function compactEventPayload(raw) {
     'automaticRepairSkipped', 'remainingFindingsAreNonBlocking',
     'inputChars', 'outputChars', 'inputTokens', 'outputTokens',
     'cacheReadTokens', 'cacheCreationTokens', 'totalTokens', 'numTurns',
+    'contextDiagnostics', 'contextComponents', 'contextHash', 'contextChars',
+    'sourceSegmentCount', 'precedingSegmentCount', 'graphCharacters', 'graphEntities',
+    'graphRelationships', 'graphChapterSummaries', 'glossaryTerms', 'voiceEntities',
+    'voiceRelationships', 'characterVoices', 'relationshipVoiceRules', 'voiceAnchors',
+    'recentExamples', 'dialogueParticipants', 'translationBriefChars',
   ]);
   const compact = {};
   for (const [key, value] of Object.entries(payload)) {
