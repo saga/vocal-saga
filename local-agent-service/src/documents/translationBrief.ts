@@ -592,8 +592,7 @@ function buildTemporallyVisibleMemory(
   // Whole-book summaries/examples remain excluded to protect temporal plot boundaries. Style-only
   // guides are default-adopted; a user can explicitly disable the generated guide.
   const styleGuideEnabled = rawMemory.styleGuideAutoDisabled !== true &&
-    (rawMemory.styleGuideOrigin === 'context-graph' || rawMemory.styleGuideOrigin === 'user-edited' ||
-      Object.keys(rawMemory.styleGuide || {}).length > 0);
+    ['context-graph', 'user-edited', 'user-confirmed'].includes(String(rawMemory.styleGuideOrigin || ''));
   rawMemory.styleGuide = styleGuideEnabled ? rawMemory.styleGuide : {};
   rawMemory.styleGuideStatus = styleGuideEnabled ? 'confirmed' : 'candidate';
   rawMemory.styleGuideConfirmationSource = styleGuideEnabled
