@@ -90,7 +90,7 @@
 
 ### 仍需验证
 
-1. **尚未执行本地测试。** 本轮通过 GitHub 文件接口提交代码，当前没有在仓库工作目录运行 `npm test`、`tsc --noEmit` 或 `vite build`。新增回归测试已经提交，但不能宣称测试通过。
+1. **基础 CI 已通过。** `vocal-saga` 的 CI run `41165483572` 已通过共享模块检查、主项目类型检查/单测、Local Agent Service 类型检查/单测、fiction quality regression fixtures 和 library build；Local Agent Service 独立 CI run `41165483574` 也已通过。`fanyi-extension` 删除回归测试 CI run `41165321715` 已通过 Vitest、Chrome/Firefox 构建。
 2. **Extension 删除路径需要端到端验证。** 覆盖人物删除、实体删除、关系删除、服务端返回 409（Run 正在执行）、图谱不存在/旧图谱缺少 predicate、重新打开文档后 rejected 状态仍生效。
 3. **Reviewer 自动应用需要集成验证。** 至少验证非中文目标语言 style-only finding 自动保存并自动采纳；中文单语编辑经双语复核后自动采纳；双语复核失败时保留原候选；用户较新的手工修改不被自动采纳覆盖。
 4. **真实模型质量仍需样本评估。** 代码路径自动化不等于编辑质量已证明。需要用代表性小说片段检查过度润色、人物声音漂移、原文事实增删和语义偏移。
@@ -144,7 +144,7 @@
 ### CI 状态
 
 - fanyi-extension：新增删除回归测试的 GitHub Actions CI 已通过，run 41165321715。
-- vocal-saga：上述代码和测试提交已触发 CI；最后检查时仍在运行，尚不能宣称通过。
+- vocal-saga：CI run `41165483572` 与 Local Agent Service run `41165483574` 均已完成并通过；覆盖主项目和 Local Agent Service 类型检查、单测、共享模块检查、fiction quality fixtures、API route manifest、book-scan benchmark 和 library build。
 - 上一轮 vocal-saga 基础 CI（run 41164972117）及 Local Agent Service CI（run 41164972116）均已通过。
 
 ### 尚未完成
