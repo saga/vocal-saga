@@ -1015,7 +1015,6 @@ export class DocumentProjectStore {
             : status === 'confirmed' && legacyConfirmed
               ? { confirmationSource: 'legacy-unknown' }
               : { confirmationSource: undefined }),
-        ...(evidenceVerified ? { autoVerifiedAt: new Date().toISOString() } : {}),
         openQuestions: Array.from(new Set(questions)).slice(0, 8),
       };
     });
