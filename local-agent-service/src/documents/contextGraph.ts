@@ -1254,8 +1254,8 @@ async function runAnalysis(projectId: string, runId: string): Promise<void> {
       "(SELECT node_id FROM context_graph_nodes WHERE source_revision_id = ? AND (status = 'candidate' OR (status = 'confirmed' AND json_extract(attributes_json, '$.adoptionSource') = 'model-default'))) OR edge_id IN " +
       "(SELECT edge_id FROM context_graph_edges WHERE source_revision_id = ? AND (status = 'candidate' OR (status = 'confirmed' AND json_extract(attributes_json, '$.adoptionSource') = 'model-default'))))"
     ).run(revisionId, revisionId, revisionId);
-    db.prepare("DELETE FROM context_graph_edges WHERE source_revision_id = ? AND (status = 'candidate' OR json_extract(attributes_json, '$.adoptionSource') = 'model-default')").run(revisionId);
-    db.prepare("DELETE FROM context_graph_nodes WHERE source_revision_id = ? AND (status = 'candidate' OR json_extract(attributes_json, '$.adoptionSource') = 'model-default')").run(revisionId);
+    db.prepare("DELETE FROM context_graph_edges WHERE source_revision_id = ? AND (status = 'candidate' OR (status = 'confirmed' AND json_extract(attributes_json, '$.adoptionSource') = 'model-default'))").run(revisionId);
+    db.prepare("DELETE FROM context_graph_nodes WHERE source_revision_id = ? AND (status = 'candidate' OR (status = 'confirmed' AND json_extract(attributes_json, '$.adoptionSource') = 'model-default'))").run(revisionId);
     // 重新分析前重置上一轮模型生成的章节摘要（见 resetChapterSummariesForReanalysis）。
     resetChapterSummariesForReanalysis(db, revisionId, segments);
     saveMeta(db, revisionId, 'stylePolicyVersion', 'literary-style-v3-default-adoption');
