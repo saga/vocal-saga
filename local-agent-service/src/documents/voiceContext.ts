@@ -767,7 +767,7 @@ export function buildProjectVoiceContext(
   // Emit per-section sizes (never content) so unusually large context can be attributed
   // without exporting book text, character names, or translated examples into service logs.
   const sectionChars = Object.fromEntries(Object.entries(result).map(([key, value]) => [
-    key, JSON.stringify(value ?? null).length,
+    key, JSON.stringify(value ?? null)?.length || 0,
   ]).sort((a, b) => Number(b[1]) - Number(a[1])));
   const largestSections = Object.entries(sectionChars).slice(0, 6)
     .map(([key, chars]) => key + ':' + chars).join(',');
