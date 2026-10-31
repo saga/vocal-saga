@@ -213,3 +213,16 @@ M1 的确定性质量检查包括三项：
 - 不做跨全文本字符串替换，不因自动建议而改写已采纳译文。
 - 不把模型生成的人物身份、关系、别名或译名直接标为 confirmed。
 - 不让同波批次相互观察尚未完成的增量，也不把后文证据注入早期原文片段。
+
+
+### 3.5 中文文学编辑质量指标
+
+全书 Quality Audit 除原有翻译质量指标外，增加 `metrics.chineseEditorial`：
+
+- 编辑覆盖：reviewed / unchanged / uncovered segment 数。
+- 编辑行为：edited segment 数、edit rate、unchanged rate。
+- 双语复核：verified、corrected、pending finding 数。
+- 用户决策：applied、dismissed、pending finding 数和已决策建议采纳率。
+- 后续人工覆盖：已采纳编辑建议之后，如果最新 accepted translation 被新的人工译文覆盖，记录为 `manuallyOverriddenAfterApplyCount`。它是后续覆盖的观测值，不直接等同于编辑错误或 over-edit。
+
+指标来自 `stage.completed` 持久化事件和 `review_findings`，按 source revision 与对应 Run 归集。没有中文单语编辑阶段记录时，指标为 0/null，不把缺失数据解释为编辑质量达标。Quality Audit 同时记录当前 `chineseEditorialProfile` 的状态、来源版本、分析版本、样本 fingerprint 和证据数。
