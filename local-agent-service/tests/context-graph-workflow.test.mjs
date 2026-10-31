@@ -24,7 +24,7 @@ test('all literary style dimensions are required by the single-call A schema', (
     assert.equal(ANALYSIS_SCHEMA.properties[field].minLength, 1, field + ' must not be an empty string');
   }
   assert.equal(ANALYSIS_SCHEMA.properties.styleRules.minItems, 1);
-  assert.match(CONTEXT_GRAPH_ANALYSIS_VERSION, /v9-canonical-entity-quality/);
+  assert.match(CONTEXT_GRAPH_ANALYSIS_VERSION, /context-graph-v10-default-adoption/);
 });
 
 test('B defines five isolated stages with stage-specific required schemas', () => {
