@@ -655,7 +655,7 @@ export function buildProjectVoiceContext(
     [entity.source, ...entity.aliases].map((name: string) => normalizeEntityName(name)).filter(Boolean)));
   const relationships = memory.relationships.filter((relation: any) =>
     relation.reviewStatus !== 'rejected' &&
-    (names.has(normalizeEntityName(relation.subject)) || names.has(normalizeEntityName(relation.object))))
+    (names.has(normalizeEntityName(relation.subject)) && names.has(normalizeEntityName(relation.object))))
     .map((relation: any) => ({
       ...relation,
       // Model-default relationships are active continuity hints, not user-verified plot facts.
