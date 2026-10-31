@@ -915,3 +915,77 @@ LiTransProQA 的专业问题清单可以作为 rubric 设计参考，但需要�
 - Phase 3：扩展全书质量审计，统计编辑建议数、verified/corrected 数、采纳/拒绝/撤销、过度编辑和双语复核失败率。
 - Phase 4：建立 100–200 段的中文文学编辑 A/B 盲评语料，并对主力模型和本地模型进行可重复评测。
 - Phase 5：积累人工偏好数据后再评估 SFT / LoRA / preference optimization；当前不做模型微调。
+
+
+---
+
+## 17. Phase 2 实施进展：作品级 Chinese Editorial Profile（2026-10-31）
+
+Phase 2 的第一版已落地，直接复用现有 BookScan、LiteraryMemory revision 和 Project Store；没有新增数据库表或独立 Agent。
+
+### 自动生成流程
+
+1. 用户采纳译文，或文学 Run 完成后，服务检查当前 source revision 的 accepted translation ledger。
+2. 已采纳片段达到最低样本门槛后，使用 `planBookSamples` 在已采纳片段集合内抽样，覆盖章节/位置/对白等代表性片段。
+3. 原文只在本机参与确定性抽样；档案分析模型收到的只有中文已采纳译文和 segment ID。
+4. 模型生成候选 `chineseEditorialProfile`：叙述声音、语域、节奏、对白、词汇、规则、避免事项和逐条 target-side evidence。
+5. Project Store 对每条 targetExcerpt 核验：segment 必须属于当前 source revision，必须有当前 source hash 对应的 accepted translation，引用必须实际存在于该中文译文。
+6. 候选保存为新的 LiteraryMemory revision。候选不会进入 Prompt。
+7. 用户通过新增 review API 明确确认或拒绝。只有 confirmed profile 才能进入后续 TranslationBrief、中文单语编辑和翻译上下文。
+
+### 本阶段代码
+
+- 新增 `local-agent-service/src/documents/chineseEditorialProfile.ts`
+  - 只从当前 revision 的 accepted translations 取样。
+  - 复用 `planBookSamples`，抽样最多 24 段。
+  - 发送给模型的输入只有中文目标语样本和 segment ID；原文不进入 Prompt。
+  - 结构化输出要求 profile 和 observations；每条观察必须能回指实际中文样本。
+  - 按样本 fingerprint 幂等，避免相同样本重复调用。
+  - 最低样本量不足时记录 skipped 事件；分析失败不影响译文采纳。
+  - 不覆盖用户已确认的 profile。
+- 更新 `voiceContext.ts`
+  - LiteraryMemory 保存版本化 `chineseEditorialProfile`。
+  - 仅在 profile 已确认时，将其目标语风格字段投影到 voiceContext。
+- 更新 `translationBrief.ts`
+  - 只接受当前 source revision 下、具有至少三个不同证据片段的 confirmed profile。
+- 更新 `projectStore.ts`
+  - 校验 profile 的 source revision、accepted target text、source hash 和 target excerpt。
+  - 证据失效时将 confirmed 降级为 candidate。
+- 更新 `projectRoutes.ts`
+  - 新增明确的 confirm/reject review API。
+  - 用户采纳译文或应用文学 finding 后自动排队档案分析。
+- 更新 `translationAgent.ts`
+  - 完成/部分完成的文学 Run 自动检查是否需要生成档案。
+- 更新 `api-route-manifest.json` 与 `openapi.json`。
+- 新增测试
+  - target-only profile 投影。
+  - candidate 不进入 voiceContext。
+  - accepted target evidence 被篡改后 confirmed 自动降级。
+  - 单语编辑器只收到目标语 profile，不收到 source-side 资料。
+
+### 当前 API
+
+`GET /api/documents/projects/{projectId}/literary-memory` 可读取当前 profile 和历史 memory revisions。
+
+`POST /api/documents/projects/{projectId}/literary-memory/chinese-editorial-profile/review`
+
+请求体：
+
+```json
+{ "action": "confirm" }
+```
+
+或：
+
+```json
+{ "action": "reject" }
+```
+
+确认必须满足当前来源版本与至少三个不同 accepted target-evidence segment 的要求。
+
+### 已知边界与下一步
+
+- Phase 2 目前保护 confirmed profile，不会自动覆盖它；新增样本 fingerprint 变化后仍需补上独立的 pending-update/suggestion 展示与确认流程，才能完整覆盖“新证据冲突只生成建议”的情况。
+- 目前服务端 API 已可确认/拒绝，尚未在 fanyi-extension 的 Literary Memory UI 中增加 profile 卡片、证据查看和确认按钮。
+- Profile 的分析提示词和输出结构已有自动测试，但真实模型质量仍需通过 Phase 4 的中文盲评验证。
+- Phase 3 下一步：把 profile revision、单语编辑 finding、双语复核状态、用户采纳/拒绝/撤销汇总进全书 Quality Audit；建立可审计的 before/after 指标。
