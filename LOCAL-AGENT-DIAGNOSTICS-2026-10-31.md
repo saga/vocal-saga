@@ -225,3 +225,25 @@ Proust 记录到 5 个 \`review.audit.failed\`，全部是：
 - \`local-agent-service/README.md\`：同步新的诊断包字段、隐私边界和命令说明。
 
 本报告只记录从本次压缩包可验证的运行事实及对应代码路径，没有在本次变更中修改翻译调度、Run 恢复或 Workbuddy Runtime 行为。
+
+## 八、整改状态（2026-10-31）
+
+根据本报告发现，已经将以下修复提交到 `main`：
+
+| 问题 | 代码修改 | 保护规则 |
+|---|---|---|
+| 局部 Run 自动扩展到全书补译 | `translationAgent.ts` 只从全书审计结果中选取父 Run 成员的缺译段；新增 `getRunSegmentIds()` 读取不可变 Run 成员 | 局部 Run 不会因全书其它位置存在缺译而启动越界自动返工 |
+| 自动返工入口缺少范围/类型门禁 | `qualityAudit.ts` 再次验证父 Run、来源版本、父 Run 状态、finding 类型及 segment membership | 自动返工仅接受父 Run 范围内的 repairable `missing-translation`；不接受术语/文风等其它 finding |
+| 重启恢复事件计数写成 0 | `projectStore.ts` 在恢复时先把中断的 running segments 归为 pending，再按数据库实际状态汇总 counts | `run.finished` 的 total/candidate/accepted/failed/pending 等值与持久化状态一致 |
+| Reviewer 180 秒超时过短 | 新增 `LOCAL_AGENT_REVIEW_TIMEOUT_MS`，默认 300,000 ms；accuracy/style Reviewer 独立使用 | 普通 `LOCAL_AGENT_TIMEOUT_MS` 仍为 180,000 ms；Reviewer 超时仍会 interrupt 并丢弃不可信 Session，不会无限等待 |
+| 新超时值无法在压缩包中追踪 | `collect-diagnostics.mjs` 允许列表增加 `timeoutMs` | 下一次诊断包可按 Run Plan / Reviewer Stage 看到实际 deadline |
+
+新增了回归测试：
+
+- `tests/document-run-recovery.test.mjs`：覆盖 running→pending、candidate 保留及真实恢复计数。
+- `tests/quality-audit.test.mjs`：覆盖父 Run 范围内/范围外自动返工，以及禁止对非缺译 finding 自动返工。
+
+**验证状态：** 本次编辑通过 GitHub Contents API 提交；当前执行环境无法从 GitHub 拉取仓库到本地，因此这里不声称 npm test 或 typecheck 已通过。仓库现有 GitHub Actions workflow 会在 `local-agent-service/**` 变更后执行 `npm test`、`npm run typecheck`、API manifest 检查和确定性扫描基准，需以该 workflow 实际结果为准。
+
+**仍未确认的事项：** 本次诊断包没有操作系统退出原因或进程管理器日志，所以没有修改服务进程的 SIGTERM/SIGINT 生命周期，也没有声称已经找到重启的系统级根因。下一次运行新版 `diagnose:bundle` 后，检查 `service-log-excerpt.txt` 中的 signal、shutdown、uncaught、EADDRINUSE 和 Provider timeout 记录，再决定是否需要增加有界 graceful shutdown 或修正启动器/开发 watcher 行为。
+
