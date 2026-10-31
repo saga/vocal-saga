@@ -1048,7 +1048,7 @@ export class DocumentProjectStore {
       const targetEvidenceCount = new Set(targetEvidenceRefs
         .filter((ref: any) => normalize(String(ref.targetSurface || '')) === normalize(String(entity.target || '')))
         .map((ref: any) => String(ref.segmentId || '')).filter(Boolean)).size;
-      const invalidMachineConfirmation = entity.confirmationSource === 'evidence-verified' && evidenceRefs.length === 0;
+      const invalidMachineConfirmation = ['evidence-verified', 'model-default'].includes(String(entity.confirmationSource || '')) && evidenceRefs.length === 0;
       const reviewStatus = invalidMachineConfirmation ? 'suggested' : entity.reviewStatus;
       const targetConfidence = reviewStatus === 'confirmed'
         ? (targetEvidenceCount >= 2 ? 'corroborated' : (targetEvidenceCount >= 1 ? 'corroborated' : 'candidate'))
@@ -1061,7 +1061,7 @@ export class DocumentProjectStore {
     memory.relationships = memory.relationships.map((relation: any) => {
       const evidenceRefs = (Array.isArray(relation.evidenceRefs) ? relation.evidenceRefs : [])
         .filter((ref: any) => validEvidence(ref.segmentId, ref.sourceQuote));
-      const invalidMachineConfirmation = relation.confirmationSource === 'evidence-verified' && evidenceRefs.length === 0;
+      const invalidMachineConfirmation = ['evidence-verified', 'model-default'].includes(String(relation.confirmationSource || '')) && evidenceRefs.length === 0;
       return {
         ...relation, evidenceRefs,
         ...(invalidMachineConfirmation ? { reviewStatus: 'suggested', confirmationSource: undefined } : {}),
