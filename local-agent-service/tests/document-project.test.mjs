@@ -147,6 +147,49 @@ test('source revisions retain prior runs and report translations stale when thei
   });
 });
 
+test('older Run acceptance cannot overwrite a newer accepted Agent translation', async () => {
+  await withStore((store) => {
+    const project = store.createProject({ title: 'Protect Newer Agent Result', format: 'epub', segments });
+    const older = store.createRun(project.projectId, { scope: { type: 'ids', ids: ['ch1-p1'] } });
+    store.saveCandidate(project.projectId, older.runId, 'ch1-p1', '旧 Run 的候选。');
+    store.finishRun(project.projectId, older.runId);
+
+    // An earlier Run awaiting acceptance must not prevent a newer explicit Run.
+    const newer = store.createRun(project.projectId, { scope: { type: 'ids', ids: ['ch1-p1'] } });
+    store.saveCandidate(project.projectId, newer.runId, 'ch1-p1', '新 Run 的候选。');
+    store.finishRun(project.projectId, newer.runId);
+    store.acceptCandidates(project.projectId, newer.runId);
+    store.acceptCandidates(project.projectId, older.runId);
+
+    assert.equal(
+      store.getSegments(project.projectId, { limit: 10 }).find((item) => item.id === 'ch1-p1')?.acceptedTranslation,
+      '新 Run 的候选。',
+      'a delayed recovery/accept call for an older Run must not replace a newer accepted result',
+    );
+    assert.equal(store.getRun(older.runId ? project.projectId : '', older.runId).status, 'completed');
+  });
+});
+
+test('candidate acceptance refuses a Run from a superseded source revision', async () => {
+  await withStore((store) => {
+    const project = store.createProject({ title: 'Stale Candidate Revision', format: 'epub', segments });
+    const run = store.createRun(project.projectId, { scope: { type: 'ids', ids: ['ch1-p1'] } });
+    store.saveCandidate(project.projectId, run.runId, 'ch1-p1', '旧来源候选。');
+    store.finishRun(project.projectId, run.runId);
+    store.setRunStatus(project.projectId, run.runId, 'failed', '模拟中断后的可恢复状态');
+    store.createSourceRevision(project.projectId, {
+      title: project.title,
+      format: 'epub',
+      segments: [{ ...segments[0], text: 'The old door was open.' }, ...segments.slice(1)],
+    });
+    assert.throws(
+      () => store.acceptCandidates(project.projectId, run.runId),
+      /旧原文版本/,
+      'acceptance must re-check the current source revision inside its transaction',
+    );
+  });
+});
+
 test('manual correction becomes an accepted version but remains traceable', async () => {
   await withStore((store) => {
     const project = store.createProject({ title: 'Manual Edit', format: 'epub', segments });
