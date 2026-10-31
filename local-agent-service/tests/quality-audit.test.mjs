@@ -728,6 +728,7 @@ test('automatic quality repair is marked as bounded service automation and linke
   store.saveManualEdit(project.projectId, 'auto-present', '门开着。');
   ensureTestContextGraph(store, project);
   const parent = store.createRun(project.projectId, { scope: { type: 'ids', ids: ['auto-missing'] } });
+  store.setRunStatus(project.projectId, parent.runId, 'partial', 'simulated partial completion');
   const report = runProjectQualityAudit(project.projectId);
   const missing = report.findings.find((item) => item.type === 'missing-translation' &&
     item.segmentIds.includes('auto-missing'));
