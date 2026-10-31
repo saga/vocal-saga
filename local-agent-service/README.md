@@ -2,6 +2,7 @@
 
 > 架构与关键函数导航：[docs/LOCAL_AGENT_SERVICE_ARCHITECTURE.md](../docs/LOCAL_AGENT_SERVICE_ARCHITECTURE.md)（模块职责、翻译时序图、预处理流程、Run 状态与持久化边界）。
 > 扩展/服务质量审计与定点返工接口契约：[LOCAL_AGENT_EXTENSION_QUALITY_CONTRACT.md](../docs/LOCAL_AGENT_EXTENSION_QUALITY_CONTRACT.md)（统一 API 路径、报告字段、状态/错误语义及跨仓库回归要求）。
+> 文学翻译全书预处理门禁：[ADR-0005](../docs/adr/0005-literary-preprocessing-before-translation.md)（扩展正常路径前置检查 + executeRun 服务端最终门禁；queued Run 不代表翻译已开始）。
 
 
 这是 vocal-saga 中独立的本机 Express + TypeScript Provider，供 fanyi-extension 使用。 默认优先 Workbuddy/CodeBuddy SDK；OpenCode 保留为可选运行时。它把 OpenAI-compatible Chat Completions 请求转交给本机 Workbuddy（@tencent-ai/agent-sdk）或 OpenCode CLI，并使用 Node 内置 SQLite 记录本机请求历史。扩展启用本机 Provider 后，网页翻译、文档翻译、侧栏对话以及 EPUB/PDF 的文学分析和 Reviewer 都走这个本机进程。
