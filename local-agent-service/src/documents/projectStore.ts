@@ -2189,7 +2189,7 @@ export class DocumentProjectStore {
   markChineseEditorialFindingsReviewed(
     projectId: string,
     runId: string,
-    results: Array<{ segmentId: string; status: 'verified' | 'corrected'; proposedTranslation: string }>,
+    results: Array<{ segmentId: string; status: 'verified' | 'corrected' | 'reverted'; proposedTranslation: string }>,
   ): boolean {
     if (!Array.isArray(results) || results.length > 1000) {
       throw Object.assign(new Error('中文编辑复核结果必须是最多 1000 条记录的数组'), { status: 400 });
@@ -2198,7 +2198,7 @@ export class DocumentProjectStore {
       const segmentId = typeof item?.segmentId === 'string' ? item.segmentId.trim() : '';
       const proposedTranslation = typeof item?.proposedTranslation === 'string' ? item.proposedTranslation.trim() : '';
       if (!segmentId || !proposedTranslation || proposedTranslation.length > 20000 ||
-          !['verified', 'corrected'].includes(item.status)) return [];
+          !['verified', 'corrected', 'reverted'].includes(item.status)) return [];
       return [{ segmentId, status: item.status, proposedTranslation }];
     });
     if (!normalized.length) return true;
@@ -2216,14 +2216,18 @@ export class DocumentProjectStore {
         "FROM review_findings rf JOIN run_segments rs ON rs.run_id = rf.run_id AND rs.segment_id = rf.segment_id " +
         "WHERE rf.run_id = ? AND rf.segment_id = ? AND rf.category = 'style' AND rf.status = 'pending'",
       );
-      const updateFinding = db.prepare(
+      const updateFindingApplied = db.prepare(
         "UPDATE review_findings SET finding_json = ?, status = 'applied' WHERE finding_id = ? AND status = 'pending'",
+      );
+      const updateFindingReverted = db.prepare(
+        "UPDATE review_findings SET finding_json = ?, status = 'dismissed' WHERE finding_id = ? AND status = 'pending'",
       );
       const updateCandidate = db.prepare(
         'UPDATE translation_results SET translation_text = ? ' +
         'WHERE result_id = ? AND run_id = ? AND accepted = 0 AND source_hash = ?',
       );
       const autoApplied: Array<{ segmentId: string; findingId: number }> = [];
+      const autoReverted: Array<{ segmentId: string; findingId: number }> = [];
       for (const item of normalized) {
         const rows = select.all(runId, item.segmentId) as Array<{
           finding_id: number; finding_json: string; candidate_result_id?: string | null; source_hash: string;
@@ -2240,19 +2244,29 @@ export class DocumentProjectStore {
           if (Number(candidate.changes || 0) !== 1) continue;
           finding.bilingualReviewStatus = item.status;
           finding.proposedTranslation = item.proposedTranslation;
-          finding.applicationStatus = 'applied';
-          finding.applicationMethod = 'automatic-bilingual-verification';
-          finding.appliedResultId = row.candidate_result_id;
-          updateFinding.run(JSON.stringify(finding), row.finding_id);
-          autoApplied.push({ segmentId: item.segmentId, findingId: row.finding_id });
+          if (item.status === 'reverted') {
+            finding.applicationStatus = 'dismissed';
+            finding.applicationMethod = 'automatic-bilingual-review-reverted';
+            delete finding.appliedResultId;
+            updateFindingReverted.run(JSON.stringify(finding), row.finding_id);
+            autoReverted.push({ segmentId: item.segmentId, findingId: row.finding_id });
+          } else {
+            finding.applicationStatus = 'applied';
+            finding.applicationMethod = 'automatic-bilingual-verification';
+            finding.appliedResultId = row.candidate_result_id;
+            updateFindingApplied.run(JSON.stringify(finding), row.finding_id);
+            autoApplied.push({ segmentId: item.segmentId, findingId: row.finding_id });
+          }
         }
       }
       db.exec('COMMIT');
-      if (autoApplied.length) {
-        this.addEvent(projectId, runId, 'chinese-editorial.auto-applied', {
-          count: autoApplied.length,
-          items: autoApplied,
-          policy: 'complete-bilingual-review; source-pinned-candidate; manual-edits-protected-at-acceptance',
+      if (autoApplied.length || autoReverted.length) {
+        this.addEvent(projectId, runId, 'chinese-editorial.bilingual-finalized', {
+          appliedCount: autoApplied.length,
+          applied: autoApplied,
+          revertedCount: autoReverted.length,
+          reverted: autoReverted,
+          policy: 'complete-bilingual-review; source-pinned-candidate; uncovered-edits-fall-back-to-first-pass',
         });
       }
       return true;
