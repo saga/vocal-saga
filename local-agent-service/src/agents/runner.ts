@@ -118,6 +118,7 @@ export async function runAgentJson(
   requestId = 'unknown',
   sessionScope?: string,
   taskProfile?: CodeBuddyTaskProfile,
+  options: { timeoutMs?: number } = {},
 ): Promise<AgentRunResult<Record<string, any>>> {
   const startedAt = Date.now();
   const effective = taskProfile ? applyCodeBuddyTaskPrompt(prompt, systemPrompt, taskProfile) : { prompt, systemPrompt };
@@ -129,7 +130,7 @@ export async function runAgentJson(
     let parsed: Record<string, any>;
     let usage: TurnUsage | null = null;
     if (effectiveAgent.provider === 'workbuddy') {
-      const r = await runWorkbuddyJson(effectiveAgent, effective.prompt, effective.systemPrompt, schema, requestId, sessionScope, taskProfile);
+      const r = await runWorkbuddyJson(effectiveAgent, effective.prompt, effective.systemPrompt, schema, requestId, sessionScope, taskProfile, options);
       parsed = r.parsed;
       usage = r.usage;
     } else if (effectiveAgent.provider === 'opencode') {
