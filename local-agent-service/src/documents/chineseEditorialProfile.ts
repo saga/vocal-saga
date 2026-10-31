@@ -277,9 +277,8 @@ export async function refreshChineseEditorialProfile(projectId: string, runId: s
     all.findIndex((other) => other.segmentId === item.segmentId && other.targetExcerpt === item.targetExcerpt) === index
   ).slice(0, 24);
   const evidenceSegmentCount = new Set(evidenceRefs.map((item: any) => item.segmentId)).size;
-  if (!Object.values(profile).some((value) => Array.isArray(value) ? value.length > 0 : !!value) ||
-      evidenceSegmentCount < 3) {
-    throw new Error('中文 Editorial Profile 输出缺少有效风格内容或至少 3 个不同片段的可核验证据。');
+  if (!Object.values(profile).some((value) => Array.isArray(value) ? value.length > 0 : !!value)) {
+    throw new Error('中文 Editorial Profile 输出缺少可用的风格内容。');
   }
 
   // Reload after the model call. If the user confirmed the base profile while analysis ran,
@@ -289,8 +288,8 @@ export async function refreshChineseEditorialProfile(projectId: string, runId: s
   const generatedAt = new Date().toISOString();
   const candidate = {
     version: 1,
-    status: 'candidate',
-    confirmationSource: null,
+    status: 'confirmed',
+    confirmationSource: 'model-default',
     sourceRevisionId: revisionId,
     analysisVersion: ANALYSIS_VERSION,
     sampleFingerprint,
@@ -314,26 +313,24 @@ export async function refreshChineseEditorialProfile(projectId: string, runId: s
     const nextMemory = {
       ...latest.memory,
       chineseEditorialProfile: {
-        ...latestProfile,
-        profileVersion: Math.max(1, Number(latestProfile.profileVersion) || 1),
-        pendingUpdate: {
-          ...candidate,
-          basedOnFingerprint: latestProfile.sampleFingerprint || null,
-          generatedFromMemoryRevisionId: latest.memoryRevisionId || null,
-        },
+        ...candidate,
+        profileVersion: Math.max(1, Number(latestProfile.profileVersion) || 1) + 1,
+        previousFingerprint: latestProfile.sampleFingerprint || null,
+        acceptedUpdateAt: generatedAt,
+        generatedFromMemoryRevisionId: latest.memoryRevisionId || null,
       },
     };
     const saved = store.saveLiteraryMemory(projectId, nextMemory);
-    store.appendEvent(projectId, runId, 'chinese-editorial-profile.update.candidate-created', {
+    store.appendEvent(projectId, runId, 'chinese-editorial-profile.update.auto-adopted', {
       memoryRevisionId: saved.memoryRevisionId,
       baseProfileFingerprint: latestProfile.sampleFingerprint || null,
-      pendingUpdateFingerprint: sampleFingerprint,
+      profileFingerprint: sampleFingerprint,
       analysisVersion: ANALYSIS_VERSION,
       sampleCount: samples.length,
       evidenceCount: evidenceRefs.length,
       evidenceSegmentCount,
       durationMs: Date.now() - startedAt,
-      requiresUserConfirmation: true,
+      adoptionSource: 'model-default',
       usage: result.usage || null,
     });
     return;
@@ -343,7 +340,7 @@ export async function refreshChineseEditorialProfile(projectId: string, runId: s
     chineseEditorialProfile: candidate,
   };
   const saved = store.saveLiteraryMemory(projectId, nextMemory);
-  store.appendEvent(projectId, runId, 'chinese-editorial-profile.candidate.created', {
+  store.appendEvent(projectId, runId, 'chinese-editorial-profile.auto-adopted', {
     memoryRevisionId: saved.memoryRevisionId,
     profileFingerprint: sampleFingerprint,
     analysisVersion: ANALYSIS_VERSION,
@@ -351,7 +348,7 @@ export async function refreshChineseEditorialProfile(projectId: string, runId: s
     evidenceCount: evidenceRefs.length,
     evidenceSegmentCount,
     durationMs: Date.now() - startedAt,
-    requiresUserConfirmation: true,
+    adoptionSource: 'model-default',
     usage: result.usage || null,
   });
 }
