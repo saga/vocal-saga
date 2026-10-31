@@ -24,7 +24,7 @@ export function buildOpenCodeConfig() {
   });
 }
 
-export function runOpenCode(agent: { provider: string; model: string }, prompt: string, systemPrompt: string): Promise<string> {
+export function runOpenCode(agent: { provider: string; model: string }, prompt: string, systemPrompt: string, timeoutMs = REQUEST_TIMEOUT_MS): Promise<string> {
   return new Promise((resolve, reject) => {
     const fullPrompt = [
       systemPrompt ? 'SYSTEM INSTRUCTIONS:\n' + systemPrompt : '',
@@ -49,7 +49,7 @@ export function runOpenCode(agent: { provider: string; model: string }, prompt: 
       timedOut = true;
       child.kill('SIGTERM');
       setTimeout(() => { if (!finished) child.kill('SIGKILL'); }, 3000).unref();
-    }, REQUEST_TIMEOUT_MS);
+    }, timeoutMs);
     timer.unref();
 
     const handleLine = (rawLine: string) => {
@@ -83,7 +83,7 @@ export function runOpenCode(agent: { provider: string; model: string }, prompt: 
       if (buffer.trim()) handleLine(buffer);
       const output = answer.trim() || stdoutFallback.trim();
       if (timedOut) {
-        reject(new Error('OpenCode 调用超时（' + REQUEST_TIMEOUT_MS + ' ms）'));
+        reject(new Error('OpenCode 调用超时（' + timeoutMs + ' ms）'));
         return;
       }
       if (signal || code !== 0) {
