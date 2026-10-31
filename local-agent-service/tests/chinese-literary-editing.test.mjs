@@ -128,3 +128,21 @@ test('target-only editor preserves explicitly user-edited style guidance', () =>
   });
   assert.deepEqual(projected.styleGuide, { narrativeVoice: '用户明确要求保持克制。' });
 });
+
+
+test('confirmed book-level Chinese editorial profile is included without source-side material', () => {
+  const projected = buildChineseTargetOnlyVoiceContext({
+    chineseEditorialProfile: {
+      narrativeVoice: '叙述克制，避免替人物解释心理。',
+      register: '现代书面语，不使用网络口语。',
+      rules: ['保留有意的重复和长句节奏。'],
+      avoid: ['不要把所有句子改短。'],
+    },
+    recentExamples: [{ source: 'SOURCE_SECRET', target: '我仍记得那一天。' }],
+  });
+  const serialized = JSON.stringify(projected);
+  assert.match(serialized, /叙述克制/);
+  assert.match(serialized, /保留有意的重复/);
+  assert.match(serialized, /我仍记得那一天/);
+  assert.doesNotMatch(serialized, /SOURCE_SECRET/);
+});
