@@ -223,7 +223,8 @@ async function runCodeBuddyAnalysis(summary) {
         runs: doc.analysisSignals.runs,
         eventTimeline: doc.analysisSignals.eventTimeline.slice(-250),
         reviewFindingCategories: doc.analysisSignals.reviewFindingCategories,
-        contextGraphSignals: doc.analysisSignals.contextGraphSignals,\n        qualityAuditSummaries: doc.analysisSignals.qualityAuditSummaries,
+        contextGraphSignals: doc.analysisSignals.contextGraphSignals,
+        qualityAuditSummaries: doc.analysisSignals.qualityAuditSummaries,
       } : null,
     })),
     instructions: [
