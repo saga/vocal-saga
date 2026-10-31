@@ -407,6 +407,31 @@ test('literary memory has immutable revisions and each run keeps its original sn
   });
 });
 
+test('Run creation refuses to pin literary memory that changed before the write lock', async () => {
+  await withStore((store) => {
+    const project = store.createProject({ title: 'Run Snapshot Race', format: 'epub', segments });
+    const readCurrentMemory = store.getCurrentLiteraryMemory.bind(store);
+    let raced = false;
+    store.getCurrentLiteraryMemory = (projectId) => {
+      const snapshot = readCurrentMemory(projectId);
+      if (!raced) {
+        raced = true;
+        store.saveLiteraryMemory(projectId, {
+          ...snapshot.memory,
+          openQuestions: ['a user edit committed while the Run snapshot was being assembled'],
+        });
+      }
+      return snapshot;
+    };
+    assert.throws(
+      () => store.createRun(project.projectId, { scope: { type: 'all' } }),
+      /原文或文学记忆已更新/,
+      'the Run must retry rather than bind a stale memory revision',
+    );
+    assert.equal(store.listRuns(project.projectId).length, 0);
+  });
+});
+
 test('simultaneous Run creation requests cannot both acquire the workspace lock', async () => {
   await withStore(async (store) => {
     const project = store.createProject({ title: 'Concurrent Run creation', format: 'epub', segments });
