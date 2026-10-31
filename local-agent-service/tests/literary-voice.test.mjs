@@ -8,6 +8,31 @@ const sourceSegments = [
   { id: 'ch1-b1', text: 'The evidence is clear.' },
 ];
 
+test('voice context excludes rejected memory and treats model-default facts as weak hints', () => {
+  const context = buildProjectVoiceContext({
+    version: 2,
+    entities: [
+      { source: 'Alice', target: '艾丽丝', kind: 'person', aliases: [], reviewStatus: 'confirmed', confirmationSource: 'model-default', targetConfidence: 'candidate' },
+      { source: 'Bob', target: '鲍勃', kind: 'person', aliases: [], reviewStatus: 'confirmed', confirmationSource: 'model-default', targetConfidence: 'corroborated' },
+      { source: 'Carol', target: '卡罗尔', kind: 'person', aliases: [], reviewStatus: 'rejected', confirmationSource: 'user-rejected' },
+    ],
+    relationships: [
+      { subject: 'Alice', predicate: 'trusts', object: 'Bob', reviewStatus: 'confirmed', confirmationSource: 'model-default', evidenceRefs: [{ segmentId: 's1', sourceQuote: 'Alice trusts Bob.' }] },
+      { subject: 'Alice', predicate: 'betrays', object: 'Bob', reviewStatus: 'rejected', confirmationSource: 'user-rejected', evidenceRefs: [{ segmentId: 's1', sourceQuote: 'Alice trusts Bob.' }] },
+    ],
+    styleGuide: {}, styleGuideStatus: 'candidate', chapterSummaries: [], recentExamples: [],
+    characterVoices: [], relationshipVoiceRules: [], voiceAnchors: [], openQuestions: [],
+  }, [{ id: 's1', text: 'Alice trusts Bob.' }], 'Chapter 1', []);
+
+  assert.deepEqual(context.entities.map((item) => item.source), ['Alice', 'Bob']);
+  assert.equal(context.entities.find((item) => item.source === 'Alice').targetConfidence, 'candidate');
+  assert.equal(context.entities.find((item) => item.source === 'Bob').targetConfidence, 'corroborated');
+  assert.equal(context.relationships.length, 1);
+  assert.equal(context.relationships[0].predicate, 'trusts');
+  assert.equal(context.relationships[0].confidence, 'candidate');
+  assert.ok(context.constraints.some((item) => item.includes('confidence=candidate')));
+});
+
 test('voice analysis assigns stable character IDs and rejects unsupported evidence', () => {
   const priorMemory = {
     version: 2,
