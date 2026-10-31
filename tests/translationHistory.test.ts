@@ -113,7 +113,7 @@ describe('GET /article/:id — D1 translation history', () => {
     expect(db._rows).toHaveLength(1);
     expect(db._rows[0].url).toBe('https://example.com');
     expect(db._rows[0].html).toBe('<html><head><link rel="stylesheet" href="/style.css"></head><body>translated page<span class="fanyi-translation">译文</span></body></html>');
-    expect(db._rows[0].source_lang).toBe('en');
+    expect(db._rows[0].source_lang).toBe('auto');
 
     // 通过 /article/1 取回
     const res = await app.request(req('/article/1'), {}, envWithDb(db));
