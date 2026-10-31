@@ -30,6 +30,14 @@ GET /api/codebuddy/config-options?model=deepseek-v4.1-flash
 
 中文单语文学编辑只产生 provisional edit，不直接写入 Run 候选。后续双语准确性/术语复核必须明确覆盖对应片段并返回完整、非空的最终译文；覆盖成功时保留双语复核最终文本（包括复核修订），并随 Run 自动采纳。未覆盖、缺少结果、空/无效结果、补审失败或复核调用失败时，该片段自动恢复第一道翻译阶段的初译。部分覆盖按片段分别处理。若双语复核将编辑改回初译，对应 finding 自动 dismiss 并记录机器回退来源，不遗留待处理项。未经双语复核的中文编辑不得进入候选、context delta 或项目记忆；不要求用户点击确认。
 
+## 文学翻译上下文预算
+
+TranslationBrief 的历史已采纳译文只作为风格参考，不作为整章历史记录注入。每批最多注入 8 条 `recentExamples`，字符预算最高 4,000；实际预算按 `translationStrategy.contextBudgetChars` 的 25% 计算，并受 4,000 字符上限约束。排序仍使用原有相关性评分和多样性去重，超预算时保留高分项。已进入 `precedingSegments` 的片段会从历史示例中排除，避免同一原文和译文重复发送。
+
+`contextBudgetChars` 是历史示例的软预算，不是整个 TranslationBrief 的硬截断值。当前批次原文、配置的前文、术语、当前可见的规范名称映射，以及有证据的人物声音信息不会因为预算不足而被静默删除。批次可见性过滤负责排除与当前批次和前文无关的名称映射；不再额外按数量截断这些映射。
+
+诊断快照记录 `acceptedExamplesInjected`、`acceptedExamplesTrimmedByBudget`、`acceptedExamplesExcludedAsPreceding`、`acceptedExampleChars` 和 `acceptedExampleBudgetChars`，可用于核对实际注入量。诊断只记录数量和字符数，不导出原文或译文正文。
+
 ## 环境要求
 
 - macOS 与 Node.js >= 22.13（使用 Node 内置 `node:sqlite`，不需要另外安装 sqlite3）。
