@@ -24,12 +24,20 @@ test('TranslationBrief excludes rejected entities and preserves model-default ta
     format: 'txt',
     sourceFileName: 'rejected-memory-projection.txt',
     prompt: { translationMode: 'literary', sourceLang: 'en', targetLang: 'zh' },
-    segments: [{
-      id: 'memory-projection-1',
-      text: 'Alice met Bob. Carol was absent.',
-      kind: 'paragraph',
-      contextPath: 'Chapter 1',
-    }],
+    segments: [
+      {
+        id: 'memory-projection-0',
+        text: 'Alice met Bob.',
+        kind: 'paragraph',
+        contextPath: 'Chapter 1',
+      },
+      {
+        id: 'memory-projection-1',
+        text: 'Alice and Bob returned. Carol was absent.',
+        kind: 'paragraph',
+        contextPath: 'Chapter 1',
+      },
+    ],
   });
   ensureTestContextGraph(store, project);
   store.saveLiteraryMemory(project.projectId, {
@@ -38,7 +46,7 @@ test('TranslationBrief excludes rejected entities and preserves model-default ta
       {
         source: 'Alice', target: '艾丽丝', kind: 'person', aliases: [],
         reviewStatus: 'confirmed', confirmationSource: 'model-default',
-        evidenceRefs: [{ segmentId: 'memory-projection-1', sourceQuote: 'Alice met Bob.' }],
+        evidenceRefs: [{ segmentId: 'memory-projection-0', sourceQuote: 'Alice met Bob.' }],
         targetConfidence: 'candidate',
       },
       {
@@ -59,7 +67,9 @@ test('TranslationBrief excludes rejected entities and preserves model-default ta
   const context = store.getRunContext(project.projectId, run.runId);
   const source = store.getSegments(project.projectId, { limit: 10 })
     .find((item) => item.id === 'memory-projection-1');
-  const brief = buildTranslationBrief(context, [source], []);
+  const brief = buildTranslationBrief(context, [source], [{
+    id: 'memory-projection-0', text: 'Alice met Bob.', contextPath: 'Chapter 1',
+  }]);
 
   assert.equal(brief.voiceContext.entities.some((entity) => entity.source === 'Carol'), false);
   assert.equal(brief.contextGraph.nameMappings.some((mapping) => mapping.source === 'Carol'), false,
