@@ -11,7 +11,8 @@ const {
   CONTEXT_GRAPH_WORKFLOW_STAGES,
   CONTEXT_GRAPH_WORKFLOW_VERSION,
 } = await import('../src/documents/contextGraphWorkflow.ts');
-const { ANALYSIS_SCHEMA, CONTEXT_GRAPH_ANALYSIS_VERSION, isContextGraphReadyForTranslationRun } = await import('../src/documents/contextGraph.ts');
+const { ANALYSIS_SCHEMA, CONTEXT_GRAPH_ANALYSIS_VERSION } = await import('../src/documents/contextGraph.ts');
+const { isContextGraphReadyForTranslationRun } = await import('../src/documents/translationAgent.ts');
 const { buildWorkbuddyOptions } = await import('../src/agents/workbuddy.ts');
 
 test('all literary style dimensions are required by the single-call A schema', () => {
