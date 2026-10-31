@@ -637,6 +637,20 @@ export class DocumentProjectStore {
         let recoveredTranslations = 0;
         let recoveredContextGraphs = 0;
 
+        // Normalize interrupted segment workers before writing recovery events. The terminal
+        // counts must describe the durable post-recovery state, not the pre-restart worker state.
+        db.prepare("UPDATE run_segments SET status = 'pending', updated_at = ? WHERE status = 'running'").run(now);
+        const runSegmentCounts = (runId: string): Record<string, number> => {
+          const rows = db.prepare(
+            'SELECT status, COUNT(*) AS count FROM run_segments WHERE run_id = ? GROUP BY status',
+          ).all(runId) as Array<{ status: string; count: number }>;
+          const counts = Object.fromEntries(rows.map((item) => [item.status, Number(item.count)]));
+          return {
+            total: rows.reduce((sum, item) => sum + Number(item.count), 0),
+            ...counts,
+          };
+        };
+
         // A terminal event is part of the durable state transition. If it already exists,
         // reconcile the row from that event instead of creating a contradictory second ending.
         const translationRuns = db.prepare(
@@ -668,7 +682,7 @@ export class DocumentProjectStore {
           if (changed.changes > 0) {
             this.appendEvent(row.project_id, run.run_id, 'run.finished', {
               status: 'failed', error, recovery: 'service-restart',
-              counts: { candidate: 0, accepted: 0, failed: 0, total: 0 },
+              counts: runSegmentCounts(run.run_id),
             });
             recoveredTranslations++;
           }
@@ -689,7 +703,7 @@ export class DocumentProjectStore {
           if (!terminal) {
             this.appendEvent(row.project_id, run.run_id, 'run.finished', {
               status: 'failed', error, recovery: 'legacy-restart-orphan',
-              counts: { candidate: 0, accepted: 0, failed: 0, total: 0 },
+              counts: runSegmentCounts(run.run_id),
             });
             recoveredTranslations++;
           }
@@ -707,13 +721,12 @@ export class DocumentProjectStore {
             status: run.status,
             error: run.error || undefined,
             recovery: 'terminal-event-backfill',
-            counts: { candidate: 0, accepted: 0, failed: 0, total: 0 },
+            counts: runSegmentCounts(run.run_id),
           });
           recoveredTranslations++;
         }
 
-        // Segments left in 'running' by an interrupted worker are retryable after the Run is failed.
-        db.prepare("UPDATE run_segments SET status = 'pending', updated_at = ? WHERE status = 'running'").run(now);
+        // Running segments were normalized to pending before Run recovery events were written.
 
         const graphSchemaExists = db.prepare(
           "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'context_graph_runs'"
