@@ -193,3 +193,19 @@
 - [ ] 双语复核失败、超时、取消或漏段时，编辑候选保持 pending，不能误报为已验证或允许采纳。
 - [ ] 非中文目标语言继续使用原 Style Review；普通网页翻译和技术文档翻译不触发中文文学编辑。
 - [ ] A/B 评估分别覆盖中文单语盲评与双语忠实度复核；LLM Judge 不得单独决定文学创造性、作者声音或自动采纳。
+
+
+## 作品级 Chinese Editorial Profile 专项检查
+
+主要检查：`chineseEditorialProfile.ts`、`voiceContext.ts`、`translationBrief.ts`、`projectStore.ts`、`projectRoutes.ts`。
+
+- [ ] 档案样本只从当前 source revision 的已采纳译文选取；未采纳候选、旧 source hash 和其他 revision 不进入样本。
+- [ ] BookScan 可在本机读取原文用于抽样，但档案分析模型 Prompt 只包含中文已采纳译文和 segment ID；不得发送原文、源语言人名、source quote、glossary 或 Context Graph。
+- [ ] 样本选择覆盖不同章节/位置；样本数量不足时记录 skipped 事件，不生成空洞档案。
+- [ ] 每条档案观察必须引用对应 accepted translation 中真实存在的连续 targetExcerpt，且至少来自三个不同 segment。
+- [ ] 候选档案以 LiteraryMemory revision 保存；candidate 不得进入 Translator、中文单语 Editor 或 Accuracy Reviewer 的上下文。
+- [ ] 用户确认必须走明确 review API；确认时检查当前 source revision、accepted translation、source hash 和 target excerpt。无效证据不能维持 confirmed。
+- [ ] confirmed 档案只注入目标语风格字段，不注入样本正文、剧情事实、原文、源语言名称或来源引文。
+- [ ] source revision 改变后旧档案不得继续作为 confirmed Profile 注入；旧 Run 的 Brief 不被新 revision 改写。
+- [ ] 新增 accepted translations 触发档案刷新时，不覆盖用户已确认的档案；相同样本 fingerprint 不重复调用模型。
+- [ ] 模型调用失败、JSON 不合规、证据不足或持久化失败均不影响已经采纳的译文。
