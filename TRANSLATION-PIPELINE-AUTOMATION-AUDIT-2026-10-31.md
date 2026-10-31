@@ -62,12 +62,42 @@
 - 声音锚点缺少归属证据时不再显示“只能保留为候选”，而是作为低置信度参考。
 - 审校区文案调整为纯文风建议自动应用、用户事后可修改。
 
+## 续做记录（2026-10-31）
+
+### 已完成的代码修复
+
+1. **Extension 删除操作同步拒绝 Context Graph：**
+   - 删除人物时，先读取服务端 Context Graph，按规范名/显式别名定位对应节点，并将节点及其关联边通过现有 review API 持久化为 `rejected`。
+   - 删除实体映射时，同样先持久拒绝匹配节点，再删除 LiteraryMemory 投影。
+   - 删除人物关系时，按 subject、object 和 predicate 精确定位边；缺少端点或旧图谱关系无法唯一定位时不做宽泛拒绝，避免误伤其他人物的关系。
+   - 图谱拒绝失败时不执行本地删除，并在界面显示原因。
+   - 主要提交：`saga/fanyi-extension` `68fb145aedd6c7223f8298747aa5aa9409fdadf3`；关系匹配安全收紧：`9112f2bdd41a8476119a19c2b1fb1cc7237eb20ba`。
+
+2. **Reviewer 文风修改真正进入自动采纳链路：**
+   - `literary.ts` 不再把纯文风修订固定退回原稿；只有存在对应、来源/译文证据校验通过的 style finding，完整修订才作为当前 Reviewer 结果返回。
+   - `translationAgent.ts` 对非中文单语编辑路径，将有对应 `proposedTranslation` 的文风修订与 finding 原子保存为 Run 候选，并继续沿用服务端 Run 最终化的自动采纳事务。
+   - 中文目标语言仍按“中文单语编辑 → 双语准确性/术语复核”顺序执行；只有双语复核完成后才更新 Run 候选，不会把未复核的中文润色直接写入最终译文。
+   - 新增 `selectVerifiedStyleReviewCandidates`，并在 `local-agent-service/tests/context-graph-workflow.test.mjs` 增加回归测试：无对应 finding 的改写不应用，中文单语编辑不会绕过双语复核。
+   - 主要提交：`48060fff12992b4f6a31d1efed0296fcb5f1939a`、`6c51e773eb3ca310cb8f519bbd5e01d363cf786b`、`162fb34d7572617872ffd64215b8396611e0363e`、`f88a50293a50c4993caa121e63064d8f8b3804f7`。
+
+### 文档同步
+
+已同步更新：
+- `vocal-saga`: `docs/TRANSLATION_PIPELINE.md`、ADR-0001、ADR-0005、`local-agent-service/AGENTS.md`、`local-agent-service/README.md`。
+- `vocal-saga`: 中文文学编辑计划，明确“自动编辑、自动复核、服务端自动采纳、用户事后纠正”。
+- `fanyi-extension`: `AGENTS.md` 和 `README.md`，删除“API/CLI 候选必须等待显式 /accept”的旧流程描述。
+- ADR-0004、ADR-0006、ADR-0007 已检查；其当前决策与默认采纳原则一致。
+
+### 仍需验证
+
+1. **尚未执行本地测试。** 本轮通过 GitHub 文件接口提交代码，当前没有在仓库工作目录运行 `npm test`、`tsc --noEmit` 或 `vite build`。新增回归测试已经提交，但不能宣称测试通过。
+2. **Extension 删除路径需要端到端验证。** 覆盖人物删除、实体删除、关系删除、服务端返回 409（Run 正在执行）、图谱不存在/旧图谱缺少 predicate、重新打开文档后 rejected 状态仍生效。
+3. **Reviewer 自动应用需要集成验证。** 至少验证非中文目标语言 style-only finding 自动保存并自动采纳；中文单语编辑经双语复核后自动采纳；双语复核失败时保留原候选；用户较新的手工修改不被自动采纳覆盖。
+4. **真实模型质量仍需样本评估。** 代码路径自动化不等于编辑质量已证明。需要用代表性小说片段检查过度润色、人物声音漂移、原文事实增删和语义偏移。
+
 ## 尚未完成或需要进一步验证
 
-1. **删除实体/人物与 Context Graph 的同步拒绝：** Extension 目前的删除操作主要修改 LiteraryMemory projection；必须确认删除会对 Context Graph 对应节点/关系写入持久拒绝，而不是仅删除一份副本。当前修复确保 rejected 图谱项在重新分析时不被清理，但尚未证明 Extension 的 remove 操作已经调用图谱拒绝接口。
-2. **审校建议的自动应用路径：** 本轮只调整了界面文案。必须检查 Reviewer finding 从生成、选择、保存到 accepted translation 的完整执行链，确认纯文风 finding 是否真的自动应用；若只是文案改变而逻辑仍等待点击，必须继续修复。
-3. **回归测试：** 本轮提交尚未完成上述 7 类行为测试，也未运行本地类型检查、单测或 GitHub Actions。不能把此前 CI 通过当成本轮验证。
-4. **全量文档一致性：** AGENTS、流水线文档、ADR 摘要、计划与 checklist 仍有旧审批措辞。本轮需要将它们统一到同一原则，并确保旧规则不再指导后续代码修改。
+以上第 1-4 项是验证工作，不是已经完成的代码功能。不得把新增测试文件等同于测试已通过，也不得把 Reviewer 自动生成的修订等同于文学质量已通过人工评估。
 
 ## 统一设计规则
 
