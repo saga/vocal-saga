@@ -292,6 +292,7 @@ test('document translation strategy is configurable but server-side bounds canno
     maxBatchSourceChars: 10000,
     translationConcurrency: 5,
     reviewConcurrency: 3,
+    reviewStrength: 'medium',
     precedingContextSegments: 6,
     contextBudgetChars: 12000,
     maxModelAttempts: 1,
