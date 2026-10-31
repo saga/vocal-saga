@@ -2200,6 +2200,62 @@ export function buildProjectContextGraphBundle(
   }, Number.POSITIVE_INFINITY);
   if (!Number.isFinite(firstOrdinal)) return null;
   const knowledgeBoundary = firstOrdinal - 1;
+  const currentMemoryRevision = db.prepare(
+    "SELECT value FROM project_meta WHERE key = 'current_literary_memory_revision_id'"
+  ).get() as { value?: string } | undefined;
+  const currentMemoryRow = currentMemoryRevision?.value
+    ? db.prepare('SELECT memory_json FROM literary_memory_revisions WHERE memory_revision_id = ?')
+        .get(currentMemoryRevision.value) as { memory_json?: string } | undefined
+    : undefined;
+  let memoryRejections: any[] = [];
+  try {
+    const parsedMemory = currentMemoryRow?.memory_json ? JSON.parse(currentMemoryRow.memory_json) : {};
+    memoryRejections = Array.isArray(parsedMemory?.rejectedItems) ? parsedMemory.rejectedItems : [];
+  } catch { memoryRejections = []; }
+  const rejectedEntityTombstones = memoryRejections.filter((item) => item?.type === 'entity');
+  const rejectedRelationshipTombstones = memoryRejections.filter((item) => item?.type === 'relationship');
+  const graphNodeRows = db.prepare(
+    "SELECT * FROM context_graph_nodes WHERE source_revision_id = ? AND status IN ('candidate', 'confirmed')"
+  ).all(revisionId) as any[];
+  const graphNodesById = new Map(graphNodeRows.map((row) => [row.node_id, row]));
+  const nodeNames = (row: any): string[] => {
+    let attributes: any = {};
+    try { attributes = JSON.parse(row.attributes_json || '{}'); } catch { attributes = {}; }
+    return [row.name, attributes.sourceName, attributes.canonicalName,
+      ...(Array.isArray(attributes.aliases) ? attributes.aliases : [])]
+      .map((name) => normalize(name)).filter(Boolean);
+  };
+  const isRejectedGraphNode = (row: any): boolean => {
+    let attributes: any = {};
+    try { attributes = JSON.parse(row.attributes_json || '{}'); } catch { attributes = {}; }
+    const kind = normalize(row.kind === 'character' ? 'person' : (attributes.entityKind || 'other'));
+    const names = new Set(nodeNames(row));
+    return rejectedEntityTombstones.some((tombstone) => {
+      const rejectedKind = normalize(tombstone.kind || 'other');
+      const kindMatches = rejectedKind === kind || rejectedKind === 'other' || kind === 'other';
+      const rejectedNames = [tombstone.source, ...(Array.isArray(tombstone.aliases) ? tombstone.aliases : [])]
+        .map((name) => normalize(name)).filter(Boolean);
+      return kindMatches && rejectedNames.some((name) => names.has(name));
+    });
+  };
+  const isRejectedGraphEdge = (edge: any): boolean => {
+    const source = graphNodesById.get(edge.source_node_id);
+    const target = graphNodesById.get(edge.target_node_id);
+    if (!source || !target) return false;
+    const sourceNames = new Set(nodeNames(source));
+    const targetNames = new Set(nodeNames(target));
+    let attributes: any = {};
+    try { attributes = JSON.parse(edge.attributes_json || '{}'); } catch { attributes = {}; }
+    const rawKind = normalize(edge.kind);
+    const predicate = normalize(attributes.predicate ||
+      (['relation', 'relationship', 'observed-association'].includes(rawKind) ? '' : edge.kind));
+    return rejectedRelationshipTombstones.some((tombstone) => {
+      const subjectMatches = sourceNames.has(normalize(tombstone.subject));
+      const objectMatches = targetNames.has(normalize(tombstone.object));
+      const predicateMatches = !predicate || predicate === normalize(tombstone.predicate);
+      return subjectMatches && objectMatches && predicateMatches;
+    });
+  };
   const visibleNodeRows = db.prepare(
     'SELECT e.node_id FROM context_graph_evidence e ' +
     'JOIN source_segments s ON s.source_revision_id = e.source_revision_id AND s.segment_id = e.segment_id ' +
@@ -2231,7 +2287,7 @@ export function buildProjectContextGraphBundle(
   const nodes = (db.prepare(
     'SELECT * FROM context_graph_nodes WHERE source_revision_id = ? AND status IN (\'candidate\', \'confirmed\') ORDER BY kind, name'
   ).all(revisionId) as any[]).filter((row) =>
-    visibleNodeIds.has(row.node_id) && appearedBefore(row.name));
+    visibleNodeIds.has(row.node_id) && !isRejectedGraphNode(row) && appearedBefore(row.name));
   const matched: Array<{ row: any; score: number; attributes: any }> = [];
   for (const row of nodes) {
     let attributes: any = {};
@@ -2277,7 +2333,8 @@ export function buildProjectContextGraphBundle(
   });
   const edges = (db.prepare(
     'SELECT * FROM context_graph_edges WHERE source_revision_id = ? AND status IN (\'candidate\', \'confirmed\')'
-  ).all(revisionId) as any[]).filter((edge) => visibleEdgeIds.has(edge.edge_id));
+  ).all(revisionId) as any[]).filter((edge) =>
+    visibleEdgeIds.has(edge.edge_id) && !isRejectedGraphEdge(edge));
   const selectedById = new Map(selectedNodes.map((item) => [item.row.node_id, item]));
   const relationships = edges.filter((edge) => selectedIds.has(edge.source_node_id) && selectedIds.has(edge.target_node_id))
     .flatMap((edge) => {
@@ -2386,7 +2443,7 @@ export function buildProjectContextGraphBundle(
   ).all(revisionId, firstOrdinal) as Array<{ segmentId: string; source: string; ordinal: number; target: string }>;
   const graphNameRows = db.prepare(
     `SELECT * FROM context_graph_nodes WHERE source_revision_id = ? AND status IN ('candidate', 'confirmed') ORDER BY kind, name`
-  ).all(revisionId) as any[];
+  ).all(revisionId) as any[]).filter((row) => !isRejectedGraphNode(row));
   const nameMappingDiagnostics = {
     graphNameMappingCandidates: graphNameRows.length,
     graphNameMappingExcludedNameNotVisible: 0,
