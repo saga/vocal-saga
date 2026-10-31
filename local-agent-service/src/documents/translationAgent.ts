@@ -2188,8 +2188,8 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
       }
     }
 
-    // 只把当前来源版本的证据候选并入项目记忆；只增加 suggested 记录，
-    // 不会覆盖人工确认的人物、译名或关系。若来源版本已变化，则保留在本 Run 的增量账本中，
+    // 只把当前来源版本且通过证据校验的模型结果以 model-default 写入项目记忆；
+    // 不覆盖用户确认/修改/拒绝的人物、译名或关系。若来源版本已变化，则保留在本 Run 的增量账本中，
     // 不把旧来源证据写入当前项目记忆。
     if (context.run.translationMode === 'literary' && ['completed', 'partial'].includes(finishedRun.status)) {
       try {
@@ -2214,7 +2214,7 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
               sourceRevisionId: context.run.sourceRevisionId,
               deltaBatchCount: runDeltas.length,
               ...merged.summary,
-              statusPolicy: 'model-generated records remain suggested; confirmed memory is never overwritten',
+              statusPolicy: 'validated model-default records are active; user decisions are never overwritten; target confidence remains evidence-scoped',
             });
           } else {
             store.appendEvent(projectId, runId, 'translation.context-memory.unchanged', {
