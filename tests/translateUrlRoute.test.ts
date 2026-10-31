@@ -149,9 +149,8 @@ describe('GET /translate/<target> — URL normalization', () => {
   });
 });
 
-describe('legacy /api/translate/url — fully removed', () => {
-
-  it('POST /api/translate/url returns 404', async () => {
+describe('POST /api/translate/url — JSON URL translation endpoint', () => {
+  it('returns translated HTML and metadata for a valid public URL', async () => {
     const app = buildApp();
     const res = await app.request(
       new Request('http://test/api/translate/url', {
@@ -160,7 +159,25 @@ describe('legacy /api/translate/url — fully removed', () => {
         body: JSON.stringify({ url: 'https://example.com' }),
       })
     );
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(200);
+    const body = await res.json() as { html: string; blocks: number; chunks: number };
+    expect(body.html).toContain('ok');
+    expect(body.blocks).toBe(1);
+    expect(body.chunks).toBe(1);
+  });
+
+  it('rejects non-public URLs before calling the translation pipeline', async () => {
+    const app = buildApp();
+    const res = await app.request(
+      new Request('http://test/api/translate/url', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: 'http://127.0.0.1/admin' }),
+      })
+    );
+    expect(res.status).toBe(400);
+    const { translateUrl } = await import('../lib/translate/pipeline');
+    expect(translateUrl).not.toHaveBeenCalled();
   });
 });
 
