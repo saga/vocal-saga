@@ -1,217 +1,263 @@
 #!/usr/bin/env node
 /**
- * Collect a privacy-conscious Local Agent support bundle.
+ * Export the two most recently updated document projects and their persisted
+ * analysis/translation trajectories. No wall-clock log window is involved.
  *
  * Usage:
  *   npm run diagnose:bundle
  *   npm run diagnose:bundle -- --analyze
- *   npm run diagnose:bundle -- --since-hours 12 --analyze
- *
- * --analyze explicitly sends the sanitized diagnostic summary (not source text,
- * prompts, translations, or SQLite content) to the already-authenticated CodeBuddy SDK.
+ *   npm run diagnose:bundle -- --out /tmp/vocal-saga-diagnostics
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 
 const serviceDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const home = os.homedir();
 const args = process.argv.slice(2);
-const flag = (name) => args.includes(name);
-const value = (name, fallback) => {
-  const i = args.indexOf(name);
-  return i >= 0 && args[i + 1] ? args[i + 1] : fallback;
+const hasFlag = (name) => args.includes(name);
+const argValue = (name, fallback) => {
+  const index = args.indexOf(name);
+  return index >= 0 && args[index + 1] ? args[index + 1] : fallback;
 };
-const sinceHours = Math.max(1, Math.min(24 * 30, Number(value('--since-hours', '72')) || 72));
-const analyze = flag('--analyze');
 const dataDir = path.resolve(process.env.LOCAL_AGENT_DATA_DIR || path.join(home, '.vocal-saga-local-agent'));
-const logFile = path.resolve(process.env.LOCAL_AGENT_LOG_FILE || path.join(dataDir, 'logs', 'local-agent.log'));
-const dbFile = path.resolve(process.env.LOCAL_AGENT_DATABASE || path.join(dataDir, 'local-agent.sqlite'));
-const outputRoot = path.resolve(value('--out', path.join(dataDir, 'diagnostic-bundles')));
-const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-const bundleDir = path.join(outputRoot, 'local-agent-diagnostics-' + timestamp);
-const collectedAt = new Date();
-const since = Date.now() - sinceHours * 60 * 60 * 1000;
+const documentsDir = path.join(dataDir, 'documents');
+const catalogPath = path.join(documentsDir, 'catalog.sqlite');
+const outputRoot = path.resolve(argValue('--out', path.join(dataDir, 'diagnostic-bundles')));
+const analyze = hasFlag('--analyze');
+const generatedAt = new Date().toISOString();
+const bundleName = 'local-agent-diagnostics-' + generatedAt.replace(/[:.]/g, '-');
+const bundleDir = path.join(outputRoot, bundleName);
 fs.mkdirSync(bundleDir, { recursive: true, mode: 0o700 });
 
 const SECRET_PATTERNS = [
-  /(authorization\s*[:=]\s*bearer\s+)[^\s,;]+/gi,
-  /((?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret|local_agent_token)\s*[:=]\s*)["']?[^\s"',;]+/gi,
-  /(sk-[A-Za-z0-9_-]{12,})/g,
-  /(gh[pousr]_[A-Za-z0-9]{20,})/g,
+  /(authorization\\s*[:=]\\s*bearer\\s+)[^\\s,;]+/gi,
+  /((?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret|local_agent_token)\\s*[:=]\\s*)["']?[^\\s"',;]+/gi,
+  /\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9]{20,})\b/g,
 ];
-function redact(input) {
-  let text = String(input ?? '');
+function redact(value) {
+  let text = String(value ?? '');
   for (const pattern of SECRET_PATTERNS) text = text.replace(pattern, '$1[REDACTED]');
-  // Avoid leaking home directory/user names in paths.
   if (home) text = text.split(home).join('~');
   return text;
 }
-function write(name, data) {
-  fs.mkdirSync(path.dirname(path.join(bundleDir, name)), { recursive: true, mode: 0o700 });
-  fs.writeFileSync(path.join(bundleDir, name), data, { encoding: 'utf8', mode: 0o600 });
+function writeJson(relativePath, value) {
+  const target = path.join(bundleDir, relativePath);
+  fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(target, JSON.stringify(value, null, 2) + '\\n', { mode: 0o600 });
 }
-function copyRecentLog(source, targetName) {
-  if (!fs.existsSync(source)) return { found: false, path: source };
-  const stat = fs.statSync(source);
-  const raw = fs.readFileSync(source, 'utf8');
-  const lines = raw.split(/\r?\n/);
-  // Log timestamps are local-time-only; cap the tail instead of pretending to filter by date.
-  const selected = lines.filter((line) => !/(prompt|原文|译文|response preview|内容预览|sourceText|translatedText)/i.test(line)).slice(-12000);
-  write(targetName, redact(selected.join('\n')));
-  return { found: true, bytes: stat.size, includedLines: selected.length, modifiedAt: stat.mtime.toISOString() };
+function openReadOnly(file) {
+  return new DatabaseSync(file, { readOnly: true });
 }
-function run(command, commandArgs, timeout = 8000) {
-  const result = spawnSync(command, commandArgs, { cwd: serviceDir, encoding: 'utf8', timeout, maxBuffer: 2 * 1024 * 1024 });
+function rows(db, sql, ...params) {
+  try { return db.prepare(sql).all(...params); }
+  catch (error) {
+    return { collectionError: error instanceof Error ? error.message : String(error) };
+  }
+}
+function safeProjectDbPath(projectId, catalogPathValue) {
+  const expected = path.resolve(documentsDir, projectId, 'project.sqlite');
+  const candidate = path.resolve(typeof catalogPathValue === 'string' && catalogPathValue ? catalogPathValue : expected);
+  if (candidate !== expected) throw new Error('项目数据库路径与项目 ID 不匹配，已拒绝读取');
+  return candidate;
+}
+function summarizeDocument(project, db) {
+  const metaRows = rows(db, 'SELECT key, value FROM project_meta');
+  const meta = Array.isArray(metaRows) ? Object.fromEntries(metaRows.map((row) => [row.key, row.value])) : {};
+  const revisions = rows(db, 'SELECT revision_id, file_name, format, source_fingerprint, parser_version, segment_count, created_at, source_file_size FROM source_revisions ORDER BY created_at DESC');
+  const currentRevisionId = meta.current_source_revision_id || revisions[0]?.revision_id || null;
+  const runs = rows(db, 'SELECT * FROM translation_runs ORDER BY created_at DESC');
+  const runIds = Array.isArray(runs) ? runs.map((run) => run.run_id) : [];
+  const sourceSegments = currentRevisionId
+    ? rows(db, 'SELECT segment_id, ordinal, text, kind, context_path, page, level, marker, path, start_time, end_time, source_hash FROM source_segments WHERE source_revision_id = ? ORDER BY ordinal', currentRevisionId)
+    : [];
+  const tables = {
+    promptRevisions: rows(db, 'SELECT prompt_revision_id, name, system_prompt, user_prompt_template, config_json, fingerprint, created_at FROM prompt_revisions ORDER BY created_at DESC'),
+    literaryMemoryRevisions: rows(db, 'SELECT memory_revision_id, version, memory_json, fingerprint, created_at FROM literary_memory_revisions ORDER BY created_at DESC'),
+    runs,
+    runSegments: rows(db, 'SELECT * FROM run_segments ORDER BY updated_at'),
+    translationResults: rows(db, 'SELECT * FROM translation_results ORDER BY created_at'),
+    reviewFindings: rows(db, 'SELECT * FROM review_findings ORDER BY finding_id'),
+    translationBriefs: rows(db, 'SELECT * FROM translation_briefs ORDER BY run_id, batch_index'),
+    translationContextDeltas: rows(db, 'SELECT * FROM translation_context_deltas ORDER BY run_id, first_ordinal'),
+    qualityAudits: rows(db, 'SELECT * FROM quality_audits ORDER BY created_at DESC'),
+    qualityEvaluations: rows(db, 'SELECT * FROM quality_evaluations ORDER BY created_at DESC'),
+    events: rows(db, 'SELECT event_id, run_id, event_type, payload_json, created_at FROM project_events ORDER BY event_id'),
+  };
+  const statusCounts = {};
+  if (Array.isArray(tables.runSegments)) {
+    for (const row of tables.runSegments) statusCounts[row.status] = (statusCounts[row.status] || 0) + 1;
+  }
+  const eventCounts = {};
+  if (Array.isArray(tables.events)) {
+    for (const event of tables.events) eventCounts[event.event_type] = (eventCounts[event.event_type] || 0) + 1;
+  }
+  const runSummary = Array.isArray(runs) ? runs.map((run) => ({
+    runId: run.run_id, status: run.status, createdAt: run.created_at, startedAt: run.started_at,
+    finishedAt: run.finished_at, provider: run.provider, model: run.model,
+    sourceLang: run.source_lang, targetLang: run.target_lang, translationMode: run.translation_mode,
+    reviewEnabled: Boolean(run.review_enabled), error: run.error,
+    scope: parseJson(run.scope_json), sourceRevisionId: run.source_revision_id,
+  })) : [];
   return {
-    status: result.status,
-    stdout: redact((result.stdout || '').slice(0, 12000)),
-    stderr: redact((result.stderr || '').slice(0, 4000)),
-    error: result.error ? String(result.error.message) : undefined,
+    document: {
+      projectId: project.project_id, title: project.title, format: project.format,
+      sourceFileName: project.source_file_name, createdAt: project.created_at,
+      updatedAt: project.updated_at, currentSourceRevisionId: currentRevisionId,
+      sourceFingerprint: project.source_fingerprint,
+    },
+    projectMeta: meta,
+    sourceRevisions: revisions,
+    currentSourceSegments: sourceSegments,
+    runSummary,
+    metrics: {
+      sourceSegmentCount: Array.isArray(sourceSegments) ? sourceSegments.length : null,
+      runCount: runIds.length,
+      runSegmentStatusCounts: statusCounts,
+      eventTypeCounts: eventCounts,
+      translationResultCount: Array.isArray(tables.translationResults) ? tables.translationResults.length : null,
+      reviewFindingCount: Array.isArray(tables.reviewFindings) ? tables.reviewFindings.length : null,
+      translationBriefCount: Array.isArray(tables.translationBriefs) ? tables.translationBriefs.length : null,
+    },
+    records: tables,
   };
 }
-function sqliteOverview() {
-  if (!fs.existsSync(dbFile)) return { found: false };
-  const db = new DatabaseSync(dbFile, { readOnly: true });
+function parseJson(value) {
+  try { return JSON.parse(value || '{}'); } catch { return { unparseable: true }; }
+}
+function collectLatestDocuments() {
+  if (!fs.existsSync(catalogPath)) return { documents: [], error: '文档项目目录或 catalog.sqlite 不存在' };
+  const catalog = openReadOnly(catalogPath);
   try {
-    const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all();
-    const result = [];
-    for (const row of tables) {
-      const table = String(row.name);
-      // Table names come from sqlite_master; quote identifiers before interpolation.
-      const quoted = '"' + table.replace(/"/g, '""') + '"';
-      const columns = db.prepare('PRAGMA table_info(' + quoted + ')').all().map((c) => String(c.name));
-      const count = db.prepare('SELECT COUNT(*) AS count FROM ' + quoted).get()?.count ?? 0;
-      result.push({ table, rowCount: Number(count), columns: columns.filter((c) => !/prompt|response|content|translation|source|text|payload|body/i.test(c)) });
-    }
-    return { found: true, sizeBytes: fs.statSync(dbFile).size, tables: result };
-  } finally {
-    db.close();
-  }
-}
-function collectLogFiles() {
-  // Only collect this service's own logs. SDK/CLI transcript directories may contain full user prompts or book text.
-  const files = [];
-  for (const root of [path.join(dataDir, 'logs')]) {
-    if (!fs.existsSync(root)) continue;
-    const walk = (dir) => {
-      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-        const full = path.join(dir, entry.name);
-        if (entry.isDirectory()) walk(full);
-        else if (entry.isFile() && /\.(log|jsonl|txt)$/i.test(entry.name)) {
-          const stat = fs.statSync(full);
-          if (full !== logFile && stat.mtimeMs >= since && stat.size <= 20 * 1024 * 1024) files.push({ full, root, stat });
-        }
+    const projects = catalog.prepare(
+      'SELECT project_id, title, format, source_file_name, source_fingerprint, db_path, created_at, updated_at ' +
+      'FROM document_projects WHERE archived = 0 ORDER BY updated_at DESC, created_at DESC LIMIT 2'
+    ).all();
+    const documents = [];
+    for (const project of projects) {
+      const projectDbPath = safeProjectDbPath(project.project_id, project.db_path);
+      if (!fs.existsSync(projectDbPath)) {
+        documents.push({ document: { projectId: project.project_id, title: project.title }, error: '项目 SQLite 文件不存在' });
+        continue;
       }
-    };
-    walk(root);
+      const db = openReadOnly(projectDbPath);
+      try {
+        const document = summarizeDocument(project, db);
+        const safeName = String(project.project_id).replace(/[^a-zA-Z0-9-]/g, '');
+        writeJson('documents/' + safeName + '.json', document);
+        documents.push({
+          projectId: project.project_id, title: project.title, format: project.format,
+          updatedAt: project.updated_at, metrics: document.metrics,
+          runSummary: document.runSummary,
+          exportedFile: 'documents/' + safeName + '.json',
+        });
+      } finally {
+        db.close();
+      }
+    }
+    return { documents, selectedCount: projects.length, selection: '最新更新的两个未归档文档项目（按 document_projects.updated_at DESC）' };
+  } finally {
+    catalog.close();
   }
-  return files.slice(0, 30).map((file, index) => {
-    const rel = path.relative(file.root, file.full);
-    const target = 'logs/' + String(index + 1).padStart(2, '0') + '-' + path.basename(rel);
-    const lines = fs.readFileSync(file.full, 'utf8').split(/\r?\n/).filter((line) => !/(prompt|原文|译文|response preview|内容预览|sourceText|translatedText)/i.test(line)).slice(-8000);
-    write(target, redact(lines.join('\n')));
-    return { file: target, source: '~/' + path.relative(home, file.full), bytes: file.stat.size, includedLines: lines.length };
-  });
 }
-function localFindings(logText) {
-  const patterns = [
-    ['errors', /\b(error|failed|failure|exception|uncaught|unhandled)\b/gi],
-    ['timeouts', /timeout|超时|timed out/gi],
-    ['retries', /retry|重试|fallback/gi],
-    ['empty-or-invalid-output', /空内容|invalid json|不是有效 json|structured output/gi],
-    ['queue-wait', /排队等待|queue wait/gi],
-    ['cancellation', /cancel|取消|interrupt/gi],
-  ];
-  return Object.fromEntries(patterns.map(([name, pattern]) => [name, (logText.match(pattern) || []).length]));
+function run(command, commandArgs, timeout = 8000) {
+  const result = spawnSync(command, commandArgs, { cwd: serviceDir, encoding: 'utf8', timeout, maxBuffer: 1024 * 1024 });
+  return {
+    status: result.status,
+    stdout: redact((result.stdout || '').slice(0, 4000)),
+    stderr: redact((result.stderr || '').slice(0, 2000)),
+    error: result.error ? result.error.message : undefined,
+  };
 }
 async function runCodeBuddyAnalysis(summary) {
   const sdk = await import('@tencent-ai/agent-sdk');
-  const prompt = [
-    '你是本机翻译 Agent 服务的运行诊断助手。只根据下面脱敏后的运行元数据和日志摘要分析。',
-    '输出中文，按：1. 主要异常/可能根因 2. 证据（引用日志原句，最多 8 条）3. 影响范围 4. 建议优先级排序 5. 还缺少什么观测信息。',
-    '不要把相关性说成因果；信息不足时明确写未知。不要建议上传源文、译文或密钥。',
-    JSON.stringify(summary, null, 2),
-  ].join('\n\n');
+  const analysisInput = {
+    selection: summary.selection,
+    documents: summary.documents.map((doc) => ({
+      title: doc.title, format: doc.format, updatedAt: doc.updatedAt,
+      metrics: doc.metrics, runs: doc.runSummary,
+    })),
+    instructions: [
+      '只分析这两个最近更新的文档项目，不要扩展到其他项目或系统日志。',
+      '重点检查分析阶段和翻译阶段的执行轨迹、事件顺序、批次状态、Reviewer、失败/重试/回退、自动采纳及最终完成情况。',
+      '区分数据库中有记录的事实、推测和缺失的观测数据。指出两个文档之间是否存在共同问题。',
+      '不要重写或复述大段原文/译文；输出中文诊断报告，给出证据对应的 projectId/runId/eventType。',
+    ],
+  };
   const stream = sdk.query({
-    prompt,
+    prompt: '请分析以下两个最新文档项目的翻译流水线诊断摘要，按要求输出结论：\\n\\n' + JSON.stringify(analysisInput, null, 2),
     options: {
-      cwd: serviceDir,
-      settingSources: [],
-      persistSession: false,
-      tools: [],
-      allowedTools: [],
-      maxTurns: 1,
-      thinking: { type: 'disabled' },
+      cwd: serviceDir, settingSources: [], persistSession: false,
+      tools: [], allowedTools: [], maxTurns: 1, thinking: { type: 'disabled' },
     },
   });
   let output = '';
   for await (const message of stream) {
-    const raw = message && typeof message === 'object' ? message : {};
-    if (raw.type === 'assistant' && raw.message && Array.isArray(raw.message.content)) {
-      for (const part of raw.message.content) if (part?.type === 'text' && typeof part.text === 'string') output += part.text;
+    if (message?.type === 'assistant' && Array.isArray(message.message?.content)) {
+      for (const part of message.message.content) if (part?.type === 'text') output += part.text;
     }
-    if (raw.type === 'result' && raw.subtype && raw.subtype !== 'success') {
-      throw new Error('CodeBuddy analysis failed: ' + String(raw.subtype));
+    if (message?.type === 'result' && message.subtype && message.subtype !== 'success') {
+      throw new Error('CodeBuddy analysis failed: ' + message.subtype);
     }
   }
   return output.trim();
 }
 
-const logMeta = copyRecentLog(logFile, 'local-agent.log');
-const additionalLogs = collectLogFiles();
-const primaryLog = fs.existsSync(path.join(bundleDir, 'local-agent.log'))
-  ? fs.readFileSync(path.join(bundleDir, 'local-agent.log'), 'utf8') : '';
-const packageJson = JSON.parse(fs.readFileSync(path.join(serviceDir, 'package.json'), 'utf8'));
+const collection = collectLatestDocuments();
 const summary = {
-  generatedAt: collectedAt.toISOString(),
-  windowHours: sinceHours,
-  host: { platform: os.platform(), release: os.release(), arch: os.arch(), node: process.version, cpus: os.cpus().length, totalMemoryBytes: os.totalmem(), freeMemoryBytes: os.freemem() },
-  service: { package: packageJson.name, version: packageJson.version, configuredProvider: process.env.LOCAL_AGENT_PROVIDER || 'workbuddy', configuredPort: process.env.LOCAL_AGENT_PORT || '8789', poolSize: process.env.LOCAL_AGENT_POOL_SIZE || 'default', timeoutMs: process.env.LOCAL_AGENT_TIMEOUT_MS || 'default', analysisTimeoutMs: process.env.LOCAL_AGENT_ANALYSIS_TIMEOUT_MS || 'default' },
-  paths: { dataDir: '~/' + path.relative(home, dataDir), logFile: '~/' + path.relative(home, logFile), database: '~/' + path.relative(home, dbFile) },
-  primaryLog: logMeta,
-  additionalLogs,
-  sqlite: (() => { try { return sqliteOverview(); } catch (error) { return { found: true, error: redact(error instanceof Error ? error.message : String(error)) }; } })(),
-  checks: {
-    health: run(process.execPath, ['-e', "fetch('http://127.0.0.1:'+(process.env.LOCAL_AGENT_PORT||8789)+'/health').then(async r=>{console.log('HTTP '+r.status);console.log((await r.text()).slice(0,1000));}).catch(e=>{console.error(e.message);process.exitCode=1})"]),
-    codebuddyCli: run('codebuddy', ['--version']),
-    opencodeCli: run('opencode', ['--version']),
+  generatedAt, selection: collection.selection || '最新两个未归档文档项目',
+  selectedCount: collection.selectedCount || 0,
+  documents: collection.documents || [],
+  collectionError: collection.error || null,
+  host: {
+    platform: os.platform(), release: os.release(), arch: os.arch(),
+    node: process.version, totalMemoryBytes: os.totalmem(), freeMemoryBytes: os.freemem(),
   },
-  logSignals: localFindings(primaryLog),
+  service: {
+    package: JSON.parse(fs.readFileSync(path.join(serviceDir, 'package.json'), 'utf8')).name,
+    provider: process.env.LOCAL_AGENT_PROVIDER || 'workbuddy',
+    port: process.env.LOCAL_AGENT_PORT || '8789',
+  },
+  checks: {
+    health: run(process.execPath, ['-e', "fetch('http://127.0.0.1:'+(process.env.LOCAL_AGENT_PORT||8789)+'/health').then(async r=>{console.log('HTTP '+r.status);console.log((await r.text()).slice(0,500));}).catch(e=>{console.error(e.message);process.exitCode=1})"]),
+  },
 };
-write('summary.json', JSON.stringify(summary, null, 2) + '\n');
-write('README.txt', [
-  'Vocal Saga Local Agent diagnostic bundle',
-  'Generated: ' + collectedAt.toISOString(),
-  'Window: last ' + sinceHours + ' hours (log-file tail is capped)',
+writeJson('summary.json', summary);
+const readme = [
+  'Vocal Saga Local Agent - latest two document projects diagnostic bundle',
+  'Generated: ' + generatedAt,
+  'Selection: latest two non-archived document projects by document_projects.updated_at.',
+  'No 12-hour/24-hour log window is used. No general SDK transcript or machine log directories are scanned.',
   '',
-  'Privacy: SQLite row contents and known prompt/source/translation preview log lines are excluded.',
-  'Only this service\'s own logs are collected; SDK transcript directories are deliberately excluded.',
-  'Logs are secret-redacted, but manually inspect this archive before sharing.',
-  'summary.json includes environment/runtime metadata and aggregate SQLite table counts.',
-  analyze ? 'CodeBuddy analysis was explicitly requested; see codebuddy-analysis.md.' : 'No model analysis was run. Re-run with --analyze to use the local CodeBuddy SDK.',
-].join('\n') + '\n');
+  'Each documents/*.json contains the project metadata, source revisions and source segments, all persisted translation runs, run-segment states, translation results, review findings, TranslationBrief snapshots, context deltas, quality audit/evaluation records, and the ordered project event timeline.',
+  '',
+  'PRIVACY: These document records intentionally include source text, translated text, review findings and persisted prompts because they are needed to diagnose translation quality. Review the two JSON files before sharing. Original EPUB/PDF binaries, unrelated documents, request-history database rows and SDK session transcripts are not included.',
+  analyze ? 'CodeBuddy analysis was requested; see codebuddy-analysis.md.' : 'No model analysis was run. Add --analyze to call the local CodeBuddy SDK.',
+].join('\\n') + '\\n';
+fs.writeFileSync(path.join(bundleDir, 'README.txt'), readme, { mode: 0o600 });
 
 if (analyze) {
   try {
-    const analysis = await runCodeBuddyAnalysis({ ...summary, logExcerpt: primaryLog.slice(-18000) });
-    write('codebuddy-analysis.md', analysis + '\n');
+    const report = await runCodeBuddyAnalysis(summary);
+    fs.writeFileSync(path.join(bundleDir, 'codebuddy-analysis.md'), report + '\\n', { mode: 0o600 });
   } catch (error) {
-    write('codebuddy-analysis-error.txt', redact(error instanceof Error ? error.stack || error.message : String(error)) + '\n');
+    fs.writeFileSync(path.join(bundleDir, 'codebuddy-analysis-error.txt'), redact(error instanceof Error ? error.stack || error.message : String(error)) + '\\n', { mode: 0o600 });
   }
 }
 
 const archivePath = bundleDir + '.tar.gz';
-const tar = spawnSync('tar', ['-czf', archivePath, '-C', outputRoot, path.basename(bundleDir)], { encoding: 'utf8' });
+const tar = spawnSync('tar', ['-czf', archivePath, '-C', outputRoot, bundleName], { encoding: 'utf8' });
 if (tar.status !== 0) {
-  console.error('Bundle collected at: ' + bundleDir);
+  console.error('Bundle directory: ' + bundleDir);
   console.error(tar.stderr || 'tar failed');
   process.exitCode = 1;
 } else {
   console.log('Diagnostic bundle: ' + archivePath);
-  console.log('Files: ' + fs.readdirSync(bundleDir).length + ' · log signals: ' + JSON.stringify(summary.logSignals));
-  console.log('Review the archive manually before uploading it to ChatGPT.');
+  console.log('Selected documents: ' + summary.selectedCount);
+  for (const doc of summary.documents) console.log('- ' + doc.title + ': ' + (doc.metrics?.runCount ?? 'n/a') + ' runs, ' + (doc.metrics?.sourceSegmentCount ?? 'n/a') + ' source segments');
+  if (summary.collectionError) console.error(summary.collectionError);
+  console.log('Review the included source/translation records before uploading the archive.');
 }
