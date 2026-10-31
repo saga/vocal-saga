@@ -1,5 +1,7 @@
 # Context Graph 全书预处理：A/B 工作流
 
+> 本文只定义 Context Graph 的 A/B 分析策略、阶段检查点和质量契约；它不单独决定何时允许翻译。文学翻译必须遵循根目录 [ADR-0005](../../docs/adr/0005-literary-preprocessing-before-translation.md)：当前 source revision 的 readiness 完整通过后才开始翻译模型调用，B 策略五个阶段均须完成。
+
 ## 背景
 
 旧流程把文风、人物、实体、关系和章节摘要打包进一个结构化模型请求。模型只有在请求结束时才返回完整 JSON，长请求失败会丢失整批尚未提交的模型结果；此外，旧 Schema 没有将全部文风维度列为必填，因此模型可能只返回 `narrativeStyle` 和 `styleRules`，其余字段因缺失被服务端保存为空。
