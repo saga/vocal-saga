@@ -343,7 +343,11 @@ export async function handleDocumentProjectRequest(req: Request, res: Response, 
     if (pathParts.length === 6 && pathParts[4] === 'context-graph' && pathParts[5] === 'review' && method === 'POST') {
       const body = bodyObject(req.body);
       if (Array.isArray(body.items)) {
-        sendJson(res, 200, { reviews: reviewContextGraphItems(projectId, body.items) });
+        const reviews = reviewContextGraphItems(projectId, body.items, body.memory);
+        sendJson(res, 200, {
+          reviews,
+          ...(body.memory !== undefined ? { current: store.getCurrentLiteraryMemory(projectId) } : {}),
+        });
         return true;
       }
       if (!['node', 'edge'].includes(body.type) || typeof body.id !== 'string' ||
