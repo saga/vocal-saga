@@ -1019,3 +1019,39 @@ Phase 3 的第一批指标已经加入全书 Quality Audit。
 - 需要把指标与 `quality-evaluations` 的盲评流程打通，形成可比较的编辑前后报告。
 - 需要在 fanyi-extension 的 Literary Memory / Quality Audit UI 中展示 Profile 证据、确认状态和编辑质量指标。
 - Phase 4 仍需建立可复现的 100–200 段中文文学盲评语料、模型对照和任务路由。
+
+
+---
+
+## 19. Phase 4 实施进展：中文文学编辑盲评 Benchmark Harness（2026-10-31）
+
+已增加可重复运行的 A/B Benchmark Harness；目前完成的是执行框架，不是已完成的 100–200 段真实语料评测。
+
+### 新增文件
+
+- `local-agent-service/scripts/run-chinese-literary-benchmark.mjs`
+- `local-agent-service/benchmarks/chinese-literary-editing/dataset.schema.json`
+- `local-agent-service/benchmarks/chinese-literary-editing/README.md`
+- `local-agent-service/tests/chinese-literary-benchmark.test.mjs`
+- `local-agent-service/benchmarks/results/.gitignore`
+
+### 自动执行内容
+
+1. 验证 JSONL 数据集，要求每段声明 public-domain / user-owned / licensed 权利依据。
+2. 对同一批 100–200 段中文初稿分别运行 Model A 和 Model B 的中文单语编辑。
+3. 对两组候选使用同一个 bilingual accuracy/terminology reviewer，生成独立的忠实度筛查结果。
+4. 随机交换 Candidate A/B 的模型映射，输出不包含模型身份的盲评包。
+5. 生成独立 mapping、模型结果、运行 manifest 和人工评分 CSV 模板。
+
+### 运行方式
+
+`npm run benchmark:chinese-literary -- --dataset /path/to/dataset.jsonl --provider workbuddy --model-a MODEL_A --model-b MODEL_B --accuracy-model REVIEWER_MODEL --output /path/to/results`
+
+正式评测要求 100–200 段。`--allow-small --validate-only` 只用于数据格式/连通性检查，不构成正式质量结论。脚本不会上传数据；结果目录默认位于本地并由 `.gitignore` 排除。
+
+### 重要限制
+
+- 当前仓库没有放入商业小说正文，也没有伪造 100–200 段的 benchmark 数据。需要从公版、用户自有或有明确授权的文本建立正式语料。
+- 当前还没有真实模型 A/B 运行结果和人工评分；CI 只验证 harness 的数据校验、摘要计算、盲评映射和代码构建。
+- 人工评分需至少双人独立完成，先锁定结果再揭盲；报告 inter-rater agreement，并对关键忠实度问题进行人工仲裁。
+- LLM fidelity reviewer 仅用于筛查，不代替人工判断文学创造性、隐喻、反讽和作者声音。
