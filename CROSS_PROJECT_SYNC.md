@@ -651,6 +651,7 @@ prepareHtmlForServer 时在 clone 上把 `link[rel=stylesheet]` 替换为
 6. 自动保存的是候选译文；审校 finding 需要单独保存。审校失败应保留有效初译并产生 warning，不应丢弃整批成功的初译。UI 不应把 `batch.translation.completed` 当成审校完成。
 7. CI 仅验证类型、调度/状态回归和接口契约，不调用真实模型，不证明线上耗时或翻译质量。性能结论必须标为估算，除非使用至少 60 段、重复 3 次的实时模型实验，并将跨模式差异与同模式重复噪声比较。
 8. 全书预处理就绪判定里的源语言比较必须把 `auto` 当作「由模型判断」而不是语言值：记录里存的是分析当时使用的具体语言（如 `en`），而扩展默认发 `auto`，按字面比较会让没改过任何设置的翻译每次都重跑整本分析。三处判定共用同一语义——扩展 `src/entrypoints/document/documentPreprocessing.ts` 的 `sourceLanguageMatches`、服务端 `isContextGraphReadyForTranslationRun` 与创建 Run 时的 409 校验（后两者共用 `local-agent-service/src/documents/languageMatch.ts`）。目标语言始终是显式值，换目标语言必须重新分析。
+9. 提示词里的语言方向以**本次 Run** 为准，项目里存的 `systemPrompt` 只是上一次生效的快照。源语言从 `en` 改成 `fr` 之后快照不会自己更新，所以服务端每次组装系统提示词都要用 `applyRunLanguageDirection` 重写「输入语言 / 目标语言」两行；`auto` 渲染成「自动检测（按原文实际语言判断，不要假定为英语）」，不能落成某个具体语言。扩展端在 hydrate 时也只用 `applyDocumentLanguageLines` 修正这两行，**不重建整份提示词**——重建会把文风一并换成当前全局设置。文风随项目保存：`promptStyle` 写进项目 Prompt 的 config，打开项目时回填，避免 A 书写金庸、切到 B 书后 A 书被改成别的文风。
 
 关键实现与测试：
 - 服务端：`local-agent-service/src/documents/translationAgent.ts`、`projectStore.ts`、`projectRoutes.ts`。

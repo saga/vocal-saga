@@ -52,7 +52,8 @@ const LANGUAGE_NAMES: Record<string, string> = {
   nl: '荷兰语',
   pl: '波兰语',
   tr: '土耳其语',
-  auto: '自动检测',
+  // auto 不是一种语言：允许模型按原文判断，同时明确禁止把任意原文默认当成英语。
+  auto: '自动检测（按原文实际语言判断，不要假定为英语）',
 };
 
 /**

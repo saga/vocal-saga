@@ -105,6 +105,19 @@ describe('buildSystemContent 文风切换', () => {
     expect(unknown).toContain('目标语言：yy');
   });
 
+  it('源语言为 auto 时不得假定为英语', () => {
+    // ja-source-natural 例外：这个文风本身就限定源语言是日语。
+    for (const style of ALL_STYLES.filter((item) => item !== 'ja-source-natural')) {
+      const content = buildSystemContent('auto', 'zh', undefined, style);
+      expect(content, `${style} 把 auto 当成了具体语言`).not.toContain('输入语言：英语');
+      expect(content, `${style} 应明确写出自动检测`).toContain('自动检测');
+    }
+    // 文学模式同样不能把 auto 落成英语。
+    const literary = buildSystemContent('auto', 'zh', undefined, 'acheng', 'literary');
+    expect(literary).not.toContain('输入语言：英语');
+    expect(literary).toContain('自动检测');
+  });
+
 });
 
 describe('glossary 注入', () => {

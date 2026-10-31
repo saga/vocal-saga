@@ -50,7 +50,7 @@ export function buildJinyongSystemContent(
 ): string {
   return composeSystemContent({
     persona: JINYONG_PERSONA,
-    sourceLangName: resolveLanguageName(sourceLang, '英语'),
+    sourceLangName: resolveLanguageName(sourceLang, '自动检测'),
     targetLangName: resolveLanguageName(targetLang, '简体中文'),
     glossary,
   });

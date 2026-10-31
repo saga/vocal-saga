@@ -113,12 +113,22 @@ export function normalizeDocumentTranslationStrategy(input: unknown): DocumentTr
   };
 }
 
+/** 文风是提示词的一部分：随项目保存，重新生成提示词时保持同一文风。 */
+const DOCUMENT_PROMPT_STYLES = ['default', 'jinyong', 'acheng', 'wangxiaobo', 'ja-source-natural'] as const;
+
+export function normalizePromptStyle(input: unknown): string {
+  const value = String(input ?? '').trim();
+  return (DOCUMENT_PROMPT_STYLES as readonly string[]).includes(value) ? value : 'default';
+}
+
 export interface ProjectPrompt {
   name?: string;
   systemPrompt?: string;
   userPromptTemplate?: string;
   sourceLang?: string;
   targetLang?: string;
+  /** 生成 systemPrompt 时使用的文风；随项目保存，打开项目时按它重建提示词。 */
+  promptStyle?: string;
   provider?: string;
   model?: string;
   translationMode?: 'technical' | 'literary';
@@ -1018,6 +1028,7 @@ export class DocumentProjectStore {
     const config = {
       sourceLang: prompt.sourceLang || 'auto',
       targetLang: prompt.targetLang || 'zh',
+      promptStyle: normalizePromptStyle(prompt.promptStyle),
       provider: prompt.provider || 'workbuddy',
       model: prompt.model || 'auto',
       translationMode: prompt.translationMode === 'literary' ? 'literary' : 'technical',

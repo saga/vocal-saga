@@ -14,7 +14,7 @@ import { addTurnUsage, summarizeTurnUsage, type TurnUsage } from '../agents/usag
 import { getCodeBuddyTaskProfile } from '../agents/taskProfiles.ts';
 import { runLiteraryReview } from '../literary.ts';
 import { getDocumentProjectStore, normalizeDocumentTranslationStrategy, type DocumentTranslationStrategy } from './projectStore.ts';
-import { sourceLanguageMatches, sourceLanguagePromptLabel } from './languageMatch.ts';
+import { sourceLanguageMatches, sourceLanguagePromptLabel, applyRunLanguageDirection } from './languageMatch.ts';
 import { buildProjectVoiceContext, sanitizeProjectLiteraryMemory } from './voiceContext.ts';
 import { buildTranslationBrief, summarizeTranslationBrief, type TranslationBrief } from './translationBrief.ts';
 import { runProjectQualityAudit, createQualityRepairRun, englishResidueFindings, numericFindings, terminologyFindings } from './qualityAudit.ts';
@@ -1059,7 +1059,8 @@ async function translateBatch(context: any, items: TranslationItem[], requestId:
     context.prompt.userPromptTemplate || '', items, context, precedingSegments, contextGraph, translationBrief,
   );
   const systemPrompt = [
-    context.prompt.systemPrompt || '',
+    // 项目 Prompt 是上一次生效的快照，语言行可能已经过期；运行时的语言对才是权威。
+    applyRunLanguageDirection(context.prompt.systemPrompt || '', context.run),
     context.run.translationMode === 'literary' ? LITERARY_TRANSLATION_CONTRACT : '',
     MANDATORY_TRANSLATION_CONTRACT,
   ].filter(Boolean).join('\n\n');
