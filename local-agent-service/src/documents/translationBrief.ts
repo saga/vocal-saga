@@ -519,9 +519,14 @@ function buildTemporallyVisibleMemory(
 
   rawMemory.characterVoices = (Array.isArray(rawMemory.characterVoices) ? rawMemory.characterVoices : []).flatMap((profile: any) => {
     const rawEvidence = Array.isArray(profile.evidence) ? profile.evidence : [];
-    // Legacy Run snapshots and callers can bypass the current-memory sanitizer. Re-derive the
-    // old eight-row truncation condition here so a missing completeness flag cannot leak an
-    // aggregate profile synthesized from omitted future dialogue into an early batch.
+    // Legacy capped profiles may have lost the future-dated rows that contributed to voiceCore.
+    // A truncated aggregate is therefore not safe to partially reuse in an earlier chapter.
+    const evidenceTruncated = profile.evidenceTruncated === true ||
+      (profile.evidencePolicyVersion !== 'character-evidence-v2-complete' && rawEvidence.length >= 8);
+    if (evidenceTruncated) {
+      exclusionDiagnostics.characterVoiceExcludedIncompleteEvidence++;
+      return [];
+    }
     const hasFutureEvidence = rawEvidence.some((item: any) => {
       const source = typeof item?.segmentId === 'string' ? sourceById.get(item.segmentId) : undefined;
       return !!source && Number(source.ordinal) >= firstOrdinal;
