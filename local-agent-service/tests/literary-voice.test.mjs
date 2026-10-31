@@ -248,3 +248,59 @@ test('project voice context includes confirmed profiles and approved anchors onl
   assert.ok(JSON.stringify(roundTrip).length < 9000);
   assert.match(roundTrip.constraints.join(' '), /不确定说话人/);
 });
+
+
+test('confirmed Chinese editorial profile is projected into voice context while candidates stay out', () => {
+  const memory = sanitizeProjectLiteraryMemory({
+    version: 2,
+    chineseEditorialProfile: {
+      version: 1,
+      status: 'confirmed',
+      confirmationSource: 'user-confirmed',
+      sourceRevisionId: 'revision-1',
+      analysisVersion: 'chinese-editorial-profile-v1',
+      sampleFingerprint: 'fingerprint',
+      sampleCount: 12,
+      chapterCount: 3,
+      profile: {
+        narrativeVoice: '叙述克制，不主动解释人物心理。',
+        register: '现代书面语。',
+        rhythm: '保留长句与有意停顿。',
+        dialogue: '对白避免统一成同一种口吻。',
+        diction: '优先自然、准确的常用词。',
+        rules: ['不机械拆分长句。'],
+        avoid: ['不主动增加心理解释。'],
+      },
+      evidenceRefs: [{
+        segmentId: 'ch1-a1',
+        targetExcerpt: '我仍记得那一天',
+        observation: '第一人称回忆语气克制。',
+        aspect: 'narrativeVoice',
+      }, {
+        segmentId: 'ch1-b1',
+        targetExcerpt: '证据已经很清楚',
+        observation: '叙述语域偏现代书面语。',
+        aspect: 'register',
+      }, {
+        segmentId: 'ch1-c1',
+        targetExcerpt: '他没有再说什么',
+        observation: '叙述不额外解释人物心理。',
+        aspect: 'diction',
+      }],
+    },
+  });
+  const projected = buildProjectVoiceContext(memory, sourceSegments);
+  assert.match(JSON.stringify(projected.chineseEditorialProfile), /叙述克制/);
+
+  const candidate = sanitizeProjectLiteraryMemory({
+    chineseEditorialProfile: {
+      version: 1,
+      status: 'candidate',
+      sourceRevisionId: 'revision-1',
+      profile: { narrativeVoice: '候选风格，不应注入。' },
+      evidenceRefs: [],
+    },
+  });
+  const candidateProjection = buildProjectVoiceContext(candidate, sourceSegments);
+  assert.deepEqual(candidateProjection.chineseEditorialProfile, {});
+});
