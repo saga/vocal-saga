@@ -366,15 +366,15 @@ export async function handleDocumentProjectRequest(req: Request, res: Response, 
         pathParts[5] === 'chinese-editorial-profile' && pathParts[6] === 'review' && method === 'POST') {
       const body = bodyObject(req.body || {});
       const action = String(body.action || '');
-      if (!['confirm', 'reject', 'accept-update', 'reject-update'].includes(action)) {
-        throw Object.assign(new Error('action 必须是 confirm、reject、accept-update 或 reject-update'), { status: 400 });
+      if (action !== 'reject') {
+        throw Object.assign(new Error('中文文学编辑档案默认启用；仅支持明确停用/拒绝。'), { status: 400 });
       }
       const current = store.getCurrentLiteraryMemory(projectId);
       const profile = current.memory.chineseEditorialProfile;
       const projectContext = store.getProjectContext(projectId);
       const nextProfile = applyChineseEditorialProfileReview(
         profile,
-        action as 'confirm' | 'reject' | 'accept-update' | 'reject-update',
+        action as 'reject',
         projectContext.currentSourceRevisionId,
       );
       const nextMemory = {
@@ -383,9 +383,7 @@ export async function handleDocumentProjectRequest(req: Request, res: Response, 
       };
       const saved = store.saveLiteraryMemory(projectId, nextMemory);
       store.appendEvent(projectId, null,
-        action === 'accept-update' || action === 'reject-update'
-          ? 'chinese-editorial-profile.update.user-reviewed'
-          : 'chinese-editorial-profile.user-reviewed',
+        'chinese-editorial-profile.user-rejected',
         {
           action,
           memoryRevisionId: saved.memoryRevisionId,
