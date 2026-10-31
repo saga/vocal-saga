@@ -421,6 +421,7 @@ export function mergeTranslationContextDeltasIntoMemory(
   if (!Array.isArray(memory.entities)) memory.entities = [];
   if (!Array.isArray(memory.relationships)) memory.relationships = [];
   if (!Array.isArray(memory.openQuestions)) memory.openQuestions = [];
+  if (!Array.isArray(memory.rejectedItems)) memory.rejectedItems = [];
   const before = JSON.stringify(memory);
   const summary = { addedEntities: 0, mergedEntities: 0, entityTargetConflicts: 0, addedRelationships: 0, addedOpenQuestions: 0 };
   const normalizeName = (value: unknown) => normalized(value).replace(/[._'’\-]+/g, ' ').trim();
@@ -442,6 +443,18 @@ export function mergeTranslationContextDeltasIntoMemory(
   };
   const targetConfidence = (refs: Array<{ segmentId: string }>) =>
     new Set(refs.map((item) => item.segmentId)).size >= 2 ? 'corroborated' : 'candidate';
+  const isRejectedEntity = (candidate: ContextEntityCandidate) => {
+    const candidateNames = new Set([candidate.canonicalSource, ...candidate.aliases].map(normalizeName).filter(Boolean));
+    return memory.rejectedItems.some((item: any) => item?.type === 'entity' &&
+      sameKind(item.kind, candidate.kind) &&
+      [item.source, ...(Array.isArray(item.aliases) ? item.aliases : [])]
+        .some((name: unknown) => candidateNames.has(normalizeName(name))));
+  };
+  const isRejectedRelationship = (relation: ContextRelationshipDelta) => {
+    const key = [relation.subjectSource, relation.predicate, relation.objectSource].map(normalizeName).join('\\u0000');
+    return memory.rejectedItems.some((item: any) => item?.type === 'relationship' &&
+      [item.subject, item.predicate, item.object].map(normalizeName).join('\\u0000') === key);
+  };
   const addQuestion = (value: string) => {
     const question = text(value, 200);
     if (!question || memory.openQuestions.some((item: unknown) => normalized(item) === normalized(question))) return;
@@ -452,6 +465,8 @@ export function mergeTranslationContextDeltasIntoMemory(
 
   for (const delta of deltas) {
     for (const candidate of delta.entityCandidates) {
+      // A user deletion is durable even though the visible LiteraryMemory row was removed.
+      if (isRejectedEntity(candidate)) continue;
       const names = new Set([candidate.canonicalSource, ...candidate.aliases].map(normalizeName).filter(Boolean));
       const newTargetEvidence = targetEvidenceFor(candidate, delta);
       const matching = memory.entities
@@ -518,6 +533,8 @@ export function mergeTranslationContextDeltasIntoMemory(
       summary.mergedEntities++;
     }
     for (const relation of delta.relationshipDeltas) {
+      // A deleted relation may have had no graph edge to reject; retain its memory tombstone.
+      if (isRejectedRelationship(relation)) continue;
       const key = [relation.subjectSource, relation.predicate, relation.objectSource].map(normalizeName).join('\u0000');
       const prior = memory.relationships.find((item: any) =>
         [item.subject, item.predicate, item.object].map(normalizeName).join('\u0000') === key);
