@@ -86,7 +86,7 @@ function rows(db, sql, ...params) {
   try { return db.prepare(sql).all(...params); }
   catch (error) {
     const message = redact(error instanceof Error ? error.message : String(error));
-    collectionQueryErrors.push({ query: sql.replace(/\\s+/g, ' ').slice(0, 180), error: message });
+    collectionQueryErrors.push({ query: sql.replace(/\s+/g, ' ').slice(0, 180), error: message });
     return { collectionError: message };
   }
 }
@@ -294,8 +294,8 @@ function summarizeReviewEvents(events) {
       inputSegments: 0, returnedTranslations: 0, missingIds: 0, findings: 0,
     };
     const group = byRunStage[key];
-    if (item.eventType.endsWith('.input')) group.inputCalls++;
-    if (item.eventType.endsWith('.output')) group.outputCalls++;
+    if (item.eventType.endsWith('input')) group.inputCalls++;
+    if (item.eventType.endsWith('output')) group.outputCalls++;
     if (item.eventType === 'review.audit.failed') group.failedCalls++;
     if (item.eventType.includes('.retry-')) group.retryCalls++;
     group.inputSegments += Number(item.inputSegmentCount || 0);
@@ -614,7 +614,7 @@ function summarizeLogExcerpt() {
       text = buffer.toString('utf8');
     } finally { fs.closeSync(fd); }
     const allLines = text.split(/\r?\n/).filter(Boolean);
-    const pattern = /(?:uncaught|unhandled|fatal|SIGTERM|SIGINT|shutdown|restart|recovered interrupted|recovery check failed|context-graph|voice-context|translation-brief|document-agent|literary-review|review\\.audit|quality-audit|quality-repair|canonical-terms|document-projects|workbuddy|codebuddy|timeout|timed out|process interrupted|server listening|server started|server stopped|EADDRINUSE|ECONNRESET|aborted)/i;
+    const pattern = /(?:uncaught|unhandled|fatal|SIGTERM|SIGINT|shutdown|restart|recovered interrupted|recovery check failed|context-graph|voice-context|translation-brief|document-agent|literary-review|review\.audit|quality-audit|quality-repair|canonical-terms|document-projects|workbuddy|codebuddy|timeout|timed out|process interrupted|server listening|server started|server stopped|EADDRINUSE|ECONNRESET|aborted)/i;
     const skip = /(?:polling summary|response preview|prompt preview|request body|authorization\s*[:=]|bearer\s+)/i;
     const retained = allLines.filter((line) => pattern.test(line) && !skip.test(line))
       .slice(-MAX_LOG_LINES).map(redact);
