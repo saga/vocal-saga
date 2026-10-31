@@ -126,8 +126,26 @@ function summarizeDocument(project, db) {
       )),
     };
   }) : [];
+  const contextGraphSignals = {
+    meta: Array.isArray(tables.contextGraphMeta) ? Object.fromEntries(tables.contextGraphMeta.map((item) => [item.key, item.value])) : {},
+    nodes: Array.isArray(tables.contextGraphNodes) ? tables.contextGraphNodes.map((item) => ({
+      nodeId: item.node_id, kind: item.kind, name: item.name, status: item.status,
+      attributes: parseJson(item.attributes_json),
+    })) : [],
+    edges: Array.isArray(tables.contextGraphEdges) ? tables.contextGraphEdges.map((item) => ({
+      edgeId: item.edge_id, sourceNodeId: item.source_node_id, targetNodeId: item.target_node_id,
+      kind: item.kind, status: item.status, attributes: parseJson(item.attributes_json),
+    })) : [],
+    evidence: Array.isArray(tables.contextGraphEvidence) ? tables.contextGraphEvidence.slice(0, 120).map((item) => ({
+      nodeId: item.node_id, edgeId: item.edge_id, segmentId: item.segment_id, quote: item.quote, role: item.role,
+    })) : [],
+    chapters: Array.isArray(tables.contextGraphChapters) ? tables.contextGraphChapters.map((item) => ({
+      order: item.chapter_order, title: item.chapter_title, summary: item.summary, summaryKind: item.summary_kind,
+    })) : [],
+    analysisRuns: tables.contextGraphRuns,
+  };
   const analysisSignals = {
-    runs: runSummary, eventTimeline, reviewFindingCategories,
+    runs: runSummary, eventTimeline, reviewFindingCategories, contextGraphSignals,
     qualityAuditSummaries: Array.isArray(tables.qualityAudits) ? tables.qualityAudits.map((item) => ({
       auditId: item.audit_id, runId: item.run_id, createdAt: item.created_at,
       reportPreview: JSON.stringify(parseJson(item.report_json)).slice(0, 6000),
@@ -205,7 +223,7 @@ async function runCodeBuddyAnalysis(summary) {
         runs: doc.analysisSignals.runs,
         eventTimeline: doc.analysisSignals.eventTimeline.slice(-250),
         reviewFindingCategories: doc.analysisSignals.reviewFindingCategories,
-        qualityAuditSummaries: doc.analysisSignals.qualityAuditSummaries,
+        contextGraphSignals: doc.analysisSignals.contextGraphSignals,\n        qualityAuditSummaries: doc.analysisSignals.qualityAuditSummaries,
       } : null,
     })),
     instructions: [
