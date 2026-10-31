@@ -2392,6 +2392,7 @@ export class DocumentProjectStore {
     const now = isoNow();
     let accepted = 0;
     const preservedManual: string[] = [];
+    const preservedNewerAccepted: string[] = [];
     let finalStatus: RunStatus = 'completed';
     let terminalError: string | null = null;
 
@@ -2428,7 +2429,7 @@ export class DocumentProjectStore {
         ).get(row.segment_id, candidate.source_hash, candidate.seq) as { result_id?: string; origin?: string } | undefined;
         if (sameSourceManual || newerAccepted) {
           if (sameSourceManual) preservedManual.push(row.segment_id);
-          else preservedManual.push(row.segment_id);
+          else preservedNewerAccepted.push(row.segment_id);
           db.prepare(
             "UPDATE run_segments SET status = 'accepted', updated_at = ? WHERE run_id = ? AND segment_id = ?",
           ).run(now, runId, row.segment_id);
@@ -2481,6 +2482,7 @@ export class DocumentProjectStore {
     this.addEvent(projectId, runId, 'translations.accepted', {
       count: accepted,
       preservedManualSegmentIds: preservedManual,
+      preservedNewerAcceptedSegmentIds: preservedNewerAccepted,
       segmentIds: only ? Array.from(only) : undefined,
     });
     return this.getRun(projectId, runId);
