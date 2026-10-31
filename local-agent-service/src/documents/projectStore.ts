@@ -2398,8 +2398,12 @@ export class DocumentProjectStore {
     // The Run-state guard, candidate selection and acceptance writes share one write lock.
     db.exec('BEGIN IMMEDIATE');
     try {
-      const run = db.prepare('SELECT status, error FROM translation_runs WHERE run_id = ?').get(runId) as { status?: string; error?: string | null } | undefined;
+      const run = db.prepare('SELECT status, error, source_revision_id FROM translation_runs WHERE run_id = ?').get(runId) as { status?: string; error?: string | null; source_revision_id?: string } | undefined;
       if (!run) throw Object.assign(new Error('找不到翻译运行：' + runId), { status: 404 });
+      const currentSource = db.prepare("SELECT value FROM project_meta WHERE key = 'current_source_revision_id'").get() as { value?: string } | undefined;
+      if (!run.source_revision_id || run.source_revision_id !== currentSource?.value) {
+        throw Object.assign(new Error('候选译文属于旧原文版本，不能采纳；请基于当前原文重新运行。'), { status: 409 });
+      }
       if (['cancelled', 'queued', 'running'].includes(String(run.status))) {
         throw Object.assign(
           new Error('运行处于 ' + run.status + ' 状态，不能采纳候选译文；请先完成或暂停运行。'),
@@ -2419,11 +2423,12 @@ export class DocumentProjectStore {
         const sameSourceManual = db.prepare(
           "SELECT result_id FROM translation_results WHERE segment_id = ? AND accepted = 1 AND origin = 'manual' AND source_hash = ? ORDER BY rowid DESC LIMIT 1",
         ).get(row.segment_id, candidate.source_hash);
-        const newerManual = db.prepare(
-          "SELECT result_id FROM translation_results WHERE segment_id = ? AND accepted = 1 AND origin = 'manual' AND rowid > ? ORDER BY rowid DESC LIMIT 1",
-        ).get(row.segment_id, candidate.seq);
-        if (sameSourceManual || newerManual) {
-          preservedManual.push(row.segment_id);
+        const newerAccepted = db.prepare(
+          'SELECT result_id, origin FROM translation_results WHERE segment_id = ? AND source_hash = ? AND accepted = 1 AND rowid > ? ORDER BY rowid DESC LIMIT 1',
+        ).get(row.segment_id, candidate.source_hash, candidate.seq) as { result_id?: string; origin?: string } | undefined;
+        if (sameSourceManual || newerAccepted) {
+          if (sameSourceManual) preservedManual.push(row.segment_id);
+          else preservedManual.push(row.segment_id);
           db.prepare(
             "UPDATE run_segments SET status = 'accepted', updated_at = ? WHERE run_id = ? AND segment_id = ?",
           ).run(now, runId, row.segment_id);
