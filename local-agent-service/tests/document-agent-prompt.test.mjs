@@ -73,7 +73,7 @@ test('literary Project Agent separates preceding context from translatable segme
     ['Chapter 1', 'Chapter 2', 'Chapter 3', 'Chapter 4'],
     'literary translation receives the current and preceding chapter summaries, but not future chapters',
   );
-  assert.equal(payload.voiceContext.policyVersion, 'character-voice-v4-dialogue-participants');
+  assert.equal(payload.voiceContext.policyVersion, 'character-voice-v5-default-adoption');
 });
 
 
