@@ -2057,6 +2057,7 @@ export function getContextGraph(projectId: string): Record<string, unknown> {
 export function reviewContextGraphItems(
   projectId: string,
   items: Array<{ type: 'node' | 'edge'; id: string; status: 'candidate' | 'confirmed' | 'rejected' }>,
+  memory?: unknown,
 ): Array<Record<string, unknown>> {
   if (!Array.isArray(items) || !items.length || items.length > 500) {
     throw Object.assign(new Error('review items 必须是 1-500 条记录的数组。'), { status: 400 });
@@ -2078,6 +2079,7 @@ export function reviewContextGraphItems(
   }
 
   const { db, revisionId } = graphContext(projectId);
+  const store = getDocumentProjectStore();
   const reviewed: Array<Record<string, unknown>> = [];
   db.exec('BEGIN IMMEDIATE');
   try {
@@ -2114,18 +2116,22 @@ export function reviewContextGraphItems(
         now, item.id, revisionId,
       );
     }
+    // When the caller supplies the updated LiteraryMemory projection, persist it under the
+    // same SQLite write transaction as graph rejections. A failed memory validation rolls back
+    // every node/edge decision instead of leaving the two projections out of sync.
+    if (memory !== undefined) store.saveLiteraryMemory(projectId, memory);
+    for (const item of reviewed) {
+      store.appendEvent(projectId, null, 'context-graph.reviewed', {
+        type: item.type, id: item.id, previousStatus: item.previousStatus,
+        status: item.status, sourceRevisionId: revisionId,
+      });
+    }
     db.exec('COMMIT');
   } catch (error) {
     try { db.exec('ROLLBACK'); } catch { /* transaction may already have rolled back */ }
     throw error;
   }
 
-  for (const item of reviewed) {
-    getDocumentProjectStore().appendEvent(projectId, null, 'context-graph.reviewed', {
-      type: item.type, id: item.id, previousStatus: item.previousStatus,
-      status: item.status, sourceRevisionId: revisionId,
-    });
-  }
   return reviewed;
 }
 
