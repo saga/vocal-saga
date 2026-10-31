@@ -216,7 +216,7 @@ export function sanitizeProjectLiteraryMemory(input: unknown): Record<string, an
   }) : []);
   // Explicit user deletions survive after the visible entity/relation projection is removed.
   // These compact tombstones prevent later model deltas from silently recreating deleted memory.
-  const rejectedItems = Array.isArray(raw.rejectedItems) ? raw.rejectedItems.slice(-200).flatMap((item: any) => {
+  const rejectedItems = Array.isArray(raw.rejectedItems) ? raw.rejectedItems.slice(-200).flatMap((item: any): any[] => {
     if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
     if (item.type === 'entity') {
       const source = text(item.source, 120);
