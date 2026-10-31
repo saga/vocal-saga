@@ -1378,8 +1378,16 @@ export function isContextGraphReadyForTranslationRun(
   graph: Record<string, any> | null | undefined,
   run: Record<string, any> | null | undefined,
 ): boolean {
-  if (!graph || !run || graph.status !== 'completed') return false;
+  if (!graph || !run || graph.status !== 'completed' || graph.styleGuideReady !== true) return false;
   const progress = graph.progress && typeof graph.progress === 'object' ? graph.progress : {};
+  if (Number(progress.sampleCount || 0) <= 0) return false;
+  // B is a checkpointed five-stage workflow. A completed DB row is not sufficient if any
+  // required stage checkpoint is missing (e.g. a stale/partially recovered completion event).
+  if (progress.strategy === 'B') {
+    const requiredStages = ['style', 'characters', 'entities', 'relationships', 'chapters'];
+    const completedStages = Array.isArray(progress.completedStages) ? progress.completedStages : [];
+    if (!requiredStages.every((stage) => completedStages.includes(stage))) return false;
+  }
   return String(graph.sourceRevisionId || '') === String(run.sourceRevisionId || '') &&
     progress.analysisVersion === CONTEXT_GRAPH_ANALYSIS_VERSION &&
     String(progress.sourceLang || 'auto') === String(run.sourceLang || 'auto') &&
