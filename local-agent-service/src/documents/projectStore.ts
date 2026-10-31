@@ -13,6 +13,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { DATA_DIR } from '../config.ts';
 import { sanitizeProjectLiteraryMemory } from './voiceContext.ts';
+import { mergeTranslationContextDeltasIntoMemory } from './translationContextDelta.ts';
 import { normalizeCodeBuddyTaskProfiles } from '../agents/taskProfiles.ts';
 import { formatLogLine, logError, logInfo, logWarn } from '../log.ts';
 
@@ -437,6 +438,56 @@ export class DocumentProjectStore {
     this.recoverInterruptedRuns();
   }
 
+  private recoverAwaitingAcceptanceRun(projectId: string, runId: string): void {
+    const db = this.openProjectDb(projectId);
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      const run = db.prepare(
+        "SELECT source_revision_id, translation_mode FROM translation_runs WHERE run_id = ? AND status = 'awaiting_acceptance'"
+      ).get(runId) as { source_revision_id?: string; translation_mode?: string } | undefined;
+      if (!run) {
+        db.exec('COMMIT');
+        return;
+      }
+      const currentSource = db.prepare("SELECT value FROM project_meta WHERE key = 'current_source_revision_id'").get() as { value?: string } | undefined;
+      if (run.source_revision_id === currentSource?.value && run.translation_mode === 'literary') {
+        const deltas = this.listTranslationContextDeltas(projectId, runId)
+          .map((item: any) => item.delta);
+        const currentMemory = this.getCurrentLiteraryMemory(projectId);
+        const merged = mergeTranslationContextDeltasIntoMemory(currentMemory.memory, deltas);
+        if (merged.changed) {
+          const saved = this.saveLiteraryMemory(projectId, merged.memory);
+          this.appendEvent(projectId, runId, 'translation.context-memory.persisted', {
+            memoryRevisionId: saved.memoryRevisionId,
+            fingerprint: saved.fingerprint,
+            sourceRevisionId: run.source_revision_id,
+            deltaBatchCount: deltas.length,
+            ...merged.summary,
+            recovery: 'service-restart-finalization',
+          });
+        }
+      } else if (run.source_revision_id !== currentSource?.value) {
+        this.appendEvent(projectId, runId, 'translation.context-memory.skipped', {
+          reason: 'source-revision-changed-during-recovery',
+          runSourceRevisionId: run.source_revision_id,
+          currentSourceRevisionId: currentSource?.value || null,
+          recovery: 'service-restart-finalization',
+        });
+      }
+      db.exec('COMMIT');
+    } catch (error) {
+      try { db.exec('ROLLBACK'); } catch { /* already rolled back */ }
+      throw error;
+    }
+
+    const finished = this.acceptCandidates(projectId, runId);
+    this.appendEvent(projectId, runId, 'run.finalization.recovered', {
+      status: finished.status,
+      counts: finished.counts || {},
+      recovery: 'service-restart-finalization',
+    });
+  }
+
   private catalogDb(): DatabaseSync {
     this.initialize();
     return this.catalog!;
@@ -734,6 +785,22 @@ export class DocumentProjectStore {
           }
         }
         db.exec('COMMIT');
+
+        // A process may stop after finishRun persisted awaiting_acceptance but before the
+        // executor committed memory deltas and accepted candidates. Complete that durable
+        // finalization during startup; it is idempotent and keeps new Runs blocked until done.
+        const awaitingAcceptance = db.prepare(
+          "SELECT run_id FROM translation_runs WHERE status = 'awaiting_acceptance' ORDER BY created_at, rowid"
+        ).all() as Array<{ run_id: string }>;
+        for (const pending of awaitingAcceptance) {
+          try {
+            this.recoverAwaitingAcceptanceRun(row.project_id, pending.run_id);
+          } catch (recoveryError) {
+            logWarn('document-projects', 'pending acceptance recovery failed · project=' + row.project_id +
+              ' · run=' + pending.run_id + ' · ' +
+              (recoveryError instanceof Error ? recoveryError.message : String(recoveryError)));
+          }
+        }
 
         if (recoveredTranslations || recoveredContextGraphs) {
           logWarn('document-projects', 'recovered interrupted runs · project=' + row.project_id +
