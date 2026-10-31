@@ -970,10 +970,16 @@ test('Chinese monolingual style proposals cannot be applied before bilingual ver
       proposedTranslation: '门仍然敞开着。',
     }]), true);
 
+    const verifiedRun = store.getRun(project.projectId, run.runId);
+    assert.equal(verifiedRun.findings[0].finding.applicationStatus, 'applied',
+      'a Chinese edit that passed bilingual verification must be applied automatically');
+    assert.equal(verifiedRun.findings[0].finding.applicationMethod, 'automatic-bilingual-verification');
+    assert.equal(verifiedRun.segments.find((item) => item.id === 'ch1-p1')?.candidateTranslation, '门仍然敞开着。',
+      'the verified edit must replace the Run candidate without a manual apply click');
+
     store.finishRun(project.projectId, run.runId);
-    const applied = store.setReviewFindingDisposition(project.projectId, run.runId, 1, 'apply');
-    assert.equal(applied.applicationStatus, 'applied');
-    assert.equal(applied.text, '门仍然敞开着。');
+    const accepted = store.acceptCandidates(project.projectId, run.runId);
+    assert.equal(accepted.status, 'completed');
     assert.equal(
       store.getSegments(project.projectId, { limit: 10 }).find((item) => item.id === 'ch1-p1')?.acceptedTranslation,
       '门仍然敞开着。',
