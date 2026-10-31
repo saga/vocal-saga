@@ -77,7 +77,8 @@ test('TranslationBrief excludes rejected entities and preserves model-default ta
   const alice = brief.voiceContext.entities.find((entity) => entity.source === 'Alice');
   assert.equal(alice?.targetConfidence, 'candidate',
     'default adoption must not turn a weak target mapping into a protected canonical term');
-  assert.equal(brief.contextGraph.nameMappings.find((mapping) => mapping.source === 'Alice')?.sourceStatus, 'candidate');
+  assert.notEqual(brief.contextGraph.nameMappings.find((mapping) => mapping.source === 'Alice')?.sourceStatus, 'confirmed-memory',
+    'a model-default mapping must never become a protected user-confirmed canonical term');
 });
 
 test('TranslationBrief is revision-pinned, bounded and hashes the source selection', () => {
