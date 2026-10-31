@@ -181,7 +181,7 @@ export function sanitizeProjectLiteraryMemory(input: unknown): Record<string, an
     const aliases = list(item.aliases, 8, 80);
     const kind = normalizeCanonicalEntityKind(item.kind);
     const explicitlyRejected = item.reviewStatus === 'rejected';
-    const confirmation = explicitlyRejected ? undefined : item.confirmationSource ? confirmationSource(item.confirmationSource, true) : 'model-default';
+    const confirmation = explicitlyRejected ? undefined : item.reviewStatus === 'confirmed' && item.confirmationSource ? confirmationSource(item.confirmationSource, true) : 'model-default';
     const userConfirmed = item.reviewStatus === 'confirmed' && confirmation === 'user-confirmed';
     const targetEvidenceRefs = Array.isArray(item.targetEvidenceRefs) ? item.targetEvidenceRefs.slice(-8).flatMap((ref: any) => {
       if (!ref || typeof ref !== 'object' || Array.isArray(ref)) return [];
@@ -227,7 +227,7 @@ export function sanitizeProjectLiteraryMemory(input: unknown): Record<string, an
       subject, predicate, object, evidence: text(item.evidence, 180),
       ...(evidenceRefs.length ? { evidenceRefs } : {}),
       reviewStatus: item.reviewStatus === 'rejected' ? 'rejected' : 'confirmed',
-      confirmationSource: item.reviewStatus === 'rejected' ? undefined : item.confirmationSource ? confirmationSource(item.confirmationSource, true) : 'model-default',
+      confirmationSource: item.reviewStatus === 'rejected' ? undefined : item.reviewStatus === 'confirmed' && item.confirmationSource ? confirmationSource(item.confirmationSource, true) : 'model-default',
     }];
   }) : [];
   const style = raw.styleGuide && typeof raw.styleGuide === 'object' && !Array.isArray(raw.styleGuide) ? raw.styleGuide : {};
@@ -289,7 +289,7 @@ export function sanitizeProjectLiteraryMemory(input: unknown): Record<string, an
       ...(text(item.role, 360) ? { role: text(item.role, 360) } : {}),
       ...(list(item.traits, 10, 160).length ? { traits: list(item.traits, 10, 160) } : {}),
       status: profileStatus,
-      ...(profileStatus === 'confirmed' ? { confirmationSource: item.confirmationSource ? confirmationSource(item.confirmationSource, true) : 'model-default' } : {}),
+      ...(profileStatus === 'confirmed' ? { confirmationSource: item.status === 'confirmed' && item.confirmationSource ? confirmationSource(item.confirmationSource, true) : 'model-default' } : {}),
       useForTranslation: item.useForTranslation !== false && profileStatus !== 'rejected',
       confidence: profileConfidenceSource ? profileConfidence : null,
       ...(profileConfidenceSource ? { confidenceSource: profileConfidenceSource } : {}),
@@ -318,7 +318,7 @@ export function sanitizeProjectLiteraryMemory(input: unknown): Record<string, an
     const ruleStatus = item.status === 'rejected' ? 'rejected' : 'confirmed';
     return [{
       speakerId, addresseeId, status: ruleStatus,
-      ...(ruleStatus === 'confirmed' ? { confirmationSource: item.confirmationSource ? confirmationSource(item.confirmationSource, true) : 'model-default' } : {}),
+      ...(ruleStatus === 'confirmed' ? { confirmationSource: item.status === 'confirmed' && item.confirmationSource ? confirmationSource(item.confirmationSource, true) : 'model-default' } : {}),
       baselineRegister: text(item.baselineRegister, 180), addressTerms: list(item.addressTerms, 8, 100),
       directness: text(item.directness, 180), emotionalDistance: text(item.emotionalDistance, 180),
       sceneDependentShift: text(item.sceneDependentShift, 180), evidenceSegmentIds,
@@ -338,7 +338,7 @@ export function sanitizeProjectLiteraryMemory(input: unknown): Record<string, an
       anchorId: text(item.anchorId, 120) || 'anchor_' + safeHash(segmentId + source).slice(0, 12),
       speakerId, addresseeId: text(item.addresseeId, 100), source, target, chapter: text(item.chapter, 120), segmentId,
       status: claimedStatus,
-      ...(claimedStatus === 'approved' ? { confirmationSource: item.confirmationSource ? confirmationSource(item.confirmationSource, true) : 'model-default' } : {}),
+      ...(claimedStatus === 'approved' ? { confirmationSource: item.status === 'approved' && item.confirmationSource ? confirmationSource(item.confirmationSource, true) : 'model-default' } : {}),
       approvedBy: status(item.approvedBy, ['user','reviewer','manual-edit','model-default'], 'model-default'),
       ...(attributionEvidence ? { attributionEvidence } : {}),
       ...(Number.isFinite(attributionConfidence) ? { attributionConfidence: Math.max(0, Math.min(1, attributionConfidence)) } : {}),
@@ -423,7 +423,7 @@ export function sanitizeProjectLiteraryMemory(input: unknown): Record<string, an
     version: 1,
     profileVersion: Math.max(1, Math.min(1000, Number(rawEditorial.profileVersion) || 1)) + (pendingEditorialUpdate && editorialStatus !== 'rejected' ? 1 : 0),
     status: editorialStatus,
-    ...(editorialStatus === 'confirmed' ? { confirmationSource: rawEditorial.confirmationSource || 'model-default' } : {}),
+    ...(editorialStatus === 'confirmed' ? { confirmationSource: rawEditorial.status === 'confirmed' && rawEditorial.confirmationSource || 'model-default' } : {}),
     sourceRevisionId: pendingEditorialUpdate?.sourceRevisionId || text(rawEditorial.sourceRevisionId, 200),
     analysisVersion: pendingEditorialUpdate?.analysisVersion || text(rawEditorial.analysisVersion, 120),
     sampleFingerprint: pendingEditorialUpdate?.sampleFingerprint || text(rawEditorial.sampleFingerprint, 128),
