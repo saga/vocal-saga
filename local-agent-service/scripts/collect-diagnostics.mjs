@@ -243,9 +243,9 @@ function summarizeDocument(project, db) {
   const rawRunSegments = asArray(rows(db,
     'SELECT run_id, segment_id, status, attempts, error, updated_at FROM run_segments ORDER BY updated_at'));
   const rawResults = asArray(rows(db,
-    'SELECT * FROM translation_results ORDER BY created_at'));
+    'SELECT run_id, origin, provider, model, length(translation_text) AS textChars, accepted FROM translation_results ORDER BY created_at'));
   const rawFindings = asArray(rows(db,
-    'SELECT * FROM review_findings ORDER BY finding_id'));
+    'SELECT finding_id, category, priority, status FROM review_findings ORDER BY finding_id'));
   const rawBriefs = asArray(rows(db,
     'SELECT run_id, batch_index, source_revision_id, memory_revision_id, brief_hash, ' +
     'length(brief_json) AS briefChars, length(source_segment_ids_json) AS segmentIdsJsonChars, created_at ' +
@@ -315,7 +315,7 @@ function summarizeDocument(project, db) {
     group.byOrigin[origin] = (group.byOrigin[origin] || 0) + 1;
     const providerModel = String(result.provider || 'unknown') + '/' + String(result.model || 'unknown');
     group.byProviderModel[providerModel] = (group.byProviderModel[providerModel] || 0) + 1;
-    group.textChars += String(result.translation_text || '').length;
+    group.textChars += Number(result.textChars || 0);
     if (result.accepted) group.acceptedRows++;
   }
   const reviewFindingCategories = groupCounts(rawFindings, (finding) =>
@@ -588,7 +588,7 @@ async function runCodeBuddyAnalysis(summary, logSummary) {
       metrics: doc.metrics, signals: doc.analysisSignals || null,
     })),
     instructions: [
-      '只分析这两个最新文档项目及附带的有限服务日志，不要扩展到其他项目。',
+      '只分析这两个最新文档项目，以及有限服务日志摘录的状态/行数元信息；实际日志行单独保存在 bundle 中，本次不会传给分析模型。不要扩展到其他项目。',
       '重点检查运行状态、Run scope、批次状态、Reviewer、失败/重试/回退、服务重启与自动返工范围。',
       '区分数据库事实、推测和缺失观测。特别检查失败 Run 是否仍有 candidate/pending、终态事件计数是否与持久化行一致。',
       '检查部分 scope 的 Run 是否触发全书缺译扫描与自动返工，并判断是否造成范围扩张。',
