@@ -2,6 +2,7 @@ import type { Request, Response } from 'express';
 import { timingSafeEqual } from 'node:crypto';
 import { LOCAL_TOKEN } from './config.ts';
 
+/** 是否回环主机名。`[::1]` 是带方括号的 IPv6 写法，浏览器发出的 Host 头可能是这种形态。 */
 export function isLoopbackHost(host: string): boolean {
   return host === '127.0.0.1' || host === 'localhost' || host === '::1' || host === '[::1]';
 }
@@ -32,6 +33,7 @@ export function assertExposureIsSafe(allowedHosts: readonly string[], token: str
   }
 }
 
+/** 统一 JSON 响应：强制 no-store，避免扩展或代理缓存接口结果。 */
 export function sendJson(res: Response, status: number, body: unknown): void {
   res.status(status).set('Cache-Control', 'no-store').json(body);
 }
@@ -60,6 +62,10 @@ export function sendApiError(
   sendJson(res, status, { ...details, error: legacyError, message, code });
 }
 
+/**
+ * 处理浏览器扩展的跨域请求。返回 true 表示已放行，false 表示来源不在白名单
+ * （调用方据此回 403，不在这里直接结束响应）。
+ */
 export function addCors(req: Request, res: Response): boolean {
   // 就算是回环地址上的服务，浏览器里打开的网页也可能打到它。
   // 只放行浏览器扩展的来源；没有 Origin 头的命令行客户端允许通过。

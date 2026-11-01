@@ -38,22 +38,26 @@ export function appendLogToFile(line: string): void {
   }
 }
 
+/** 统一行格式 `[作用域 时:分:秒] 消息`，终端与日志文件共用同一套，便于按时间对齐。 */
 export function formatLogLine(scope: string, message: string): string {
   return '[' + scope + ' ' + logStamp() + '] ' + message;
 }
 
+/** 普通信息：同时写终端 stdout 与日志文件。 */
 export function logInfo(scope: string, message: string): void {
   const line = formatLogLine(scope, message);
   console.info(line);
   appendLogToFile(line);
 }
 
+/** 可继续执行的异常：写 stderr 并落盘，不会中断流程。 */
 export function logWarn(scope: string, message: string): void {
   const line = formatLogLine(scope, message);
   console.warn(line);
   appendLogToFile(line);
 }
 
+/** 导致当前操作失败的异常：写 stderr 并落盘；调用方负责决定是否继续。 */
 export function logError(scope: string, message: string): void {
   const line = formatLogLine(scope, message);
   console.error(line);
@@ -105,6 +109,7 @@ const POLLING_PATH_PATTERNS: readonly RegExp[] = [
   /\/projects\/[^/]+\/segments$/,
 ];
 
+/** 判定是否属于可静默的轮询请求：只看 GET，路径匹配见上方模式表。 */
 export function isPollingRequest(method: string, path: string): boolean {
   return method === 'GET' && POLLING_PATH_PATTERNS.some((pattern) => pattern.test(path));
 }
@@ -121,10 +126,12 @@ export interface PollingRollup {
   since: number;
 }
 
+/** 新建一个空的滚动窗口；`since` 为 0 表示窗口尚未开始计时。 */
 export function createPollingRollup(): PollingRollup {
   return { counts: new Map(), maxDurationMs: 0, since: 0 };
 }
 
+/** 记一次被静默的请求：按折叠后的路径累加次数，同时更新窗口内最慢耗时。 */
 export function recordPollingRequest(rollup: PollingRollup, path: string, durationMs: number, now = Date.now()): void {
   if (!rollup.since) rollup.since = now;
   const key = collapsePath(path);
@@ -132,6 +139,7 @@ export function recordPollingRequest(rollup: PollingRollup, path: string, durati
   if (durationMs > rollup.maxDurationMs) rollup.maxDurationMs = durationMs;
 }
 
+/** 打印汇总后清空窗口；下一批轮询重新从 `since = 0` 开始。 */
 export function resetPollingRollup(rollup: PollingRollup): void {
   rollup.counts.clear();
   rollup.maxDurationMs = 0;

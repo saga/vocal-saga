@@ -9,17 +9,23 @@
  */
 import { formatLogLine } from '../log.ts';
 
+/** 单条工作流日志的级别；不填时由 formatter 按事件类型给默认值。 */
 type LogLevel = 'info' | 'warn' | 'error';
+/** 工作流事件的原始载荷，字段随事件类型而定，由对应 formatter 解读。 */
 type EventPayload = Record<string, any>;
+/** formatter 的产出：一行可读文本 + 级别。 */
 type LogEntry = { message: string; level?: LogLevel };
+/** 事件 → 日志行的转换器。`ctx.batch` 是当前批次标识，用于把同一批的事件串起来。 */
 type EventFormatter = (payload: EventPayload, ctx: { batch: string }) => LogEntry;
 
+/** 格式化耗时：超过一分钟改用 `XmYs`，否则用秒并保留一位小数；非法值返回空串。 */
 function traceDuration(value: unknown): string {
   const ms = Number(value);
   if (!Number.isFinite(ms) || ms < 0) return '';
   return ms >= 60000 ? Math.floor(ms / 60000) + 'm' + Math.round((ms % 60000) / 1000) + 's' : (ms / 1000).toFixed(1) + 's';
 }
 
+/** 阶段标识转中文名。未知阶段原样返回，保证新增阶段时日志仍有信息而不是空白。 */
 function traceStage(value: unknown): string {
   switch (String(value || '')) {
     case 'translate': return '初译';

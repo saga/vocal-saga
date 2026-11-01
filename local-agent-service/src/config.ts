@@ -10,12 +10,18 @@ import { fileURLToPath } from 'node:url';
 import { readModelCatalog, resolveWorkbuddyModel } from './agents/modelCatalog.ts';
 import { logWarn } from './log.ts';
 
+/** 监听地址与端口。默认只绑回环；改成 0.0.0.0 等于对外暴露，必须同时配 LOCAL_AGENT_TOKEN。 */
 export const HOST = (process.env.LOCAL_AGENT_HOST || '127.0.0.1').trim();
 export const PORT = Number.parseInt(process.env.LOCAL_AGENT_PORT || '8789', 10);
+/**
+ * 数据根目录，以及由它派生的三个位置：SQLite 库、Agent 工作目录、导入文档副本。
+ * 每一项都能用对应环境变量单独覆盖；都不覆盖时全部落在 DATA_DIR 下，卸载只需删一个目录。
+ */
 export const DATA_DIR = path.resolve(process.env.LOCAL_AGENT_DATA_DIR || path.join(homedir(), '.vocal-saga-local-agent'));
 export const DATABASE_PATH = path.resolve(process.env.LOCAL_AGENT_DATABASE || path.join(DATA_DIR, 'local-agent.sqlite'));
 export const WORK_DIR = path.resolve(process.env.LOCAL_AGENT_WORKDIR || path.join(DATA_DIR, 'workspace'));
 const SERVICE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+/** 启动时要加载的 .env 文件位置，默认在服务目录下；由 start.ts 先于本模块的动态导入执行。 */
 export const ENV_FILE_PATH = path.resolve(process.env.LOCAL_AGENT_ENV_FILE?.trim() || path.join(SERVICE_DIR, '.env'));
 export const DOCUMENTS_DIR = path.join(DATA_DIR, 'documents');
 
@@ -34,16 +40,19 @@ export const ALLOWED_HOSTS = (process.env.LOCAL_AGENT_ALLOWED_HOSTS || '')
   .map((item) => item.trim().toLowerCase())
   .filter(Boolean);
 
+/** 默认提供方。决定 Agent 走哪条 CLI 通道，可用 LOCAL_AGENT_PROVIDER 覆盖。 */
 export const DEFAULT_PROVIDER = (process.env.LOCAL_AGENT_PROVIDER || 'workbuddy').toLowerCase();
 // 显式配置优先；没配（或写成 auto）时从 CodeBuddy 模型目录里挑「确认免费」的模型。
 // 目录读不到或没有任何 credits=0 的模型就留空，交给 CLI 运行时默认模型 —— 不猜、不硬编码。
 const explicitWorkbuddyModel = (process.env.LOCAL_WORKBUDDY_MODEL || process.env.WORKBUDDY_MODEL || process.env.CODEBUDDY_DEFAULT_MODEL || '').trim();
 const workbuddyCatalog = readModelCatalog({ projectRoot: WORK_DIR });
+/** 实际下发请求时使用的 workbuddy 模型；空串表示交给 CLI 运行时默认，不在这里猜。 */
 export const DEFAULT_WORKBUDDY_MODEL = resolveWorkbuddyModel(explicitWorkbuddyModel, workbuddyCatalog);
 /** 目录里 credits 明确为 0 的模型，启动日志用来说明「为什么没选上」以及可手动指定什么。 */
 export const WORKBUDDY_FREE_MODELS = workbuddyCatalog
   .filter((model) => model.credits === 0)
   .map((model) => model.id);
+/** opencode 通道的模型；同样允许留空交给运行时默认。 */
 export const DEFAULT_OPENCODE_MODEL = (process.env.LOCAL_OPENCODE_MODEL || process.env.OPENCODE_MODEL || '').trim();
 
 /** 解析可选整数配置，别让 .env 里的畸形值污染运行时的定时器或 SQL。 */
@@ -58,6 +67,7 @@ export function positiveIntegerEnv(name: string, fallback: number, minimum = 1):
   return Math.max(minimum, parsed);
 }
 
+/** 普通翻译与接口调用的超时，默认 180s、下限 10s。审校与全书分析各有独立上限。 */
 export const REQUEST_TIMEOUT_MS = positiveIntegerEnv('LOCAL_AGENT_TIMEOUT_MS', 180_000, 10_000);
 // 审校调用可以开高推理强度，而且要处理更长的多片段提示词。
 // 它们的截止时间要与普通翻译、接口调用分开。
@@ -69,13 +79,20 @@ export const ANALYSIS_TIMEOUT_MS = positiveIntegerEnv('LOCAL_AGENT_ANALYSIS_TIME
 // 长驻会话池：大小对齐扩展侧扇出；单会话最多复用轮数（防历史变长导致变慢变贵）。
 // 复用轮数只是上限；实际上下文长度、时延与成本取决于 Prompt、输入长度和运行时。
 export const WORKBUDDY_POOL_SIZE = positiveIntegerEnv('LOCAL_AGENT_POOL_SIZE', 6, 1);
+/** 单个会话最多复用几轮；超过就换新会话，避免历史越滚越长导致变慢变贵。 */
 export const WORKBUDDY_POOL_MAX_USES = positiveIntegerEnv('LOCAL_AGENT_POOL_MAX_USES', 10, 1);
+/** 普通接口的请求体上限。文档导入单独放宽，见下方 MAX_DOCUMENT_BODY_BYTES。 */
 export const MAX_BODY_BYTES = 24 * 1024 * 1024;
 // 文档项目创建会把整本书的片段正文放进一个 JSON 请求。20 MiB 源文件解析出的正文按 UTF-8
 // 最坏情况（中文 3 字节/字符 + JSON 转义）约为源文件的三倍，远超普通接口的 24 MiB。
 // 只对 /api/documents 这一族路由放宽，其他接口仍受 MAX_BODY_BYTES 约束。
 export const MAX_DOCUMENT_BODY_BYTES = 100 * 1024 * 1024;
+/** 请求历史表保留的最大行数，超出后清理最旧的记录。 */
 export const MAX_HISTORY_ROWS = positiveIntegerEnv('LOCAL_AGENT_MAX_HISTORY', 500, 50);
+/**
+ * 是否把请求/响应正文完整存入历史表。置 false 时只留元数据（模型、字符数、耗时），
+ * 用于不希望原文落盘的场景；代价是无法再从历史里回看具体内容。
+ */
 export const STORE_CONTENT = (process.env.LOCAL_AGENT_STORE_CONTENT || 'true').toLowerCase() !== 'false';
 // 本地终端日志只预览失败的 JSON 响应；设为 false 可关掉文本预览。
 export const LOG_RESPONSE_PREVIEW = (process.env.LOCAL_AGENT_LOG_RESPONSE_PREVIEW || 'true').toLowerCase() !== 'false';

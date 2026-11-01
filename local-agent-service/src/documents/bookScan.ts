@@ -17,6 +17,10 @@ import { LANGUAGE_ALIASES, LANGUAGE_DETECTION_WORDS } from './bookScanLanguageLe
  * 每个候选都保留稳定的源文片段 ID 与 UTF-16 字符偏移。
  */
 
+/**
+ * 扫描输入的单个片段。`ordinal` 决定排序，也是「早/中/晚」三分区的依据（按首尾 ordinal 归一化位置判断）；
+ * `contextPath` 是归章依据，章节 key 直接取自它。
+ */
 export interface BookScanSegment {
   id: string;
   ordinal: number;
@@ -24,38 +28,60 @@ export interface BookScanSegment {
   kind?: string;
   contextPath?: string;
 }
+/** 一章的锚点信息。`key` 来自 contextPath；三个 segmentId 是首/中/尾代表段，供抽样阶段直接取用。 */
 export interface BookScanChapter {
   key: string; title: string; order: number; segmentCount: number; charCount: number;
   dialogueSegmentCount: number; firstSegmentId: string; middleSegmentId: string; lastSegmentId: string;
 }
+/**
+ * 一次实体提及。`start`/`end` 是相对片段原文的 UTF-16 偏移；`kind` 记录命中哪条人名正则
+ * （单名 / 复合名 / 带称谓），用于回溯判定来源；`dialogue` 表示该片段本身是否被判为对白。
+ */
 export interface BookEntityMention {
   segmentId: string; ordinal: number; chapterKey: string; surface: string; normalized: string;
   start: number; end: number; kind: 'single-name' | 'compound-name' | 'titled-name'; dialogue: boolean;
 }
+/** 切句/切引语的最小单元，供重复表达检测按单元计数，避免整段文本参与比较。 */
 export interface BookTextUnit {
   segmentId: string; ordinal: number; chapterKey: string; unitType: 'sentence' | 'quotation';
   normalized: string; start: number; end: number;
 }
+/**
+ * 逐段对白判定结果。`signals` 是命中的信号种类，`score` 是对白密度分而非概率：
+ * `min(10, 引号数) + 引语动词 ? 2 + 破折号 ? 2`，只用于同章内排序挑样本。
+ */
 export interface BookDialogueIndex {
   segmentId: string; ordinal: number; chapterKey: string; isDialogue: boolean; quoteCount: number;
   signals: Array<'quotation' | 'speech-verb' | 'em-dash'>;
   quoteSpans: Array<{ start: number; end: number }>; score: number;
 }
+/** 一次度量提及。`unit` 是归一后的单位名，`unitFamily` 是量纲（长度/时长/重量/体积/角度/计数）。 */
 export interface BookQuantityMention {
   segmentId: string; ordinal: number; chapterKey: string; surface: string; normalized: string;
   start: number; end: number; unit: string; unitFamily: string;
 }
+/**
+ * 人名候选。`score` 只是覆盖率排序分，不是「是不是人名」的置信度：
+ * `log2(提及数+1) + 章节数×1.8 + 对白段数×1.4 + 覆盖区数×2.5 + 词数加成`。
+ * `regionCount` 为早/中/晚中出现的区间数；`early/middle/lateSegmentId` 是各区间内最接近
+ * 目标位置的提及（优先取对白段），供抽样直接定位。
+ */
 export interface BookNameCandidate {
   name: string; normalized: string; tokenCount: number; mentions: number; chapterCount: number;
   dialogueSegmentCount: number; regionCount: number; score: number; chapterKeys: string[];
   segmentIds: string[]; dialogueSegmentIds: string[];
   earlySegmentId: string | null; middleSegmentId: string | null; lateSegmentId: string | null;
 }
+/** 跨段复现的句子或引语。`segmentIds` 有上限，被截断时 `segmentIdsTruncated` 置真。 */
 export interface RepeatedPhraseCandidate {
   text: string; normalized: string; unitType: 'sentence' | 'quotation'; count: number;
   firstSegmentId: string | null; lastSegmentId: string | null; segmentIds: string[];
   segmentIdsTruncated: boolean; chapterKeys: string[];
 }
+/**
+ * 全书索引结果。`entityMentions` / `textUnits` / `quantityMentions` 三个明细列表各有上限，
+ * 超限时停止收集并把对应的 `xxxTruncated` 置真——截断只影响明细，不影响上方各类候选的统计量。
+ */
 export interface BookScanResult {
   segmentCount: number; charCount: number; chapterCount: number; dialogueSegmentCount: number;
   chapters: BookScanChapter[]; nameCandidates: BookNameCandidate[]; repeatedPhrases: RepeatedPhraseCandidate[];
@@ -67,15 +93,21 @@ export interface BookScanResult {
     quantityMentionCount: number; quantityMentionLimit: number; quantityMentionsTruncated: boolean;
   };
 }
+/** 选中送模型的一个样本。`reasons` 是它被选中的理由标签（形如 `entity-early:名字`），便于排查抽样偏差。 */
 export interface PlannedBookSample { segment: BookScanSegment; reasons: string[]; }
+/** 抽样计划。`diagnostics.selectedReasonCounts` 按理由前缀统计命中数，用来看各类覆盖是否失衡。 */
 export interface BookSamplePlan {
   samples: PlannedBookSample[]; scan: BookScanResult;
   diagnostics: { sampleLimit: number; selectedSampleCount: number; targetedNameCount: number; selectedReasonCounts: Record<string, number> };
 }
 
+/** 单次模型请求携带的样本上限。再多会撑爆上下文，收益也很小。 */
 const MAX_SAMPLES = 72;
+/** 抽样阶段最多为几个人名候选安排定位样本，避免头部候选吃光样本预算。 */
 const MAX_NAME_CANDIDATES_FOR_SAMPLING = 18;
+/** 单个样本送入模型的字符上限，超出部分直接截断。 */
 const SAMPLE_TEXT_LIMIT = 850;
+/** 三类明细索引的上限：只约束明细列表长度，候选统计不受影响。 */
 const MAX_ENTITY_MENTIONS = 100_000;
 const MAX_TEXT_UNITS = 160_000;
 const MAX_QUANTITY_MENTIONS = 40_000;

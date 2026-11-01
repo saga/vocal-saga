@@ -15,6 +15,7 @@ import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
 
+/** 模型目录里的一条记录。未识别的字段不在此声明，避免把上游内部结构当成稳定契约。 */
 export interface CatalogModel {
   id: string;
   /** 每单位用量消耗的 credits；0 表示免费，无法解析时为 null。 */
@@ -25,6 +26,7 @@ export interface CatalogModel {
   contextWindow?: { supportedLengths?: unknown; defaultLength?: unknown };
 }
 
+/** 喂给 CLI 的上下文窗口档位选项，字段名与取值形态需要与 CLI 的 schema 完全一致。 */
 export interface CodeBuddyContextWindowOption {
   type: 'select';
   id: 'context_window';
@@ -34,6 +36,7 @@ export interface CodeBuddyContextWindowOption {
   options: Array<{ value: string; name: string }>;
 }
 
+/** 把数字或纯数字字符串收敛成正安全整数；其余一律返回 undefined，由调用方决定回落策略。 */
 function positiveInteger(value: unknown): number | undefined {
   const parsed = typeof value === 'number'
     ? value
@@ -208,6 +211,7 @@ function decodeProductConfig(text: string): CatalogModel[] {
   }
 }
 
+/** 从 `ACC_PRODUCT_CONFIG_PATH` 指向的产品配置文件读模型目录；未配置或读取失败都返回空表。 */
 function readFromEnvPath(): CatalogModel[] {
   const file = (process.env.ACC_PRODUCT_CONFIG_PATH || '').trim();
   if (!file) return [];
@@ -218,6 +222,7 @@ function readFromEnvPath(): CatalogModel[] {
   }
 }
 
+/** 扫描 CodeBuddy 本地 storage 目录，按 mtime 从新到旧逐个尝试解析出模型目录。 */
 function readFromLocalStorage(dirOverride?: string): CatalogModel[] {
   const dir = dirOverride || path.join(os.homedir(), '.codebuddy', 'local_storage');
   let names: string[];
@@ -268,6 +273,7 @@ function readModelsJson(filePath: string | undefined): CatalogModel[] {
   }
 }
 
+/** 合并两份目录：按 id 覆盖，overrides 优先，但 credits 允许从 base 继承（见下方注释）。 */
 function mergeCatalog(base: readonly CatalogModel[], overrides: readonly CatalogModel[]): CatalogModel[] {
   const merged = new Map<string, CatalogModel>(base.map((model): [string, CatalogModel] => [model.id, model]));
   for (const override of overrides) {

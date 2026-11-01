@@ -10,9 +10,15 @@ export type CodeBuddyTaskKey =
   | 'literaryAnalysis'
   | 'contextGraph';
 
+/**
+ * 思考模式：`disabled` 完全关闭；`adaptive` 由运行时自行决定是否思考、不看预算；
+ * `enabled` 强制开启并按 `thinkingBudgetTokens` 限预算。
+ */
 export type CodeBuddyThinkingMode = 'disabled' | 'adaptive' | 'enabled';
+/** 推理强度档位，粗略对应「想多深」，与思考模式相互独立。 */
 export type CodeBuddyEffort = 'low' | 'medium' | 'high' | 'xhigh';
 
+/** 一个任务的执行档案：模型、思考设置与提示词覆盖。字段语义见行内注释。 */
 export interface CodeBuddyTaskProfile {
   /** 可选：为该任务覆盖 SDK 模型 ID。 */
   model: string;
@@ -30,6 +36,7 @@ export interface CodeBuddyTaskProfile {
   userPromptTemplate: string;
 }
 
+/** 按任务键索引的完整档案表；每个任务都必须有值，缺项由默认表补齐。 */
 export type CodeBuddyTaskProfiles = Record<CodeBuddyTaskKey, CodeBuddyTaskProfile>;
 
 const common = {
@@ -40,6 +47,12 @@ const common = {
   userPromptTemplate: '',
 };
 
+/**
+ * 各任务的默认档案。取舍原则是「初译要快，审校与分析要好」：
+ * 初译关思考、低强度（体量大，单段质量靠上下文与术语约束兜底）；
+ * 准确性审校中等、文风审校高（需要判断语气与人物一致性）；
+ * 文学分析与全书预处理改用长上下文模型并给高强度。
+ */
 export const DEFAULT_CODEBUDDY_TASK_PROFILES: CodeBuddyTaskProfiles = {
   translation: {
     ...common,
@@ -81,6 +94,10 @@ export const DEFAULT_CODEBUDDY_TASK_PROFILES: CodeBuddyTaskProfiles = {
 const validThinkingModes = new Set<CodeBuddyThinkingMode>(['disabled', 'adaptive', 'enabled']);
 const validEfforts = new Set<CodeBuddyEffort>(['low', 'medium', 'high', 'xhigh']);
 
+/**
+ * 归一化用户填写的可选文本字段：非字符串按空处理，超长截断，
+ * 并把 `auto` 视同「未填写」——界面上选「自动」时不应把字面量 auto 当模型名发下去。
+ */
 function text(value: unknown, maxLength: number): string {
   if (typeof value !== 'string') return '';
   const normalized = value.trim().slice(0, maxLength);

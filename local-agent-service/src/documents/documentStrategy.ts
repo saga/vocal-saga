@@ -4,14 +4,39 @@
  * 从 projectStore 抽出：这些是纯数据契约与入参校验，不接触数据库，
  * 单独成文件后存储层只负责读写，类型定义可以被路由/Agent/测试直接复用。
  */
+/** 支持的源文格式。epub/docx/html 走结构化解析，pdf/txt/md 走纯文本切分。 */
 export type DocumentFormat = 'epub' | 'pdf' | 'txt' | 'md' | 'html' | 'docx' | 'srt' | 'vtt' | 'json';
 
+/**
+ * 单份源文的体积上限，由 `LOCAL_AGENT_MAX_DOCUMENT_SOURCE_MB` 配置（默认 512 MB）。
+ * 低于 20 MB 的配置视为误填，直接回落默认值——上限给小了会让正常书稿无法导入。
+ */
 const configuredSourceLimitMb = Number.parseInt(process.env.LOCAL_AGENT_MAX_DOCUMENT_SOURCE_MB || '512', 10);
 export const MAX_DOCUMENT_SOURCE_BYTES =
   (Number.isFinite(configuredSourceLimitMb) && configuredSourceLimitMb >= 20 ? configuredSourceLimitMb : 512) * 1024 * 1024;
 
+/**
+ * 一次翻译运行的状态。
+ *
+ * - `queued` / `running`：已排队 / 正在跑
+ * - `paused`：被中断（典型是服务重启），可续跑；重启收敛时若判定无法续跑会改判 failed
+ * - `awaiting_acceptance`：已产出候选译文，等人工采纳
+ * - `partial`：跑完了但仍有片段未完成，已产出的译文保留
+ * - `completed` / `failed` / `cancelled`：终态
+ *
+ * 前五个属于「未终结」，活跃运行查询与重启收敛都以这个集合为准。
+ */
 export type RunStatus = 'queued' | 'running' | 'paused' | 'awaiting_acceptance' | 'partial' | 'completed' | 'failed' | 'cancelled';
 
+/**
+ * 一个源文片段。
+ *
+ * `id` 在项目内唯一且必须稳定——候选、审校发现、记忆引用都靠它回指原文；
+ * `text` 是参与翻译的正文，`kind` 默认 paragraph；
+ * `contextPath` 是章节路径，归章与「前文上下文」都依据它；
+ * `page` / `level` / `marker` / `start` / `end` / `path` 是版式还原用的可选元信息，
+ * 缺失时降级为纯文本输出。
+ */
 export interface ProjectSegment {
   id: string;
   text: string;
@@ -26,10 +51,13 @@ export interface ProjectSegment {
   end?: string;
 }
 
+/** 审校强度档位，语义见 `DocumentTranslationStrategy.reviewStrength`。 */
 export type DocumentReviewStrength = 'strong' | 'medium' | 'weak' | 'off';
 
+/** 全部合法档位，供入参白名单校验使用；判定只做成员检查，不依赖数组顺序。 */
 export const DOCUMENT_REVIEW_STRENGTHS: readonly DocumentReviewStrength[] = ['strong', 'medium', 'weak', 'off'];
 
+/** 把外部传入的任意值收敛到合法档位；无法识别时回落到默认策略的档位，不抛错。 */
 export function normalizeDocumentReviewStrength(input: unknown): DocumentReviewStrength {
   const value = typeof input === 'string' ? input.trim().toLowerCase() : '';
   return (DOCUMENT_REVIEW_STRENGTHS as readonly string[]).includes(value)
@@ -37,6 +65,10 @@ export function normalizeDocumentReviewStrength(input: unknown): DocumentReviewS
     : DEFAULT_DOCUMENT_TRANSLATION_STRATEGY.reviewStrength;
 }
 
+/**
+ * 一次翻译运行的策略快照，随运行落库，之后改默认值不影响已创建的运行。
+ * 各字段的具体语义见下方行内注释。
+ */
 export interface DocumentTranslationStrategy {
   /** 单个模型请求允许的最大源文片段数。 */
   maxBatchSegments: number;
@@ -62,6 +94,10 @@ export interface DocumentTranslationStrategy {
   maxModelAttempts: number;
 }
 
+/**
+ * 默认策略：偏向「批次小、审校中等」——单批 16 段 / 8000 字符是上下文与召回折中的经验值，
+ * 审校默认 medium（一次合并调用）而非 strong（两次调用），因为 strong 会让实际耗时翻倍。
+ */
 export const DEFAULT_DOCUMENT_TRANSLATION_STRATEGY: DocumentTranslationStrategy = {
   maxBatchSegments: 16,
   maxBatchSourceChars: 8000,

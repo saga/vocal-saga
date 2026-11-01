@@ -5,6 +5,7 @@ import {
   DATA_DIR, DATABASE_PATH, WORK_DIR, MAX_HISTORY_ROWS, STORE_CONTENT,
 } from './config.ts';
 
+/** 通用接口历史库的连接。`initDb` 之前为 undefined；依赖它的函数都假设启动阶段已初始化。 */
 export let db: DatabaseSync | undefined;
 
 /**

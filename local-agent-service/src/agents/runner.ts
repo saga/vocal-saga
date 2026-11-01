@@ -5,12 +5,18 @@ import { logError, logInfo } from '../log.ts';
 import { formatTurnUsageLog, type TurnUsage } from './usage.ts';
 import { applyCodeBuddyTaskPrompt, type CodeBuddyTaskProfile } from './taskProfiles.ts';
 
+/** 一次调用的目标通道。`model` 为空串表示不显式指定，交给 CLI 运行时默认模型。 */
 type AgentSpec = { provider: string; model: string };
 
+/** 是否属于文档 / 上下文图工作流发起的调用。仅用于日志打标，不改变调用行为。 */
 function isWorkflowManaged(sessionScope?: string): boolean {
   return !!sessionScope && (sessionScope.startsWith('document:') || sessionScope.startsWith('context-graph:'));
 }
 
+/**
+ * 从 requestId 与 sessionScope 反推人可读的任务名，只服务于日志。
+ * 顺序敏感：`style-review` 必须先于通用 `-review-` 判定，否则会误标成准确性审校。
+ */
 function describeTask(requestId: string, sessionScope?: string): string {
   if (requestId.includes('style-review')) return '人物声音/文风审校';
   if (requestId.includes('-review-') || sessionScope?.includes(':review:')) return '准确性/术语审校';
@@ -38,6 +44,7 @@ function logModelStart(
     (isWorkflowManaged(sessionScope) ? ' · 工作流' : ''));
 }
 
+/** 把模型输出压成一行摘要：只报已知结果数组的长度，认不出的对象退回字段名列表。 */
 function compactOutputSummary(value: unknown): string {
   if (typeof value === 'string') return '文本 ' + value.length + ' 字符';
   if (Array.isArray(value)) return '数组 ' + value.length + ' 项';
@@ -50,6 +57,7 @@ function compactOutputSummary(value: unknown): string {
   return counts.length ? counts.join(' ') : 'JSON 字段 ' + Object.keys(row).slice(0, 8).join(', ');
 }
 
+/** 调用成功日志：任务名、耗时、输出摘要、token 用量。 */
 function logModelSuccess(
   agent: AgentSpec, output: unknown, requestId: string, sessionScope: string | undefined,
   startedAt: number, mode: string, usage: TurnUsage | null = null,
@@ -61,6 +69,7 @@ function logModelSuccess(
     (isWorkflowManaged(sessionScope) ? ' · 工作流' : ''));
 }
 
+/** 调用失败日志：与成功同一套字段，失败时附错误摘要；栈只在 debug 级别打出。 */
 function logModelFailure(
   agent: AgentSpec, error: unknown, requestId: string, sessionScope: string | undefined,
   startedAt: number, mode: string,
@@ -75,6 +84,7 @@ function logModelFailure(
   }
 }
 
+/** 一次模型调用的结果，`usage` 在 CLI 未回报用量时为 null。 */
 export interface AgentRunResult<T> {
   result: T;
   usage: TurnUsage | null;
