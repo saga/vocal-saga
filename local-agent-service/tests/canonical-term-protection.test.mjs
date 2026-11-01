@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 
 import {
   buildCanonicalTermProtections,
+  buildCanonicalMarkerReminder,
   buildUserPrompt,
   canonicalMarkerCountsMatch,
+  describeCanonicalMarkerMismatch,
   maskCanonicalTermText,
   restoreCanonicalTermMarkers,
 } from '../src/documents/translationAgent.ts';
@@ -80,4 +82,38 @@ test('equally authoritative conflicting targets remain unprotected for explicit 
   };
 
   assert.deepEqual(buildCanonicalTermProtections(items, graph), []);
+});
+
+test('marker mismatch reports expected vs actual counts so drop vs merge is distinguishable', () => {
+  const protections = buildCanonicalTermProtections(items, conflictingMappings);
+  const marker = protections[0].marker;
+  const masked = maskCanonicalTermText(items[0].text, protections);
+  assert.equal(canonicalMarkerCountsMatch(masked, masked, protections), true);
+  assert.deepEqual(describeCanonicalMarkerMismatch(masked, masked, protections), []);
+
+  // 模型把标记当普通词翻译掉了：expected=2 / actual=0
+  const dropped = describeCanonicalMarkerMismatch(masked, '矢部 lay in the hot bath. Later, 矢部 stirred.', protections);
+  assert.equal(dropped.length, 1);
+  assert.equal(dropped[0].expected, 2);
+  assert.equal(dropped[0].actual, 0);
+  assert.equal(dropped[0].sourceForm, 'Yabu');
+
+  // 重复出现的标记被合并成一次：expected=2 / actual=1，处置方式与上一种不同
+  const merged = describeCanonicalMarkerMismatch(masked, marker + ' lay in the hot bath. Later, 薮 stirred.', protections);
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].expected, 2);
+  assert.equal(merged[0].actual, 1);
+});
+
+test('marker reminder repeats the batch markers with their required occurrence counts', () => {
+  const protections = buildCanonicalTermProtections(items, conflictingMappings);
+  const masked = [maskCanonicalTermText(items[0].text, protections)];
+
+  const reminder = buildCanonicalMarkerReminder(masked, protections);
+  assert.match(reminder, /标记校验/);
+  assert.ok(reminder.includes(protections[0].marker + '×2'), '必须给出本批实际的标记与次数');
+
+  // 没有保护项、或本批压根没出现标记时不加噪音
+  assert.equal(buildCanonicalMarkerReminder(masked, []), '');
+  assert.equal(buildCanonicalMarkerReminder(['没有标记的文本'], protections), '');
 });

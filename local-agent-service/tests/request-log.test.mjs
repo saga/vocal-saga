@@ -20,10 +20,16 @@ test('treats run detail and event stream as polling', () => {
   assert.equal(isPollingRequest('GET', PROJECT + '/runs/85834967/events'), true);
 });
 
+test('treats the project segment list as polling', () => {
+  // 实测：run 期间扩展约每 21 秒拉一次 /segments，25 分钟 72 行，每小时约 170 行。
+  assert.equal(isPollingRequest('GET', PROJECT + '/segments'), true);
+  // 但 run 子资源不是轮询——单段译文读写要留在日志里。
+  assert.equal(isPollingRequest('GET', PROJECT + '/runs/85834967/segments'), false);
+});
+
 test('keeps writes and one-off reads in the log', () => {
   assert.equal(isPollingRequest('POST', PROJECT + '/context-graph/analyze'), false);
   assert.equal(isPollingRequest('POST', PROJECT + '/runs'), false);
-  assert.equal(isPollingRequest('GET', PROJECT + '/segments'), false);
   assert.equal(isPollingRequest('GET', PROJECT + '/literary-memory'), false);
   // 只按方法 + 路径判定：run 的子资源不是轮询（例如单段译文读写）。
   assert.equal(isPollingRequest('GET', PROJECT + '/runs/85834967/segments'), false);

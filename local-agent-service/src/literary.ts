@@ -425,8 +425,14 @@ export function buildLiteraryReviewPrompt(input: {
     'sourceExcerpt 必须是当前原文片段中的逐字连续引文，draftExcerpt 必须是本次传入初译中的逐字连续引文；两者缺失或不能核验时，该 finding 会被丢弃且不会触发自动修订。',
     '只返回严格 JSON：{ "results": [{ "id": "...", "finalTranslation": "...", "findings": [{ "category": "accuracy|terminology|style", "priority": "must_fix|optional", "dimension": "character_voice", "characterId": "...", "relatedCharacterId": "...", "evidenceSegmentIds": [], "sourceExcerpt": "...", "draftExcerpt": "...", "reason": "...", "suggestion": "..." }] }] }。',
   ].join('\n');
+  // 字段顺序 = 缓存前缀长度。稳定内容（目标语言、glossary、voiceContext、Context Graph）
+  // 放前面，每批必变的章节/brief 元数据/前文放后面，这样同一条 lane 上的后一次调用
+  // 能命中前一次写下的缓存前缀。顺序不能随便调：把 chapterTitle 放前面会让整段前缀作废。
   const prompt = [
     '目标语言：' + (body.target || 'zh'),
+    '共享书籍上下文中的 glossary（术语；受原文知识边界约束）：', JSON.stringify(translationBrief?.glossary ?? body.glossary ?? null),
+    '共享书籍上下文中的 voiceContext（只读参考）：', JSON.stringify(voiceContext),
+    '共享书籍上下文中的 Context Graph（只读、受原文知识边界约束）：', JSON.stringify(contextGraph),
     '章节：' + (typeof body.chapterTitle === 'string' ? body.chapterTitle : ''),
     'TranslationBrief 元数据（只用于来源/策略追溯）：', JSON.stringify(translationBrief ? {
       policyVersion: translationBrief.policyVersion,
@@ -438,9 +444,6 @@ export function buildLiteraryReviewPrompt(input: {
       chapterPath: translationBrief.chapterPath,
       knowledgeBoundaryOrdinal: translationBrief.contextGraph?.knowledgeBoundaryOrdinal ?? null,
     } : null),
-    '共享书籍上下文中的 glossary（术语；受原文知识边界约束）：', JSON.stringify(translationBrief?.glossary ?? body.glossary ?? null),
-    '共享书籍上下文中的 voiceContext（只读参考）：', JSON.stringify(voiceContext),
-    '共享书籍上下文中的 Context Graph（只读、受原文知识边界约束）：', JSON.stringify(contextGraph),
     '前文上下文（只用于消歧，不输出审校结果）：', JSON.stringify(precedingSegments),
     '待审校片段：', JSON.stringify(segments),
   ].join('\n\n');
@@ -628,7 +631,7 @@ export async function runLiteraryReview(body: any, requestId: string, sessionSco
   // 只打 token 数无法回答「为什么这一批要一分多钟」。
   if (modelRun.usage) {
     logInfo('literary-review', formatTurnUsageLog(modelRun.usage) +
-      ' · duration=' + (modelRun.usage.durationMs != null ? (modelRun.usage.durationMs / 1000).toFixed(1) + 's' : '未计量') +
+      ' · sdkLastTurn=' + (modelRun.usage.lastTurnDurationMs != null ? (modelRun.usage.lastTurnDurationMs / 1000).toFixed(1) + 's' : '未计量') +
       ' · turns=' + (modelRun.usage.numTurns ?? '未计量') +
       ' · model=' + reviewModel +
       ' · request=' + requestId.slice(0, 12));

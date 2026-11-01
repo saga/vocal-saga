@@ -492,6 +492,41 @@ test('both reviewer focuses consume the same bounded TranslationBrief glossary a
 });
 
 
+test('reviewer prompt keeps volatile fields behind the stable prefix so lanes can reuse cache', async () => {
+  const { buildLiteraryReviewPrompt } = await import('../src/literary.ts');
+  const translationBrief = {
+    policyVersion: 'translation-brief-v2-dynamic-context',
+    contextHash: 'brief-hash-123',
+    contextChars: 900,
+    sourceRevisionId: 'source-revision-1',
+    promptRevisionId: 'prompt-revision-1',
+    memoryRevisionId: 'memory-revision-1',
+    chapterPath: 'Chapter 2',
+    glossary: { document_terms: [{ source: 'Mara Voss', target: '玛拉·沃斯' }] },
+    precedingSegments: [{ id: 'prior-1', text: 'Mara Voss entered the archive.', contextPath: 'Chapter 1' }],
+    contextGraph: { policyVersion: 'context-graph-v3', knowledgeBoundaryOrdinal: 12 },
+    voiceContext: { policyVersion: 'character-voice-v4', characterVoices: [], relationshipVoiceRules: [], voiceAnchors: [] },
+  };
+  const built = buildLiteraryReviewPrompt({
+    body: { target: 'zh', chapterTitle: 'Chapter 2', translationBrief },
+    segments: [{ id: 'current-1', source: 'Mara Voss opened the ledger.', draft: '玛拉打开了账本。' }],
+    reviewFocus: 'accuracy',
+    translationBrief,
+    precedingSegments: translationBrief.precedingSegments,
+    voiceContext: translationBrief.voiceContext,
+    contextGraph: translationBrief.contextGraph,
+  });
+  // 实测审校的缓存命中只有 0–9.6%（翻译 45–61%）：章节标题排在第二位，
+  // 章节一变后面整段前缀就作废。稳定内容必须排在每批必变的内容之前。
+  const at = (needle) => built.prompt.indexOf(needle);
+  assert.ok(at('glossary') < at('章节：'), 'glossary 必须在章节之前');
+  assert.ok(at('voiceContext') < at('章节：'), 'voiceContext 必须在章节之前');
+  assert.ok(at('Context Graph') < at('章节：'), 'Context Graph 必须在章节之前');
+  assert.ok(at('章节：') < at('前文上下文'), '章节必须在每批必变的前文之前');
+  assert.ok(at('前文上下文') < at('待审校片段'), '待审校片段必须最后');
+});
+
+
 test('TranslationBrief diagnostic summary exposes the count fields expected by the Agent Trajectory UI', () => {
   const summary = summarizeTranslationBrief({
     version: 1,

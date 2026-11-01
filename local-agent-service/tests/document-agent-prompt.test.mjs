@@ -183,6 +183,14 @@ test('document Agent budgets use six sessions while reserving reviewer capacity 
   assert.deepEqual(resolveDocumentRunConcurrencyBudget(6, true, 6, 2), {
     poolSize: 6, translationConcurrency: 4, reviewConcurrency: 2, detachReviews: true,
   });
+  // 生产配置（.env）：pool=8、翻译上限 6、审校上限 2 → 6 翻译 + 2 审校，不留空槽。
+  // 若翻译上限仍是 4，pool 提到 8 只会白留两个槽位。
+  assert.deepEqual(resolveDocumentRunConcurrencyBudget(8, true, 6, 2), {
+    poolSize: 8, translationConcurrency: 6, reviewConcurrency: 2, detachReviews: true,
+  });
+  assert.deepEqual(resolveDocumentRunConcurrencyBudget(8, true, 4, 2), {
+    poolSize: 8, translationConcurrency: 4, reviewConcurrency: 2, detachReviews: true,
+  });
   assert.deepEqual(resolveDocumentRunConcurrencyBudget(6, false, 6, 2), {
     poolSize: 6, translationConcurrency: 6, reviewConcurrency: 0, detachReviews: false,
   });

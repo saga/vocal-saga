@@ -145,8 +145,12 @@ export function startLocalAgentServer() {
       + 's · Reviewer ' + (REVIEW_TIMEOUT_MS / 1000).toFixed(0)
       + 's · 全书预处理 ' + (ANALYSIS_TIMEOUT_MS / 1000).toFixed(0) + 's');
     // 仅默认 Provider 为 Workbuddy 时预热会话池，避免 OpenCode 模式启动无用 CLI。
-    // 预热只 boot 进程、不调用模型；失败时首单仍可懒创建。测试可设 LOCAL_AGENT_PREWARM=false 关闭。
-    if (DEFAULT_PROVIDER === 'workbuddy' && (process.env.LOCAL_AGENT_PREWARM || 'true').trim().toLowerCase() !== 'false') {
+    //
+    // 默认关闭：文档翻译/审校带 task profile，走 query() 而完全不进池（见 workbuddy.ts 的
+    // `if (taskProfile)` 分支），所以预热带给文档链路的收益是 0；它只对网页翻译的首次请求
+    // 有约 0.9s（实测 864–905ms/槽位）的冷启动收益，代价是常驻 N 个 codebuddy-headless 进程。
+    // 需要这点冷启动收益的机器可以设 LOCAL_AGENT_PREWARM=true 打开。
+    if (DEFAULT_PROVIDER === 'workbuddy' && (process.env.LOCAL_AGENT_PREWARM || 'false').trim().toLowerCase() === 'true') {
       void getTextPool().prewarm({ provider: 'workbuddy', model: DEFAULT_WORKBUDDY_MODEL })
         // 预热失败本身不影响首单（首单会懒创建），但终端要留下原因，
         // 否则「CLI 起不来」只能靠后面的调用失败去猜。

@@ -768,7 +768,7 @@ test('parseTurnUsage 解析 SDK result 的 usage 并拒绝无效计量', async (
   });
   assert.deepEqual(usage, {
     inputTokens: 120, outputTokens: 45, cacheReadTokens: 3000, cacheCreationTokens: 500,
-    totalCostUsd: null, durationMs: 3658, numTurns: 3,
+    totalCostUsd: null, lastTurnDurationMs: 3658, numTurns: 3,
   });
   // CodeBuddy 订阅 cost=0 → 不透出美元字段
   assert.equal(usage.totalCostUsd, null);
@@ -785,8 +785,8 @@ test('parseTurnUsage 解析 SDK result 的 usage 并拒绝无效计量', async (
 
 test('addTurnUsage 累加多轮 token 并合计轮数', async () => {
   const { addTurnUsage } = await import('../src/agents/usage.ts');
-  const a = { inputTokens: 100, outputTokens: 50, cacheReadTokens: 200, cacheCreationTokens: 0, totalCostUsd: null, durationMs: 1000, numTurns: 1 };
-  const b = { inputTokens: 30, outputTokens: 20, cacheReadTokens: 0, cacheCreationTokens: 400, totalCostUsd: 0.01, durationMs: 2000, numTurns: 2 };
+  const a = { inputTokens: 100, outputTokens: 50, cacheReadTokens: 200, cacheCreationTokens: 0, totalCostUsd: null, lastTurnDurationMs: 1000, numTurns: 1 };
+  const b = { inputTokens: 30, outputTokens: 20, cacheReadTokens: 0, cacheCreationTokens: 400, totalCostUsd: 0.01, lastTurnDurationMs: 2000, numTurns: 2 };
   const total = addTurnUsage(a, b);
   assert.equal(total.inputTokens, 130);
   assert.equal(total.outputTokens, 70);
@@ -794,7 +794,7 @@ test('addTurnUsage 累加多轮 token 并合计轮数', async () => {
   assert.equal(total.cacheCreationTokens, 400);
   assert.equal(total.totalCostUsd, 0.01);
   assert.equal(total.numTurns, 3);
-  assert.equal(total.durationMs, null, '合计不再表示单轮耗时');
+  assert.equal(total.lastTurnDurationMs, null, '合计不再表示单轮耗时');
   assert.deepEqual(addTurnUsage(null, null), null);
 });
 
@@ -802,13 +802,47 @@ test('summarizeTurnUsage 输出 totalInputTokens/totalTokens 供事件与前端�
   const { summarizeTurnUsage } = await import('../src/agents/usage.ts');
   const summary = summarizeTurnUsage({
     inputTokens: 120, outputTokens: 45, cacheReadTokens: 3000, cacheCreationTokens: 500,
-    totalCostUsd: null, durationMs: 3658, numTurns: 1,
+    totalCostUsd: null, lastTurnDurationMs: 3658, numTurns: 1,
   });
-  assert.equal(summary.totalInputTokens, 3620);
-  assert.equal(summary.totalTokens, 3665);
-  assert.equal(summary.durationMs, 3658);
+  // 缓存 3500 > input 120，说明这份计量里 input 只算未命中部分 → 合计取缓存侧。
+  assert.equal(summary.totalInputTokens, 3500);
+  assert.equal(summary.totalTokens, 3545);
+  assert.equal(summary.lastTurnDurationMs, 3658);
+  assert.equal('durationMs' in summary, false, 'SDK 的 duration_ms 只覆盖最后一轮，不能叫 durationMs');
   assert.equal('totalCostUsd' in summary, false, '订阅模式下没有美元费用，不透出该字段');
   assert.equal(summarizeTurnUsage(null), null);
+});
+
+test('summarizeTurnUsage 不重复计算包含式网关的缓存 token', async () => {
+  // 实测 49 次调用：网关的 input_tokens 恒等于 cacheRead + cacheCreation。
+  // 旧实现再把两者相加，导致 totalInputTokens 是真实输入的两倍（1,268,442 vs 634,221）。
+  const { summarizeTurnUsage } = await import('../src/agents/usage.ts');
+  const summary = summarizeTurnUsage({
+    inputTokens: 238_252, outputTokens: 55_110, cacheReadTokens: 22_912, cacheCreationTokens: 215_340,
+    totalCostUsd: null, lastTurnDurationMs: null, numTurns: 14,
+  });
+  assert.equal(summary.totalInputTokens, 238_252, 'input 已含缓存，不能再加一遍');
+  assert.equal(summary.totalTokens, 293_362);
+  // input 明显大于缓存合计（部分命中）时同样以 input 为准：包含式语义下它才是总输入，
+  // 相加会凭空多出缓存那一份。旧网关若真是分离式，取 max 也只会少算不会多算。
+  const partial = summarizeTurnUsage({
+    inputTokens: 900, outputTokens: 10, cacheReadTokens: 300, cacheCreationTokens: 100,
+    totalCostUsd: null, lastTurnDurationMs: null, numTurns: 1,
+  });
+  assert.equal(partial.totalInputTokens, 900, 'input 大于缓存合计时以 input 为准');
+});
+
+test('formatTurnUsageLog 分开打印缓存命中与缓存写入', async () => {
+  const { formatTurnUsageLog } = await import('../src/agents/usage.ts');
+  const line = formatTurnUsageLog({
+    inputTokens: 20_000, outputTokens: 5_000, cacheReadTokens: 12_000, cacheCreationTokens: 8_000,
+    totalCostUsd: null, lastTurnDurationMs: null, numTurns: 1,
+  });
+  // 旧实现打 cache=20000，而 in 也是 20000，看起来永远 100% 命中，实际什么也没说明。
+  assert.match(line, /in=20,000/);
+  assert.match(line, /hit=12,000/);
+  assert.match(line, /new=8,000/);
+  assert.equal(/cache=/.test(line), false, '不要再打印恒等于 in 的 cache 字段');
 });
 
 test('会话池 runPrompt 透出 result.usage，空响应仍按原语义报错', async () => {
@@ -832,7 +866,7 @@ test('会话池 runPrompt 透出 result.usage，空响应仍按原语义报错',
   assert.equal(outcome.text, '译文');
   assert.deepEqual(outcome.usage, {
     inputTokens: 3287, outputTokens: 97, cacheReadTokens: 512, cacheCreationTokens: 2775,
-    totalCostUsd: null, durationMs: 3658, numTurns: 1,
+    totalCostUsd: null, lastTurnDurationMs: 3658, numTurns: 1,
   });
   pool.release(index);
   pool.closeAll();
@@ -867,154 +901,3 @@ test('全书预处理使用独立的长任务超时上限', async () => {
   assert.ok(ANALYSIS_TIMEOUT_MS > REQUEST_TIMEOUT_MS, '分析上限必须明显大于单次调用上限');
 });
 
-test('salvages quote-poisoned translation JSON via jsonrepair fallback', () => {
-  // 线上实录：模型用 ASCII 双引号写中文对话引语，严格解析全灭。
-  const poisoned = [
-    '```json',
-    '{',
-    '  "translations": [',
-    '    {"id": "s148", "translated_text": ""我没犯法——""},',
-    '    {"id": "s149", "translated_text": ""那你的钱从哪来的？"格雷问""}',
-    '  ]',
-    '}',
-    '```',
-  ].join('\n');
-  const salvaged = parseJsonValue(poisoned);
-  assert.ok(salvaged && typeof salvaged === 'object' && !Array.isArray(salvaged));
-  const items = salvaged.translations;
-  assert.equal(items.length, 2);
-  assert.equal(items[0].id, 's148');
-  assert.ok(items[0].translated_text.includes('我没犯法'));
-  assert.equal(items[1].id, 's149');
-});
-
-test('salvages truncated translation JSON, keeping complete items', () => {
-  const truncated = [
-    '{"translations": [',
-    '  {"id": "b33", "translated_text": "长段译文一。"},',
-    '  {"id": "b34", "translated_text": "长段译文二。"},',
-    '  {"id": "b35", "translated_text": "没写完的译文',
-  ].join('\n');
-  const salvaged = parseJsonValue(truncated);
-  assert.ok(Array.isArray(salvaged) || (salvaged && Array.isArray(salvaged.translations)));
-  const items = Array.isArray(salvaged) ? salvaged : salvaged.translations;
-  assert.ok(items.length >= 2);
-  assert.equal(items[0].id, 'b33');
-});
-
-test('pure prose with no JSON still returns null', () => {
-  assert.equal(parseJsonValue('抱歉，我无法翻译这段内容。'), null);
-  assert.equal(parseJsonValue(''), null);
-});
-
-// ── 每轮 token 消耗（费用口径） ─────────────────────────────
-
-test('parseTurnUsage 解析 SDK result 的 usage 并拒绝无效计量', async () => {
-  const { parseTurnUsage } = await import('../src/agents/usage.ts');
-  const usage = parseTurnUsage({
-    subtype: 'success',
-    usage: { input_tokens: 120, output_tokens: 45, cache_read_input_tokens: 3000, cache_creation_input_tokens: 500 },
-    total_cost_usd: 0,
-    duration_ms: 3658,
-    num_turns: 3,
-  });
-  assert.deepEqual(usage, {
-    inputTokens: 120, outputTokens: 45, cacheReadTokens: 3000, cacheCreationTokens: 500,
-    totalCostUsd: null, durationMs: 3658, numTurns: 3,
-  });
-  // CodeBuddy 订阅 cost=0 → 不透出美元字段
-  assert.equal(usage.totalCostUsd, null);
-
-  // usage 全 0 或缺失 → 视为未计量
-  assert.equal(parseTurnUsage({ subtype: 'success', usage: {} }), null);
-  assert.equal(parseTurnUsage({ subtype: 'success' }), null);
-  assert.equal(parseTurnUsage(null), null);
-
-  // cost > 0 时透出
-  const paid = parseTurnUsage({ usage: { input_tokens: 10, output_tokens: 5 }, total_cost_usd: 0.0123 });
-  assert.equal(paid.totalCostUsd, 0.0123);
-});
-
-test('addTurnUsage 累加多轮 token 并合计轮数', async () => {
-  const { addTurnUsage } = await import('../src/agents/usage.ts');
-  const a = { inputTokens: 100, outputTokens: 50, cacheReadTokens: 200, cacheCreationTokens: 0, totalCostUsd: null, durationMs: 1000, numTurns: 1 };
-  const b = { inputTokens: 30, outputTokens: 20, cacheReadTokens: 0, cacheCreationTokens: 400, totalCostUsd: 0.01, durationMs: 2000, numTurns: 2 };
-  const total = addTurnUsage(a, b);
-  assert.equal(total.inputTokens, 130);
-  assert.equal(total.outputTokens, 70);
-  assert.equal(total.cacheReadTokens, 200);
-  assert.equal(total.cacheCreationTokens, 400);
-  assert.equal(total.totalCostUsd, 0.01);
-  assert.equal(total.numTurns, 3);
-  assert.equal(total.durationMs, null, '合计不再表示单轮耗时');
-  assert.deepEqual(addTurnUsage(null, null), null);
-});
-
-test('summarizeTurnUsage 输出 totalInputTokens/totalTokens 供事件与前端使用', async () => {
-  const { summarizeTurnUsage } = await import('../src/agents/usage.ts');
-  const summary = summarizeTurnUsage({
-    inputTokens: 120, outputTokens: 45, cacheReadTokens: 3000, cacheCreationTokens: 500,
-    totalCostUsd: null, durationMs: 3658, numTurns: 1,
-  });
-  assert.equal(summary.totalInputTokens, 3620);
-  assert.equal(summary.totalTokens, 3665);
-  assert.equal(summary.durationMs, 3658);
-  assert.equal('totalCostUsd' in summary, false, '订阅模式下没有美元费用，不透出该字段');
-  assert.equal(summarizeTurnUsage(null), null);
-});
-
-test('会话池 runPrompt 透出 result.usage，空响应仍按原语义报错', async () => {
-  const { WorkbuddySessionPool } = await import('../src/agents/workbuddyPool.ts');
-  const factory = () => ({
-    sent: [],
-    async send(m) { this.sent.push(m); },
-    async *stream() {
-      yield { type: 'assistant', message: { content: [{ type: 'text', text: '译文' }] } };
-      yield {
-        type: 'result', subtype: 'success',
-        usage: { input_tokens: 3287, output_tokens: 97, cache_read_input_tokens: 512, cache_creation_input_tokens: 2775 },
-        total_cost_usd: 0, duration_ms: 3658, num_turns: 1,
-      };
-    },
-    async interrupt() {}, close() {}, async setModel() {},
-  });
-  const pool = new WorkbuddySessionPool(1, 10, factory);
-  const index = await pool.acquire({ provider: 'workbuddy', model: '' });
-  const outcome = await pool.runPrompt(index, 'hello', 'req-usage', 5000);
-  assert.equal(outcome.text, '译文');
-  assert.deepEqual(outcome.usage, {
-    inputTokens: 3287, outputTokens: 97, cacheReadTokens: 512, cacheCreationTokens: 2775,
-    totalCostUsd: null, durationMs: 3658, numTurns: 1,
-  });
-  pool.release(index);
-  pool.closeAll();
-});
-
-test('会话卡住不返回时 runPrompt 按超时报错并丢弃会话', async () => {
-  const { WorkbuddySessionPool } = await import('../src/agents/workbuddyPool.ts');
-  let closed = 0;
-  const factory = () => ({
-    async send() {},
-    // CLI 卡死或事件流已断：stream() 既不产出也不结束。
-    async *stream() { await new Promise(() => {}); },
-    async interrupt() {},
-    close() { closed += 1; },
-    async setModel() {},
-  });
-  const pool = new WorkbuddySessionPool(1, 10, factory);
-  const index = await pool.acquire({ provider: 'workbuddy', model: '' });
-  const started = Date.now();
-  await assert.rejects(() => pool.runPrompt(index, 'x', 'req-timeout', 120), /调用超时/);
-  assert.ok(Date.now() - started < 3000, '不能在超时后继续挂着');
-  assert.equal(closed, 1, '超时后必须丢弃会话，下一轮换新 CLI 进程');
-  pool.release(index);
-  pool.closeAll();
-});
-
-test('全书预处理使用独立的长任务超时上限', async () => {
-  const { ANALYSIS_TIMEOUT_MS, REQUEST_TIMEOUT_MS } = await import('../src/config.ts');
-  // 全书分析在单次调用里处理数十段样本并输出人物/实体/关系，耗时远超翻译批次；
-  // 若这里退回到单次调用阈值，正常分析会被误判成超时。
-  assert.ok(ANALYSIS_TIMEOUT_MS >= 300_000, '分析上限不能低于 5 分钟');
-  assert.ok(ANALYSIS_TIMEOUT_MS > REQUEST_TIMEOUT_MS, '分析上限必须明显大于单次调用上限');
-});

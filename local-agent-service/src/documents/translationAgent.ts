@@ -703,9 +703,66 @@ export function canonicalMarkerCountsMatch(
   maskedTranslation: string,
   protections: CanonicalTermProtection[],
 ): boolean {
+  return describeCanonicalMarkerMismatch(maskedSource, maskedTranslation, protections).length === 0;
+}
+
+export interface CanonicalMarkerMismatch {
+  marker: string;
+  sourceForm: string;
+  expected: number;
+  actual: number;
+}
+
+/**
+ * 逐条比对标记出现次数，返回不匹配的明细。
+ *
+ * 只记「哪个片段被拒」无法区分两种完全不同的失败：模型把标记当普通词翻译掉了（actual=0），
+ * 还是把重复出现的标记合并了一次（expected=2/actual=1）。前者要改提示词，后者是输出被压缩，
+ * 处置方式不同，所以必须留下期望值与实际值。
+ */
+export function describeCanonicalMarkerMismatch(
+  maskedSource: string,
+  maskedTranslation: string,
+  protections: CanonicalTermProtection[],
+): CanonicalMarkerMismatch[] {
   const count = (value: string, marker: string) => value.split(marker).length - 1;
-  return protections.every((term) =>
-    count(maskedSource, term.marker) === count(maskedTranslation, term.marker));
+  const mismatches: CanonicalMarkerMismatch[] = [];
+  for (const term of protections) {
+    const expected = count(maskedSource, term.marker);
+    const actual = count(maskedTranslation, term.marker);
+    if (expected !== actual) {
+      mismatches.push({ marker: term.marker, sourceForm: term.sourceForm, expected, actual });
+    }
+  }
+  return mismatches;
+}
+
+/**
+ * 在 user prompt 末尾重申本批的规范译名标记。
+ *
+ * 标记约束原本只在 system prompt 的契约里出现一次，模型在长批次里仍会把它当普通文本
+ * 「顺手翻译」掉：实测 69 个受保护片段里 14 个（20%）因标记数量不符被整段丢弃并重发，
+ * 补译吃掉 19% 的翻译墙钟。把本批实际出现的标记列在 payload 之后（recency 位置）
+ * 只多几十个字符，能直接减少这类白跑。
+ */
+export function buildCanonicalMarkerReminder(
+  maskedSources: string[],
+  protections: CanonicalTermProtection[],
+): string {
+  if (!protections.length) return '';
+  const counts = new Map<string, number>();
+  for (const text of maskedSources) {
+    for (const term of protections) {
+      const occurrences = text.split(term.marker).length - 1;
+      if (occurrences > 0) counts.set(term.marker, (counts.get(term.marker) || 0) + occurrences);
+    }
+  }
+  if (!counts.size) return '';
+  const entries = Array.from(counts.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+  const shown = entries.slice(0, 12).map(([marker, occurrences]) => marker + '×' + occurrences).join(' ');
+  return '\n\n【标记校验】本批 translated_text 必须逐字保留下列占位标记，出现次数不得减少：' +
+    shown + (entries.length > 12 ? ' 等 ' + entries.length + ' 种' : '') +
+    '。标记不是文字，不要翻译、改写、拆分或删除；少一个就会导致整段译文被丢弃重译。';
 }
 
 export function maskCanonicalTargetText(text: string, protections: CanonicalTermProtection[]): string {
@@ -1127,7 +1184,7 @@ async function translateBatch(context: any, items: TranslationItem[], requestId:
   ]));
   const userPrompt = buildUserPrompt(
     context.prompt.userPromptTemplate || '', items, context, precedingSegments, contextGraph, translationBrief,
-  );
+  ) + buildCanonicalMarkerReminder(Array.from(maskedSourceById.values()), termProtections);
   const systemPrompt = [
     // 项目 Prompt 是上一次生效的快照，语言行可能已经过期；运行时的语言对才是权威。
     applyRunLanguageDirection(context.prompt.systemPrompt || '', context.run),
@@ -1247,15 +1304,20 @@ async function translateBatch(context: any, items: TranslationItem[], requestId:
   const outputDiagnostics = parsed.diagnostics;
   const translations = new Map<string, string>();
   const missingProtectedMarkers = new Set<string>();
+  // 逐片段的标记差异明细：只有片段 id 无法判断是「标记被翻译掉」还是「重复标记被合并」。
+  const markerMismatches: Array<{ segmentId: string; markers: CanonicalMarkerMismatch[] }> = [];
+  let droppedMarkerOccurrences = 0;
   for (const [id, rawTranslation] of parsed.translations) {
     const maskedSource = maskedSourceById.get(id) || '';
-    const markerCountsMatch = canonicalMarkerCountsMatch(maskedSource, rawTranslation, termProtections);
-    if (!markerCountsMatch) {
+    const mismatch = describeCanonicalMarkerMismatch(maskedSource, rawTranslation, termProtections);
+    if (mismatch.length) {
       // A mapped source name was present, but the model dropped its protected token. Do not
       // persist a potentially inconsistent translation; leave this ID missing so the existing
       // bounded retry asks for this segment again. If the retry still drops the token, the
       // segment is explicitly failed instead of silently saving a wrong canonical name.
       missingProtectedMarkers.add(id);
+      for (const item of mismatch) droppedMarkerOccurrences += Math.max(0, item.expected - item.actual);
+      if (markerMismatches.length < 20) markerMismatches.push({ segmentId: id, markers: mismatch });
       continue;
     }
     translations.set(id, restoreCanonicalTermMarkers(rawTranslation, termProtections, 'target'));
@@ -1268,6 +1330,8 @@ async function translateBatch(context: any, items: TranslationItem[], requestId:
         termProtections.some((item) => text.includes(item.marker))).length,
       missingMarkerSegmentIds: Array.from(missingProtectedMarkers).slice(0, 20),
       rejectedSegmentCount: missingProtectedMarkers.size,
+      droppedMarkerOccurrences,
+      markerMismatches,
     });
   }
   if (outputDiagnostics.duplicateCount || outputDiagnostics.unexpectedCount || outputDiagnostics.malformedRowCount) {

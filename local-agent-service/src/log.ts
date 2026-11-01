@@ -99,6 +99,10 @@ const POLLING_PATH_PATTERNS: readonly RegExp[] = [
   /\/runs\/[^/]+$/,          // 运行详情轮询
   /\/events$/,               // 事件流
   /\/context-graph(\/.*)?$/, // 预处理状态（含 /context-graph/status）
+  // 项目级片段列表：扩展在 run 期间约每 21 秒拉一次，实测 25 分钟 72 行。
+  // 必须锚定 /projects/<id>/segments，不能用 /\/segments$/——那会把
+  // /runs/<id>/segments 这类单次读写也一起吞掉。
+  /\/projects\/[^/]+\/segments$/,
 ];
 
 export function isPollingRequest(method: string, path: string): boolean {
