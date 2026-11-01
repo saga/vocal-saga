@@ -53,6 +53,9 @@
 - 用户删除/拒绝人物、实体或关系时，服务端必须在同一 SQLite 写事务中更新 Context Graph 节点/边状态、LiteraryMemory revision 和项目事件；扩展通过 `/context-graph/review` 的 batch `items` + `memory` 一次提交。任何校验或持久化失败都必须整体回滚，禁止两个接口分步写入造成部分成功。
 - LiteraryMemory 可见列表删除后，必须保留隐藏 `rejectedItems` tombstone（实体按规范名/别名与 kind 匹配，关系按 subject/predicate/object 匹配）。服务端 sanitize、Extension sanitize/merge 和 translation context delta merge 必须保留 tombstone 并先过滤对应活动项；只有用户明确编辑/重新建立同一项才清除对应 tombstone。不得只依赖当前 Context Graph node/edge ID，因为后续分析可能生成不同 ID。
 - Run 创建必须在 SQLite 写锁内重新校验 source revision、Prompt revision 和 LiteraryMemory revision；快照准备期间任何一项变化都返回 409，不得静默绑定旧快照。
+- `failed` scope 必须 JOIN 失败记录所属的 `translation_runs`，限定当前 `source_revision_id` 并匹配当前 `source_hash`；当前 fingerprint 已自动采纳的译文和当前人工译文不得因历史失败再次入选。旧 fingerprint 的机器译文仍可进入修复范围。
+- `maxModelAttempts` 表示单个 batch 的模型调用总次数，包含首次调用；重试分组不得突破这个总预算。默认 2 次时，首次调用后最多再发起一次包含全部缺失 ID 的定向补齐调用。
+- 原始文件更新必须先完成临时文件写入和原子 rename，再在 SQLite 事务中登记文件 hash/size/path 并切换 current source revision。数据库提交失败必须清理新文件；任何路径都不得先切换 revision 再尝试写原始文件。
 - Run 必须保持 running 直到本轮 context delta 与 LiteraryMemory 的合并事务完成，再进入 awaiting_acceptance 并自动采纳。awaiting_acceptance 是未完成最终化状态，阻止创建下一 Run；服务重启时自动恢复 context-memory merge 与 candidate acceptance。
 - Candidate acceptance 必须验证 Run source revision 仍是当前版本，并保护同一 source hash 上所有更新的 accepted result（agent/imported/manual），不能只保护 manual。旧 Run 延迟恢复不得覆盖新 Run 的已采纳结果。
 - 中文单语文学编辑结果只能作为 provisional edit。必须由后续双语审校按 segment 明确覆盖并返回完整非空译文后，才可写入候选；以双语审校最终文本为准。未覆盖、missing、空/格式无效、retry 失败或审校调用异常的 segment 必须自动恢复初译，并确保 provisional edit 不进入候选、context delta 或 LiteraryMemory。部分覆盖按 segment 分别处理；若双语复核将某项改回初译，对应中文单语 finding 自动 dismissed 并记录 `automatic-bilingual-review-reverted`，不留待人工处理的 pending finding；不得要求用户点击确认。
