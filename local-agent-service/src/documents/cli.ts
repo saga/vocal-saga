@@ -13,9 +13,12 @@ import { parseDocumentFile } from './ingest.ts';
 import { startContextGraphAnalysis, getContextGraph, getContextGraphStatus, reviewContextGraphItem } from './contextGraph.ts';
 import { logError, logProgress } from '../log.ts';
 
+/** 存储层句柄的类型别名。 */
 type Store = ReturnType<typeof getDocumentProjectStore>;
+/** 单个子命令的处理函数：拿到 store 与该命令之后的参数（不含命令名本身）。 */
 type CliHandler = (store: Store, args: string[]) => Promise<void> | void;
 
+/** 打印用法并以退出码 2 结束——参数错误不是运行失败，用 2 与业务失败区分。 */
 function usage(): never {
   console.error([
     'Usage: npm run doc -- <command> [arguments]',
@@ -35,10 +38,13 @@ function usage(): never {
   process.exit(2);
 }
 
+/** 读并解析 JSON 文件，路径按当前工作目录解析。 */
 async function readJson(filePath: string): Promise<any> {
   return JSON.parse(await readFile(path.resolve(filePath), 'utf8'));
 }
+/** 统一输出：缩进两格的 JSON 到 stdout，便于管道下游用 jq 处理。 */
 function print(value: unknown): void { console.log(JSON.stringify(value, null, 2)); }
+/** 轮询间隔用的延时。 */
 function sleep(ms: number): Promise<void> { return new Promise((resolve) => setTimeout(resolve, ms)); }
 
 /** 取 `--name=value` 形式的参数；缺省返回 undefined。 */
@@ -71,6 +77,7 @@ const COMMANDS: Record<string, CliHandler> = {
 };
 
 /** 从规范化片段 JSON 建项目：不解析原文，调用方负责分段。 */
+/** `import`：从已归一化的片段 JSON 建项目，不做任何解析或预处理。 */
 async function importSegments(store: Store, args: string[]): Promise<void> {
   const inputPath = args[0];
   if (!inputPath) usage();
@@ -116,12 +123,14 @@ async function importDocumentFile(store: Store, args: string[]): Promise<void> {
   if (status.status !== 'completed') process.exitCode = 1;
 }
 
+/** `context`：查看已持久化的 Context Graph 与分析状态，只读。 */
 function showContext(_store: Store, args: string[]): void {
   const projectId = args[0];
   if (!projectId) usage();
   print(getContextGraph(projectId));
 }
 
+/** `context-analyze`：对已有项目构建/更新 Context Graph，并等待到终态。 */
 async function analyzeContext(_store: Store, args: string[]): Promise<void> {
   const projectId = args[0];
   if (!projectId) usage();
@@ -143,6 +152,7 @@ async function waitForContextGraph(projectId: string, runId: string): Promise<an
   return status;
 }
 
+/** `context-review`：人工裁定单个节点或边的状态，四个参数缺一即打印用法。 */
 function reviewContextItem(_store: Store, args: string[]): void {
   const [projectId, kind, itemId, decision] = args;
   if (!projectId || !['node', 'edge'].includes(kind || '') || !itemId ||
@@ -155,22 +165,30 @@ function reviewContextItem(_store: Store, args: string[]): void {
   ));
 }
 
+/** `projects`：列出全部文档项目。 */
 function listProjects(store: Store): void {
   print({ projects: store.listProjects() });
 }
 
+/** `status`：一次给出项目、校验结果与全部运行，排查时的第一站。 */
 function showStatus(store: Store, args: string[]): void {
   const projectId = args[0];
   if (!projectId) usage();
   print({ project: store.getProject(projectId), verification: store.verifyProject(projectId), runs: store.listRuns(projectId) });
 }
 
+/** `verify`：检查源文映射缺失与过期。 */
 function showVerification(store: Store, args: string[]): void {
   const projectId = args[0];
   if (!projectId) usage();
   print(store.verifyProject(projectId));
 }
 
+/**
+ * `run`：创建并启动一次翻译运行，然后轮询到终态。
+ * 范围优先级是 `--chapter` 高于 `--scope`；两者都没给或取值非法时按 stale 处理。
+ * 终端状态为 failed / partial 时把退出码置 1，供自动化判断。
+ */
 async function startRun(store: Store, args: string[]): Promise<void> {
   const projectId = args[0];
   if (!projectId) usage();
@@ -209,6 +227,7 @@ function describeNextStep(status: string): string {
   }
 }
 
+/** `accept`：采纳某次运行产出的全部候选译文。 */
 function acceptRun(store: Store, args: string[]): void {
   const [projectId, runId] = args;
   if (!projectId || !runId) usage();
@@ -225,6 +244,7 @@ function collectSegments(store: Store, projectId: string, total: number, filter:
   return all;
 }
 
+/** `diff`：对比当前已采纳译文与该次运行的候选，标出两者不同的片段。 */
 function diffRun(store: Store, args: string[]): void {
   const [projectId, runId] = args;
   if (!projectId || !runId) usage();
@@ -247,6 +267,10 @@ function diffRun(store: Store, args: string[]): void {
   });
 }
 
+/**
+ * `export`：导出源文与已采纳译文为 JSON。未翻译的片段照样导出（`translation` 为 null），
+ * 并在结果里报出缺失条数，而不是静默跳过。
+ */
 async function exportProject(store: Store, args: string[]): Promise<void> {
   const [projectId, outputArg] = args;
   if (!projectId || !outputArg) usage();

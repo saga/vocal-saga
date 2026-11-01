@@ -55,9 +55,9 @@ export const CONTEXT_GRAPH_STAGE_SESSION_PARENT: Partial<Record<ContextGraphWork
   relationships: 'characters',
 };
 
-/** 阶段所属波次序号；未知阶段返回 -1。 */
 /**
- * 返回给定阶段所在的波次索引（0-based），用于调度并行/串行顺序；未知阶段返回 -1。
+ * 返回给定阶段所在的波次索引（0-based），用于调度并行/串行顺序。
+ * 同一波次内的阶段互不依赖；未知阶段返回 -1，调用方据此拒绝该阶段。
  */
 export function contextGraphStageWave(stageId: string): number {
   for (let index = 0; index < CONTEXT_GRAPH_STAGE_WAVES.length; index++) {

@@ -45,12 +45,17 @@ const PROFILE_SCHEMA: Record<string, unknown> = {
   },
 };
 
+/** 存储层句柄的类型别名，避免在本模块重复导入具体类。 */
 type ProfileStore = ReturnType<typeof getDocumentProjectStore>;
+/** 一对待采纳的原文/译文样本，是档案生成的唯一输入。 */
 type AcceptedRow = {
   id: string; ordinal: number; sourceText: string; kind: string; contextPath: string; targetText: string;
 };
+/** 送给模型的单条样本；只带译文，不带原文——档案描述的是中文表达本身。 */
 type ProfileSample = { segmentId: string; targetText: string };
+/** 档案中一条结论的回溯源：哪一段、哪句译文、观察到什么、属于哪个方面。 */
 type ProfileEvidenceRef = { segmentId: string; targetExcerpt: string; observation: string; aspect: string };
+/** 模型一次生成的产出：档案本体 + 支撑它的证据引用。 */
 type GeneratedProfile = { profile: Record<string, any>; evidenceRefs: ProfileEvidenceRef[] };
 
 /** 通过门禁后仍需的信息：Store、运行上下文、来源修订号与增量查询句柄。 */
@@ -62,10 +67,12 @@ type ProfileRefreshContext = {
   revisionId: string;
 };
 
+/** 折叠空白并按上限截断；非字符串一律变空串，不抛错。 */
 function cleanText(value: unknown, max = 500): string {
   return typeof value === 'string' ? value.replace(/\s+/gu, ' ').trim().slice(0, max) : '';
 }
 
+/** 清洗字符串数组：逐项清洗、去重、截断到 maxItems，保持首次出现的顺序。 */
 function cleanList(value: unknown, maxItems: number, maxChars: number): string[] {
   if (!Array.isArray(value)) return [];
   return Array.from(new Set(value.flatMap((item) => {
@@ -74,6 +81,7 @@ function cleanList(value: unknown, maxItems: number, maxChars: number): string[]
   }))).slice(0, maxItems);
 }
 
+/** 结构指纹：对 JSON 序列化结果取 SHA-256，用于判断档案内容是否真的变了。 */
 function fingerprint(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex');
 }

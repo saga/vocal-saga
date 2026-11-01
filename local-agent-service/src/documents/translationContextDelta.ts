@@ -7,6 +7,7 @@ import { isWorthCanonicalEntityMapping, normalizeCanonicalEntityKind, splitCompo
  */
 
 export type ContextEvidence = { segmentId: string; sourceQuote: string };
+/** 模型在单批初译里提出的一条实体候选。`localId` 只在本批内有效，落库时换成稳定 ID。 */
 export type ContextEntityCandidate = {
   localId: string;
   canonicalSource: string;
@@ -17,18 +18,21 @@ export type ContextEntityCandidate = {
   reason?: string;
   bookSpecificMeaning?: boolean;
 };
+/** 一条实体在具体片段译文里的落点，`targetSurface` 必须能在该段译文中找到，否则整条丢弃。 */
 export type ContextEntityMention = {
   segmentId: string;
   sourceQuote: string;
   entityRef: string;
   targetSurface: string;
 };
+/** 一条关系候选。三项拼接成去重键，任一项为空即无法比较，校验阶段会拒绝。 */
 export type ContextRelationshipCandidate = {
   subjectSource: string;
   predicate: string;
   objectSource: string;
   evidence: ContextEvidence[];
 };
+/** 通过服务端证据校验后的增量；未通过的部分已在 diagnostics 中计数后丢弃。 */
 export type ValidatedTranslationContextDelta = {
   entityCandidates: ContextEntityCandidate[];
   entityMentions: ContextEntityMention[];
@@ -36,6 +40,10 @@ export type ValidatedTranslationContextDelta = {
   openQuestions: Array<{ question: string; evidence: ContextEvidence[] }>;
   conflicts: Array<{ topic: string; details: string; evidence: ContextEvidence[] }>;
 };
+/**
+ * 校验与合并的计数摘要，用于解释「模型提了 N 条，为什么只剩 M 条」。
+ * 各类 reject/drop 计数分开统计，便于定位是证据不足、低价值还是目标译名不合格。
+ */
 export type ContextDeltaDiagnostics = {
   candidateCount: number;
   acceptedEntityCandidates: number;
@@ -150,6 +158,7 @@ type ParsedEntityCandidate = {
   bookSpecificMeaning: boolean;
 };
 
+/** 别名展开后的实体视图：一个规范名连同它的每个别名各成一个条目，用于批量写映射表。 */
 type ExpandedEntity = { source: string; target: string; evidence: ContextEvidence[]; localId: string };
 
 /**
@@ -536,6 +545,10 @@ function normalizedEntityKind(value: unknown): string {
   return 'other';
 }
 
+/**
+ * 实体类型是否兼容。`other` 视为通配——模型经常把同一实体的类型标得飘忽不定
+ * （一会儿 person 一会儿 character），只按严格相等判会让拒绝记录失效。
+ */
 function sameKind(a: unknown, b: unknown): boolean {
   const left = normalizedEntityKind(a); const right = normalizedEntityKind(b);
   return left === right || left === 'other' || right === 'other';
@@ -623,6 +636,7 @@ function targetConfidence(refs: Array<{ segmentId: string }>): string {
   return new Set(refs.map((item) => item.segmentId)).size >= 2 ? 'corroborated' : 'candidate';
 }
 
+/** 候选（含其全部别名）是否已被人工拒绝过；命中即不再重新提请采纳。 */
 function isRejectedEntity(context: MergeContext, candidate: ContextEntityCandidate): boolean {
   const candidateNames = new Set([candidate.canonicalSource, ...candidate.aliases].map(mergeName).filter(Boolean));
   return context.memory.rejectedItems.some((item: any) => item?.type === 'entity' &&
@@ -631,6 +645,7 @@ function isRejectedEntity(context: MergeContext, candidate: ContextEntityCandida
       .some((name: unknown) => candidateNames.has(mergeName(name))));
 }
 
+/** 关系候选是否在人工拒绝列表里；判据是「主语/谓语/宾语」三元组归一后全等。 */
 function isRejectedRelationship(context: MergeContext, relation: ContextRelationshipCandidate): boolean {
   const key = [relation.subjectSource, relation.predicate, relation.objectSource].map(mergeName).join('\u0000');
   return context.memory.rejectedItems.some((item: any) => item?.type === 'relationship' &&

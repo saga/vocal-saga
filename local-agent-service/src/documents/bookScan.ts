@@ -137,15 +137,22 @@ function sourceLanguageCode(value: string | undefined, text = ''): string {
   return LANGUAGE_ALIASES[raw] || LANGUAGE_ALIASES[primary] || primary;
 }
 
+/** 归一化比较键：NFKC 折叠全角/兼容字符，小写，压缩空白。匹配统计与去重都用它。 */
 function normalizeText(value: string): string {
   return value.normalize('NFKC').toLocaleLowerCase().replace(/\s+/g, ' ').trim();
 }
+/** 更激进的归一化：在 normalizeText 基础上把标点全部换成空格，用于重复表达的跨段比对。 */
 function normalizePhrase(value: string): string {
   return normalizeText(value).replace(/[^\p{L}\p{N}]+/gu, ' ').replace(/\s+/g, ' ').trim();
 }
+/** 取片段所属章节名；没有 contextPath 的片段统一归入「正文」。 */
 function chapterTitle(segment: BookScanSegment): string {
   return (segment.contextPath || '').trim() || '正文';
 }
+/**
+ * 按 contextPath 分组生成章节，首次出现顺序即章节顺序。
+ * 每组取首/中/尾三个片段作为锚点，供抽样直接取用，避免下游再算一遍。
+ */
 function getChapters(segments: BookScanSegment[], sourceLang = 'en'): BookScanChapter[] {
   const grouped = new Map<string, BookScanSegment[]>();
   for (const segment of segments) {
@@ -164,6 +171,10 @@ function getChapters(segments: BookScanSegment[], sourceLang = 'en'): BookScanCh
     lastSegmentId: items[items.length - 1]!.id,
   }));
 }
+/**
+ * 找出所有引号内容区间。八种引号形态覆盖中日英法德俄式写法，
+ * 单引号要求至少 8 字符才认（撇号与缩写会大量误命中）；重叠区间按起点去重。
+ */
 function quoteSpans(text: string): Array<{ start: number; end: number }> {
   const patterns = [
     /“([^”]{1,2000})”/gu, /"([^"]{1,2000})"/gu, /「([^」]{1,2000})」/gu, /『([^』]{1,2000})』/gu,
@@ -183,7 +194,8 @@ function quoteSpans(text: string): Array<{ start: number; end: number }> {
   return spans.sort((a, b) => a.start - b.start || a.end - b.end);
 }
 /**
- * 判断片段是否为对白段：依据引号数量、破折号对白或源语言的引语动词。
+ * 判断片段是否为对白段：引号成对出现、破折号起句，或命中该语言的引语动词，任一成立即算。
+ * 无引号语言（法/德/意/西）几乎全靠引语动词，词表缺词会直接体现为漏判。
  */
 export function isDialogueSegment(segment: Pick<BookScanSegment, 'text'>, sourceLang = 'en'): boolean {
   const text = segment.text || '';
@@ -193,6 +205,10 @@ export function isDialogueSegment(segment: Pick<BookScanSegment, 'text'>, source
   const speechVerbs = SPEECH_VERBS_BY_LANGUAGE[language] || SPEECH_VERBS_BY_LANGUAGE.en!;
   return quoteCount >= 2 || emDashDialogue || speechVerbs.test(text);
 }
+/**
+ * 剥掉称谓与冠词前缀。冠词只剥一层（`The King Rat` → `King Rat`），
+ * 称谓可连续剥（`Mr. Captain Ahab` → `Ahab`）——两者顺序不同是刻意的，见下方注释。
+ */
 function stripNamePrefix(name: string): string {
   const words = name.trim().split(/\s+/);
   const first = words[0]!.replace(/[.]/g, '').toLocaleLowerCase();
@@ -205,6 +221,11 @@ function stripNamePrefix(name: string): string {
   while (words.length > 1 && TITLE_PREFIX_WORDS.has(words[0]!.replace(/[.]/g, '').toLocaleLowerCase())) words.shift();
   return words.join(' ');
 }
+/**
+ * 人名过滤闸门：停用词、长度、语言特例三道，任一不过即丢弃。
+ * 德语普通名词首字母也大写，因此德语的单名（`single-name`）一律不认；
+ * 西语先剔除 de/la/y 等连接词再查停用词，否则 `Don Quijote de la Mancha` 会被误杀。
+ */
 function isNameCandidateAllowed(name: string, kind: BookEntityMention['kind'], sourceLang = 'en'): boolean {
   const language = sourceLanguageCode(sourceLang, name);
   const core = stripNamePrefix(name);
@@ -220,6 +241,15 @@ function isNameCandidateAllowed(name: string, kind: BookEntityMention['kind'], s
   return kind !== 'single-name' || japaneseName ||
     (normalizeText(core).length >= 3 && !NAME_STOP_WORDS.has(normalizeText(core)));
 }
+/**
+ * 逐段抓实体提及。匹配顺序是先带称谓、再复合、最后单名，同一起止区间只保留最后一次命中
+ * 的类型；输出按起点升序、同起点长者在前，因此下游看到的总是「长形态先出现」。
+ *
+ * 这里**不做重叠抑制**：`Don Quijote de la Mancha` 会同时产出整串的复合名与其中的单名提及。
+ * 去重与取舍发生在 collectNameCandidates 按归一化名字聚合时。
+ *
+ * `discovered` 是截断前的总命中数，用于区分「本来就没有」和「被上限截断」。
+ */
 function collectEntityMentions(segments: BookScanSegment[], sourceLang = 'en'): { mentions: BookEntityMention[]; discovered: number } {
   const mentions: BookEntityMention[] = [];
   let discovered = 0;
@@ -270,6 +300,7 @@ function collectEntityMentions(segments: BookScanSegment[], sourceLang = 'en'): 
   }
   return { mentions, discovered };
 }
+/** 切出句子与引语两种文本单元；短于 3 字符的（标点残片、单字）直接丢弃。 */
 function collectTextUnits(segments: BookScanSegment[]): { units: BookTextUnit[]; discovered: number } {
   const units: BookTextUnit[] = [];
   let discovered = 0;
@@ -294,6 +325,7 @@ function collectTextUnits(segments: BookScanSegment[]): { units: BookTextUnit[];
   }
   return {units:units.sort((a,b)=>a.ordinal-b.ordinal || a.start-b.start || a.end-b.end),discovered};
 }
+/** 逐段记录对白判定与信号构成，score 用于同章内挑对白密集的样本。 */
 function collectDialogueIndex(segments: BookScanSegment[], sourceLang = 'en'): BookDialogueIndex[] {
   return segments.map((segment) => {
     const spans = quoteSpans(segment.text), signals: BookDialogueIndex['signals'] = [];
@@ -310,6 +342,10 @@ function collectDialogueIndex(segments: BookScanSegment[], sourceLang = 'en'): B
     };
   });
 }
+/**
+ * 抓度量提及。单位在 QUANTITY_UNITS 里按顺序 `find` 首个命中，因此该表的顺序有语义；
+ * 同段同位置同一单位只记一次，避免同一处被多条模式重复捕获。
+ */
 function collectQuantityMentions(segments: BookScanSegment[], sourceLang = 'en'): {mentions:BookQuantityMention[];discovered:number} {
   const mentions:BookQuantityMention[]=[]; let discovered=0;
   const seenOccurrences = new Set<string>();
@@ -394,6 +430,10 @@ function collectNameCandidates(segments: BookScanSegment[], mentions: BookEntity
   }
   return result.sort((a,b)=>b.score-a.score||b.mentions-a.mentions||b.tokenCount-a.tokenCount||a.name.localeCompare(b.name)).slice(0,160);
 }
+/**
+ * 归并跨段重复的句子/引语。归一后长度 < 12 或实词 < 3 的单元不算——
+ * 过短的重复（`Yes.`、`He said.`）噪声太大，会把口头禅和真正反复出现的意象淹没。
+ */
 function collectRepeatedPhrases(segments:BookScanSegment[],units:BookTextUnit[],maxSegmentIds=16,maxGroups=80):RepeatedPhraseCandidate[] {
   const sourceById=new Map(segments.map((segment)=>[segment.id,segment.text]));
   const seen=new Map<string,{text:string;unitType:BookTextUnit['unitType'];segmentIds:string[];segmentIdSet:Set<string>;chapterKeys:string[];chapterKeySet:Set<string>}>();
@@ -453,6 +493,10 @@ export function scanBookSegmentFeatures(segmentsInput: BookScanSegment[], source
   };
 }
 
+/**
+ * 按块顺序拼接各分片的同类明细，达到 `limit` 即停。
+ * 顺序即 ordinal 顺序，因此截断丢掉的总是尾部的块，不会让结果依赖调度时序。
+ */
 function mergeFeatureArrays<T>(
   chunks: readonly BookScanFeatureChunk[],
   select: (chunk: BookScanFeatureChunk) => readonly T[],
@@ -468,6 +512,7 @@ function mergeFeatureArrays<T>(
   return merged;
 }
 
+/** 把各分片的特征合并成完整扫描结果，并补齐 diagnostics 与截断标记。 */
 function assembleBookScan(
   segments: BookScanSegment[],
   featureChunks: readonly BookScanFeatureChunk[],
@@ -522,6 +567,10 @@ const MAX_BOOK_SCAN_WORKERS = 4;
 const MIN_PARALLEL_SCAN_SEGMENTS = 12_000;
 const MIN_PARALLEL_SCAN_CHARS = 1_000_000;
 
+/**
+ * 决定用几个 worker 分片扫描。`VOCAL_SAGA_BOOK_SCAN_WORKERS=0` 表示不起 worker
+ * （退回主线程同步扫描）；未设置时取可用核数减一，最多 4 个。
+ */
 function configuredBookScanWorkers(): number {
   const raw = process.env.VOCAL_SAGA_BOOK_SCAN_WORKERS;
   if (raw !== undefined && /^\d+$/.test(raw.trim())) {
@@ -531,6 +580,10 @@ function configuredBookScanWorkers(): number {
   return Math.min(MAX_BOOK_SCAN_WORKERS, Math.max(1, availableParallelism() - 1));
 }
 
+/**
+ * 在独立 worker 里扫描一个分片。worker 用 message 回传结果或错误，
+ * 两者任一后即 terminate，避免异常路径下线程悬挂。
+ */
 async function scanFeatureChunkInWorker(segments: BookScanSegment[], sourceLang = 'en'): Promise<BookScanFeatureChunk> {
   return new Promise<BookScanFeatureChunk>((resolve, reject) => {
     const worker = new Worker(new URL('./bookScanWorker.mjs', import.meta.url), {
@@ -553,18 +606,13 @@ async function scanFeatureChunkInWorker(segments: BookScanSegment[], sourceLang 
 }
 
 /**
- * 大书的并行 CPU 特征提取。结果按源文顺序合并，
- * 因此候选排序、源文偏移、截断上限与抽样都保持确定性。
- * 设 VOCAL_SAGA_BOOK_SCAN_WORKERS=0 关闭 Worker，设 1..4 限定 worker 数量。
- */
-/**
- * 并发构建整本书的确定性特征索引。
- * Worker 只计算可由原文重现的词项/对白/重复表达/数量等特征，最终由主线程按 ordinal 合并；
- * 输出应与 scanBookSegments 的同步实现语义一致，且所有 span/segmentId 必须仍指向原文。
- */
-/**
- * 大文档的并发特征扫描：按配置/环境决定是否启用 Worker 并行；小文档回退到同步 scanBookSegments。
- * 结果按 source order 合并，保持确定性。
+ * 大书的并行 CPU 特征提取：按配置决定是否启用 Worker，小文档回退到同步实现。
+ *
+ * Worker 只计算可由原文重现的词项、对白、重复表达与数量特征，最终由主线程按 ordinal
+ * 合并；输出必须与 scanBookSegments 的同步实现语义一致，所有 span 与 segmentId
+ * 仍指向原文，因此候选排序、偏移与截断上限都是确定的。
+ *
+ * `VOCAL_SAGA_BOOK_SCAN_WORKERS=0` 关闭 Worker，1..4 限定 worker 数量。
  */
 export async function scanBookSegmentsConcurrent(
   segmentsInput: BookScanSegment[],
@@ -596,11 +644,10 @@ export async function scanBookSegmentsConcurrent(
 }
 
 /**
- * 同步扫描实现，作为小文档路径、测试基线和 Worker 结果一致性参照。
+ * 同步全书扫描：单 chunk 特征提取 + 组装，既是大文档走 Worker 之外的路径，
+ * 也是测试基线与并发结果的一致性参照。
+ *
  * 该索引是词面/结构特征，不是语义解析器，也不能独立证明人物身份或关系。
- */
-/**
- * 同步全书扫描：单 chunk 特征提取 + 组装，作为小文档路径与并发结果的一致性基线。
  */
 export function scanBookSegments(segmentsInput: BookScanSegment[], options: BookScanOptions = {}): BookScanResult {
   const segments = segmentsInput.slice().sort((a, b) => a.ordinal - b.ordinal);
@@ -608,13 +655,12 @@ export function scanBookSegments(segmentsInput: BookScanSegment[], options: Book
 }
 
 /**
- * 根据全书特征索引制定有界抽样计划。
- * 计划综合章节/早中晚位置、对白、候选实体和重复表达覆盖；所有被选内容最终仍以原文 segment 为证据，
- * 统计分数只负责提高覆盖率，不得被下游当作模型事实。
- */
-/**
- * 根据全书特征索引制定有界抽样计划：覆盖开头/中部/结尾、分布式章节、高重要性名称与重复表达/对白密集片段。
- * 短文档全量采样；长文档最多 MAX_SAMPLES 个样本，单样本最多 SAMPLE_TEXT_LIMIT 字符。
+ * 根据全书特征索引制定有界抽样计划：覆盖开头/中部/结尾、分布式章节、高重要性名称，
+ * 以及重复表达与对白密集的片段。短文档全量采样；长文档最多 MAX_SAMPLES 个样本，
+ * 单样本最多 SAMPLE_TEXT_LIMIT 字符。
+ *
+ * 所有被选内容最终仍以原文 segment 为证据，统计分数只负责提高覆盖率，
+ * 不得被下游当作模型事实。
  */
 export function planBookSamples(segmentsInput:BookScanSegment[],scanInput?:BookScanResult,sampleLimit=MAX_SAMPLES):BookSamplePlan {
   const segments=segmentsInput.slice().sort((a,b)=>a.ordinal-b.ordinal),scan=scanInput||scanBookSegments(segments);

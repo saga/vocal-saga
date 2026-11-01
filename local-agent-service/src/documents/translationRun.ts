@@ -132,11 +132,6 @@ export async function ensureLiteraryPreprocessingBeforeRun(
 }
 
 /**
- * Run 级工作流协调器，是翻译生命周期的主要编排入口。
- * 负责读取固定版本、规划批次与并发预算、在每批次的模型调用/审校/持久化之间推进，
- * 并将暂停、取消、部分失败和终态反映到 SQLite。所有模型返回后的写入都必须重新检查 Run 状态。
- */
-/**
  * Run 执行的准备阶段：校验终态、确认全书预处理就绪、固定批次与并发预算，
  * 并把 plan.ready / run.context.ready 写进事件流。
  *
@@ -465,7 +460,14 @@ export function isProjectRunActive(runId: string): boolean {
   return activeRuns.has(runId);
 }
 
+/** 当前进程内正在执行的 Run。只做重复启动保护，不是恢复状态的事实来源。 */
 export const activeRuns = new Set<string>();
+
+/**
+ * Run 级工作流协调器，是翻译生命周期的主要编排入口。
+ * 负责读取固定版本、规划批次与并发预算、在每批次的模型调用/审校/持久化之间推进，
+ * 并将暂停、取消、部分失败和终态反映到 SQLite。所有模型返回后的写入都必须重新检查 Run 状态。
+ */
 async function executeRun(projectId: string, runId: string): Promise<void> {
   const store = getDocumentProjectStore();
   const runStartedAt = Date.now();

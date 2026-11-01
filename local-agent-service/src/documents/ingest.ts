@@ -13,6 +13,7 @@ const MAX_EXPANDED_BYTES =
 const MAX_SEGMENTS = 100_000;
 const PDF_EXTRACTION_TIMEOUT_MS = Math.max(20_000, Number.parseInt(process.env.LOCAL_AGENT_PDF_TIMEOUT_MS || '180000', 10) || 180_000);
 
+/** ZIP 中央目录里的一条记录。name 为归一化后的 posix 路径，localOffset 指向本地文件头。 */
 type ZipEntry = {
   name: string;
   method: number;
@@ -21,10 +22,15 @@ type ZipEntry = {
   localOffset: number;
 };
 
+/** 抛带 HTTP 状态的解析错误，由路由层直接映射成响应码；默认 400。 */
 function fail(message: string, status = 400): never {
   throw Object.assign(new Error(message), { status });
 }
 
+/**
+ * 纯文本解码：按 BOM 识别 UTF-16LE/BE 与 UTF-8，无 BOM 时按严格 UTF-8 解。
+ * 解码失败直接 415 报错，不做字符集猜测——猜错的乱码比明确失败更难排查。
+ */
 function decodeText(bytes: Uint8Array): string {
   const buffer = Buffer.from(bytes);
   if (buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xfe) {
@@ -45,6 +51,7 @@ function decodeText(bytes: Uint8Array): string {
   }
 }
 
+/** 解码 XML/HTML 实体，支持十进制与十六进制数字实体；未知命名实体原样保留。 */
 function decodeEntities(value: string): string {
   const named: Record<string, string> = {
     amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', ndash: '–', mdash: '—',
@@ -60,6 +67,10 @@ function decodeEntities(value: string): string {
   });
 }
 
+/**
+ * 从 HTML 片段取纯文本：先删注释、script/style/svg 整块，再按块级标签断行，最后折叠空白。
+ * 顺序重要——先删整块再断行，否则 script 里的内容会被拆成多行混进正文。
+ */
 function cleanText(value: string): string {
   return decodeEntities(value
     .replace(/<!--[\s\S]*?-->/g, ' ')
@@ -76,6 +87,7 @@ function cleanText(value: string): string {
     .split('\n').map((line) => line.trim()).join('\n').trim();
 }
 
+/** 提取标签内的属性键值对（XML 与 HTML 通用），值已做实体解码。 */
 function xmlAttributes(source: string): Record<string, string> {
   const output: Record<string, string> = {};
   const pattern = /([A-Za-z_:][A-Za-z0-9_.:-]*)\s*=\s*("([^"]*)"|'([^']*)')/g;
@@ -151,17 +163,23 @@ function zipRead(buffer: Buffer, entries: Map<string, ZipEntry>, entryName: stri
   return result;
 }
 
+/** 把 EPUB 的相对 href 解析成包内绝对路径：去锚点与查询串、统一分隔符、消掉 ./。 */
 function normalizePath(baseFile: string, href: string): string {
   const cleanHref = decodeURIComponent(href.split('#')[0]!.split('?')[0]!).replace(/\\/g, '/');
   return path.posix.normalize(path.posix.join(path.posix.dirname(baseFile), cleanHref)).replace(/^\.\/+/, '');
 }
 
+/** 取文档标题：优先一至三级标题，退到 <title>，都没有则返回空串。 */
 function headingFromHtml(html: string): string {
   const match = html.match(/<h[1-3]\b[^>]*>([\s\S]*?)<\/h[1-3]\s*>/i)
     || html.match(/<title\b[^>]*>([\s\S]*?)<\/title\s*>/i);
   return match ? cleanText(match[1]!).replace(/\s+/g, ' ').slice(0, 160) : '';
 }
 
+/**
+ * 把 HTML 拆成块序列（标题/段落/引文/列表项/预格式），并丢弃 head、nav 等非正文区域。
+ * 只认块级标签，行内标签留在块内由 cleanText 处理。
+ */
 function htmlBlocks(html: string): Array<{ text: string; kind: string; level?: number }> {
   const content = html
     .replace(/<head\b[^>]*>[\s\S]*?<\/head\s*>/gi, ' ')
@@ -217,11 +235,20 @@ function splitLongText(value: string, maxChars = 1800): string[] {
   return chunks;
 }
 
+/**
+ * 生成稳定片段 ID：前缀清洗成 URL 安全字符（最长 70），后缀是五位补零的序号。
+ * 同一份文档重复导入必须得到相同 ID，否则候选与记忆会挂到不存在的片段上。
+ */
 function stableId(prefix: string, index: number): string {
   const safe = prefix.replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 70) || 'section';
   return safe + '-' + String(index + 1).padStart(5, '0');
 }
 
+/**
+ * 块序列 → 片段。有标题标记时按标题切章；没有标题的长文档退化为虚拟分段
+ * （每 40 块或 2 万字符一段），避免整本书挤在同一章里影响摘要与检索的粒度。
+ * 每个块再按 splitLongText 切成不超过上限的片段。
+ */
 function segmentsFromBlocks(
   blocks: Array<{ text: string; kind: string; level?: number }>,
   format: DocumentFormat,
@@ -272,6 +299,10 @@ function segmentsFromBlocks(
   return result;
 }
 
+/**
+ * 从纯文本追加片段：按空行分块，并用多语言标题特征（`第X章`、`CHAPTER 1`、全大写短行等）
+ * 猜测哪些块是标题。识别不出来就交给 segmentsFromBlocks 的虚拟分段兜底。
+ */
 function appendTextSegments(
   segments: ProjectSegment[],
   text: string,
@@ -308,6 +339,7 @@ function appendTextSegments(
   segments.push(...parsed);
 }
 
+/** 解析 txt/md/html：HTML 走块提取，其余先解码再按标题特征分块。 */
 function parsePlainDocument(bytes: Buffer, format: DocumentFormat, fileName: string): ProjectSegment[] {
   const text = decodeText(bytes);
   const filePath = path.basename(fileName);
@@ -352,7 +384,9 @@ function parseDocx(bytes: Buffer, fileName: string): ProjectSegment[] {
 }
 
 /**
- * 解析 EPUB：读 container.xml→OPF，按 spine 顺序提取 XHTML 块，保留章节/路径与稳定片段 ID。
+ * 解析 EPUB：读 container.xml 找到 OPF，再按 spine 顺序提取各章 XHTML 块，
+ * 保留章节路径与稳定片段 ID。章节标题取该章的 h1~h3 或 <title>，取不到时用文件名；
+ * OPF 里有 dc:title 而首个 spine 没有可见标题时，补一条 `epub-title` 标题片段。
  */
 function parseEpub(bytes: Buffer, fileName: string): ProjectSegment[] {
   const entries = zipDirectory(bytes);
@@ -423,7 +457,9 @@ function parseEpub(bytes: Buffer, fileName: string): ProjectSegment[] {
 }
 
 /**
- * 通过 pdftotext 提取 PDF 文本层；超时/无 pdftotext/无文本层时抛错（不执行 OCR）。
+ * 通过本机 pdftotext 提取 PDF 文本层，带硬超时（默认 180s，下限 20s）。
+ * 超时、未安装 pdftotext、或文件没有文本层（扫描版）时一律抛错并说明原因——
+ * 这里不执行 OCR，也不会用空文本静默建出空项目。
  */
 async function extractPdfText(bytes: Buffer): Promise<string> {
   return await new Promise<string>((resolve, reject) => {
