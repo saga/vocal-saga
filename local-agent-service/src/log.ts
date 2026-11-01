@@ -30,7 +30,9 @@ export function appendLogToFile(line: string): void {
   try {
     const file = getLogFilePath();
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.appendFileSync(file, line + '\\n', { encoding: 'utf8' });
+    // 必须是真实换行。历史版本这里写成 '\\n'（字面反斜杠 + n），导致整个日志文件只有
+    // 一个物理行，wc -l / tail / grep -n 全部失效，1.2 MB 的日志无法按行检索。
+    fs.appendFileSync(file, line + '\n', { encoding: 'utf8' });
   } catch {
     // 日志落盘失败不应影响主流程；终端输出仍保留。
   }

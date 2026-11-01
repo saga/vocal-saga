@@ -920,6 +920,15 @@ export class DocumentProjectStore {
     // Initial project creation may migrate the reader's legacy Voice Bible once; later memory
     // writes must use the explicit /literary-memory endpoint, never Prompt/Run payloads.
     if (prompt.literaryMemory !== undefined) this.saveLiteraryMemory(projectId, prompt.literaryMemory);
+    // 导入一本书是最高频、最需要事后追溯的操作。此前这里一行都不打，
+    // 文件日志里完全看不出「这本书是什么时候、以多少片段导进来的」。
+    logInfo('document-projects', 'project created · project=' + projectId +
+      ' · format=' + format +
+      ' · segments=' + segments.length +
+      ' · chars=' + segments.reduce((sum, item) => sum + String(item.text || '').length, 0) +
+      ' · title=' + title.slice(0, 80) +
+      ' · file=' + fileName.slice(0, 120) +
+      ' · mode=' + (prompt.translationMode || 'technical'));
     return this.getProject(projectId)!;
   }
 
@@ -1152,7 +1161,6 @@ export class DocumentProjectStore {
         ? [{ ...rule, evidenceSegmentIds, status,
             ...(status === 'confirmed' ? { confirmationSource: rule.confirmationSource || 'model-default' } : { confirmationSource: undefined }) }] : [];
     });
-    const confirmedVoicesBefore = memory.characterVoices.filter((p: any) => p.status === 'confirmed').length;
     memory.entities = memory.entities.map((entity: any) => {
       const evidenceRefs = (Array.isArray(entity.evidenceRefs) ? entity.evidenceRefs : [])
         .filter((ref: any) => validEvidence(ref.segmentId, ref.sourceQuote));
@@ -1222,12 +1230,8 @@ export class DocumentProjectStore {
           : { confirmationSource: undefined, confirmedAt: undefined }),
       };
     }
-    const confirmedVoicesAfter = memory.characterVoices.filter((p: any) => p.status === 'confirmed').length;
-    logInfo('document-projects', 'literary memory validated · project=' + projectId +
-      ' · voices ' + confirmedVoicesBefore + '→' + confirmedVoicesAfter + ' confirmed' +
-      ' · entities=' + memory.entities.length +
-      ' · anchors=' + memory.voiceAnchors.length +
-      ' (approved=' + memory.voiceAnchors.filter((a: any) => a.status === 'approved').length + ')');
+    // 这里曾经每次读取项目都打一行 "literary memory validated"。它没有诊断价值，
+    // 却在日志里刷了 763 行，把真正的项目操作（创建/导入/归档）完全盖住。删除，不是降级。
     return memory;
   }
 
@@ -2760,7 +2764,12 @@ export class DocumentProjectStore {
   }
 
   archiveProject(projectId: string): void {
-    this.catalogDb().prepare('UPDATE document_projects SET archived = 1, updated_at = ? WHERE project_id = ?').run(isoNow(), projectId);
+    const result = this.catalogDb()
+      .prepare('UPDATE document_projects SET archived = 1, updated_at = ? WHERE project_id = ? AND archived = 0')
+      .run(isoNow(), projectId);
+    if (Number(result.changes) > 0) {
+      logInfo('document-projects', 'project archived · project=' + projectId);
+    }
   }
 
   private repairCatalogRow(projectId: string): void {

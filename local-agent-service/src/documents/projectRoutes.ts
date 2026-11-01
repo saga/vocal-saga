@@ -8,6 +8,7 @@ import { getDocumentProjectStore, MAX_DOCUMENT_SOURCE_BYTES } from './projectSto
 import { startProjectTranslationRun, isProjectRunActive } from './translationAgent.ts';
 import { applyChineseEditorialProfileReview, scheduleChineseEditorialProfileRefresh } from './chineseEditorialProfile.ts';
 import { sendApiError, sendJson } from '../middleware.ts';
+import { logError, logWarn } from '../log.ts';
 import { parseDocumentFile } from './ingest.ts';
 import { startContextGraphAnalysis, getContextGraph, getContextGraphStatus, reviewContextGraphItem, reviewContextGraphItems } from './contextGraph.ts';
 import {
@@ -24,11 +25,18 @@ function bodyObject(value: unknown): Record<string, any> {
   }
   return value as Record<string, any>;
 }
-function routeError(res: Response, error: unknown): void {
+function routeError(res: Response, error: unknown, request?: { method: string; path: string }): void {
   const value = error as { status?: number; message?: string };
   const status = Number.isInteger(value?.status) && Number(value.status) >= 400 && Number(value.status) < 600
-    ? Number(value.status) : 500;
+    ? Number(value.status)
+    : 500;
   const message = value?.message || String(error);
+  // 文档 API 的每个失败都必须在文件日志里留下原因。此前这里只回响应不打日志，
+  // 于是「GET 项目详情 → 413」重复十几次，日志里只剩一个状态码，无法定位是哪一个校验拒绝的。
+  const line = (request ? request.method + ' ' + request.path + ' ' : '') +
+    '文档请求失败 → ' + status + ' · ' + message;
+  if (status >= 500) logError('document-projects', line);
+  else logWarn('document-projects', line);
   sendApiError(res, status, message);
 }
 async function readRawSourceBody(req: Request, maxBytes: number): Promise<Buffer> {
@@ -572,7 +580,7 @@ export async function handleDocumentProjectRequest(req: Request, res: Response, 
     sendApiError(res, 404, '未知文档项目端点：' + method + ' ' + url.pathname);
     return true;
   } catch (error) {
-    routeError(res, error);
+    routeError(res, error, { method: req.method.toUpperCase(), path: url.pathname });
     return true;
   }
 }

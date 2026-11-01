@@ -253,17 +253,17 @@ export async function runWorkbuddy(
   }
 }
 
-export function resolveWorkbuddyStructured(structuredOutput: unknown, text: string): Record<string, any> | any[] {
+export function resolveWorkbuddyStructured(structuredOutput: unknown, text: string, context = ''): Record<string, any> | any[] {
   if (structuredOutput && typeof structuredOutput === 'object') {
     return structuredOutput as Record<string, any> | any[];
   }
-  const parsed = parseJsonValue(text);
+  const parsed = parseJsonValue(text, context);
   if (parsed !== null) return parsed;
   throw new Error('Workbuddy 返回内容不是有效 JSON');
 }
 
-export function resolveWorkbuddyJson(structuredOutput: unknown, text: string): Record<string, any> {
-  const parsed = resolveWorkbuddyStructured(structuredOutput, text);
+export function resolveWorkbuddyJson(structuredOutput: unknown, text: string, context = ''): Record<string, any> {
+  const parsed = resolveWorkbuddyStructured(structuredOutput, text, context);
   if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
     return parsed as Record<string, any>;
   }
@@ -313,7 +313,7 @@ export async function runWorkbuddyStructured(
     );
   }
   return {
-    parsed: resolveWorkbuddyStructured(result.structuredOutput, result.text),
+    parsed: resolveWorkbuddyStructured(result.structuredOutput, result.text, 'request=' + String(requestId).slice(0, 40)),
     usage: result.usage,
     ...(result.sessionId ? { sessionId: result.sessionId } : {}),
   };

@@ -289,7 +289,7 @@ export class WorkbuddySessionPool {
     try {
       turn = await Promise.race([runSessionTurn(session, combinedPrompt), timeoutPromise]);
     } catch (error) {
-      this.dropSession(index, timedOut ? '调用超时' : '调用失败');
+      this.dropSession(index, timedOut ? '调用超时' : '调用失败', error);
       if (timedOut) throw new Error('Workbuddy 调用超时（' + (timeoutMs / 1000).toFixed(0) + 's 内未返回）');
       throw new Error('Workbuddy Agent SDK 调用失败：' + (error instanceof Error ? error.message : String(error)));
     } finally {
@@ -307,6 +307,11 @@ export class WorkbuddySessionPool {
     const structuredMode = slot.schemaKey.length > 0;
     if (!text.trim() && structuredOutput === undefined) {
       this.dropSession(index, '空响应');
+      // 空响应是最难复盘的失败：留下模式、请求号与 scope，才能判断是模型没吐内容
+      // 还是会话被上游掐断。
+      logWarn('pool', '空响应 · slot=' + index + ' · mode=' + (structuredMode ? 'structured' : 'text') +
+        ' · request=' + requestId.slice(0, 40) + ' · scope=' + describeScope(slot.scopeKey) +
+        ' · 已用 ' + slot.uses + ' 轮');
       throw new Error(
         'Workbuddy 返回了空内容（mode=' + (structuredMode ? 'structured' : 'text') +
         '），会话已丢弃重建；请重试该批次',
@@ -374,7 +379,17 @@ export class WorkbuddySessionPool {
       try {
         created = await this.factory(buildTextSessionOptions(agent, schema));
       } catch (error) {
-        logWarn('pool', '新建会话失败 · slot=' + index + ' · ' + reason + ' · ' + summarizeError(error));
+        // SDK 抛出的 boot 失败通常只有一句不透明的 "boot failed"，拿不到 CLI 的 stderr。
+        // 既然原因不可得，就把这次 boot 的全部入参记下来：至少能判断是哪个模型、
+        // 哪种 schema 模式、在什么 cwd 下起的会话失败，从而可复现。
+        const options = buildTextSessionOptions(agent, schema);
+        logWarn('pool', '新建会话失败 · slot=' + index + ' · ' + reason +
+          ' · ' + summarizeError(error) +
+          ' · provider=' + agent.provider +
+          ' · model=' + (agent.model || '<运行时默认>') +
+          ' · mode=' + (schema ? 'structured' : 'text') +
+          ' · cwd=' + String(options.cwd || '<默认>') +
+          ' · after=' + (Date.now() - startedAt) + 'ms');
         throw error;
       }
       if (this.closed) {
@@ -425,14 +440,26 @@ export class WorkbuddySessionPool {
     }
   }
 
-  private dropSession(index: number, reason = '关闭'): void {
+  /**
+   * 丢弃并关闭槽位会话。
+   *
+   * 传入 error 时会把它写进日志：会话生命周期是排查「调用卡住/空响应」的关键线索，
+   * 只说「调用失败」而不说失败原因，等于没记。
+   */
+  private dropSession(index: number, reason = '关闭', error?: unknown): void {
     const slot = this.slots[index];
     if (slot.session) {
-      // 会话生命周期是排查「调用卡住/空响应」的关键线索：谁被丢弃、为什么，必须留一行。
-      logInfo('pool', '丢弃会话 · slot=' + index + ' · ' + reason +
+      const detail = error === undefined ? '' : ' · cause=' + summarizeError(error);
+      const line = '丢弃会话 · slot=' + index + ' · ' + reason +
         (slot.scopeKey ? ' · scope=' + describeScope(slot.scopeKey) : '') +
-        (slot.uses ? ' · 已用 ' + slot.uses + ' 轮' : ''));
-      try { slot.session.close(); } catch { /* 关闭失败直接丢弃 */ }
+        (slot.uses ? ' · 已用 ' + slot.uses + ' 轮' : '') + detail;
+      // 失败类丢弃是故障信号，用 warn；正常轮换（用满轮数、关闭池）保持 info。
+      if (error !== undefined) logWarn('pool', line);
+      else logInfo('pool', line);
+      try { slot.session.close(); } catch (closeError) {
+        // 关闭失败说明 CLI 子进程可能残留，必须留痕，否则会积累僵尸进程。
+        logWarn('pool', '关闭会话失败 · slot=' + index + ' · ' + summarizeError(closeError));
+      }
       slot.session = null;
     }
     slot.uses = 0;

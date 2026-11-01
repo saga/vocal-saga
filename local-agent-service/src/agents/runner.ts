@@ -135,7 +135,7 @@ export async function runAgentJson(
       usage = r.usage;
     } else if (effectiveAgent.provider === 'opencode') {
       const output = await runOpenCode(effectiveAgent, effective.prompt, effective.systemPrompt, options.timeoutMs);
-      const value = parseJsonValue(output);
+      const value = parseJsonValue(output, 'request=' + String(requestId).slice(0, 40));
       if (!value || Array.isArray(value)) throw new Error('OpenCode 返回内容不是预期 JSON 对象');
       parsed = value as Record<string, any>;
     } else {
@@ -181,7 +181,7 @@ export async function runAgentStructured(
       sessionId = r.sessionId;
     } else if (effectiveAgent.provider === 'opencode') {
       const output = await runOpenCode(effectiveAgent, effective.prompt, effective.systemPrompt, options.timeoutMs);
-      const value = parseJsonValue(output);
+      const value = parseJsonValue(output, 'request=' + String(requestId).slice(0, 40));
       if (value === null) throw new Error('OpenCode 返回内容不是有效 JSON');
       result = value;
     } else {

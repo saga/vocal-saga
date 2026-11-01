@@ -349,7 +349,7 @@ export async function handleRequest(req: Request, res: Response): Promise<void> 
         output = r.result;
         turnUsage = r;
         if (jsonMode) {
-          const parsedOutput = parseJsonValue(output);
+          const parsedOutput = parseJsonValue(output, 'request=' + requestId.slice(0, 40) + ' endpoint=' + url.pathname);
           if (!parsedOutput) {
             const preview = LOG_RESPONSE_PREVIEW
               ? ' preview=' + JSON.stringify(output.slice(0, 600))

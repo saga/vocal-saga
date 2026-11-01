@@ -67,7 +67,7 @@ export function buildAgentPrompt(messages: any, jsonMode = false) {
  * 不能因为顶层是数组就把成功的翻译响应误判为 502。
  * 同时接受代码围栏，或 JSON 前后附带少量解释文本的常见模型输出。
  */
-export function parseJsonValue(text: unknown): Record<string, any> | any[] | null {
+export function parseJsonValue(text: unknown, context = ''): Record<string, any> | any[] | null {
   const original = String(text ?? '').trim();
   if (!original) return null;
 
@@ -132,8 +132,13 @@ export function parseJsonValue(text: unknown): Record<string, any> | any[] | nul
   // 谁捡回的条目多用谁；修出来的残缺数组由调用方按 id 过滤、缺段重试补齐。
   try {
     const repaired = parseContainer(jsonrepair(value));
-    if (repaired !== null && containerItemCount(repaired) > containerItemCount(scanned)) {
-      logInfo('local-agent', 'json-repair salvaged invalid model output (inputChars=' + value.length + ')');
+    const repairedCount = containerItemCount(repaired);
+    if (repaired !== null && repairedCount > containerItemCount(scanned)) {
+      // 这是模型输出质量信号：只记 inputChars 无法判断是哪个调用、坏在哪、救回多少。
+      logInfo('local-agent', 'json-repair salvaged invalid model output · inputChars=' + value.length +
+        ' · scannedItems=' + containerItemCount(scanned) +
+        ' · repairedItems=' + repairedCount +
+        (context ? ' · ' + context : ''));
       return repaired;
     }
   } catch {
@@ -158,7 +163,7 @@ function containerItemCount(value: Record<string, any> | any[] | null): number {
 }
 
 /** Retain an object-only parser for the literary analysis and Reviewer schemas. */
-export function parseJsonObject(text: unknown): Record<string, any> | null {
-  const parsed = parseJsonValue(text);
+export function parseJsonObject(text: unknown, context = ''): Record<string, any> | null {
+  const parsed = parseJsonValue(text, context);
   return parsed && !Array.isArray(parsed) ? parsed as Record<string, any> : null;
 }

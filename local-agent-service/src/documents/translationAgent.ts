@@ -19,7 +19,7 @@ import { buildProjectVoiceContext, sanitizeProjectLiteraryMemory } from './voice
 import { buildTranslationBrief, summarizeTranslationBrief, type TranslationBrief } from './translationBrief.ts';
 import { runProjectQualityAudit, createQualityRepairRun, englishResidueFindings, numericFindings, terminologyFindings } from './qualityAudit.ts';
 import { CONTEXT_GRAPH_ANALYSIS_VERSION, getContextGraphStatus, startContextGraphAnalysis } from './contextGraph.ts';
-import { logError, logInfo, logWarn } from '../log.ts';
+import { logError, logInfo, logWarn, summarizeError } from '../log.ts';
 import { scheduleChineseEditorialProfileRefresh } from './chineseEditorialProfile.ts';
 import { isWorthCanonicalEntityMapping, validateCanonicalTarget } from './canonicalEntityPolicy.ts';
 import {
@@ -1614,6 +1614,7 @@ async function ensureLiteraryPreprocessingBeforeRun(
  */
 async function executeRun(projectId: string, runId: string): Promise<void> {
   const store = getDocumentProjectStore();
+  const runStartedAt = Date.now();
   try {
     const context = store.getRunContext(projectId, runId);
     if (!context.prompt) throw new Error('找不到本次运行使用的 Prompt 版本');
@@ -1656,6 +1657,18 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
           ? Math.min(strategy.reviewConcurrency, CONFIGURED_REVIEW_CONCURRENCY)
           : 1,
       );
+    // run 起点：日志里必须能看出这一次 Run 是哪一个项目、哪个范围、多少段、多少批、
+    // 用什么并发和审校强度。缺了这些，"为什么慢/为什么没跑"只能去翻 DB。
+    logInfo('document-agent', 'run started · project=' + projectId + ' · run=' + runId +
+      ' · mode=' + context.run.translationMode +
+      ' · scope=' + JSON.stringify(context.run.scope || {}) +
+      ' · segments=' + items.length +
+      ' · batches=' + batches.length +
+      ' · translateConcurrency=' + translationConcurrency +
+      ' · reviewStrength=' + reviewStrength +
+      ' · reviewConcurrency=' + reviewConcurrency +
+      ' · provider=' + context.run.provider +
+      ' · model=' + (context.run.model || '<运行时默认>'));
     store.appendEvent(projectId, runId, 'plan.ready', {
       batchCount: batches.length,
       segmentCount: items.length,
@@ -2076,9 +2089,11 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
             return;
           }
         }
+        const reviewDurationMs = Date.now() - reviewStartedAt;
         store.appendEvent(projectId, runId, 'stage.completed', {
           stage: 'review',
           batchIndex,
+          reviewStrength,
           reviewedIds: review.reviewedIds,
           missingIds: review.missingIds,
           findingCount: review.findings.length,
@@ -2089,8 +2104,18 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
           systemPromptChars: review.systemPromptChars,
           contextChars: review.contextChars,
           translationBriefHash: review.translationBriefHash || translationBrief?.contextHash || null,
-          durationMs: Date.now() - reviewStartedAt,
+          durationMs: reviewDurationMs,
         });
+        // 审校耗时是判断「为什么一批要一分多钟」的第一手依据，必须进文件日志。
+        logInfo('document-agent', 'review done · run=' + runId +
+          ' · batch=' + batchIndex + '/' + batches.length +
+          ' · strength=' + reviewStrength +
+          ' · segments=' + reviewTargets.length +
+          ' · findings=' + review.findings.length +
+          ' · missing=' + (Array.isArray(review.missingIds) ? review.missingIds.length : 0) +
+          ' · revised=' + revisedCount +
+          ' · promptChars=' + (review.promptChars || 0) +
+          ' · durationMs=' + reviewDurationMs);
         if ((review.missingIds || []).length || review.retryError) {
           store.appendEvent(projectId, runId, 'stage.warning', {
             stage: 'review', batchIndex,
@@ -2103,6 +2128,16 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
         if (!chineseMonolingualEdit && reviewStrength === 'strong') await runStyleReview();
     } catch (error) {
         // Review is a quality improvement, not a gate on translation progress.
+        // 审校失败以前只写 project_events，文件日志里完全看不到；批次「跑完了但没审」时
+        // 只能靠打开 DB 才知道。这里补一行，带上强度档位与失败原因。
+        if (store.getRunStatus(projectId, runId) !== 'cancelled') {
+          logWarn('document-agent', 'review failed · project=' + projectId + ' · run=' + runId +
+            ' · batch=' + batchIndex + '/' + batches.length +
+            ' · strength=' + reviewStrength +
+            ' · segments=' + reviewTargets.length +
+            ' · durationMs=' + (Date.now() - reviewStartedAt) +
+            ' · error=' + summarizeError(error));
+        }
         try {
           // If bilingual review failed as a whole, discard all provisional Chinese-only edits.
           // The persisted first-pass candidates remain untouched and will be auto-finalized.
@@ -2309,6 +2344,14 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
       }
 
       const failedIds = Array.from(pending.keys());
+      if (failedIds.length) {
+        // 批次失败只在文件日志里出现一次，就够定位「哪一批、哪些片段、什么原因」。
+        logWarn('document-agent', 'batch failed · project=' + projectId + ' · run=' + runId +
+          ' · batch=' + batchIndex + '/' + batches.length +
+          ' · failed=' + failedIds.length + '/' + batch.length +
+          ' · ids=' + failedIds.slice(0, 8).join(',') + (failedIds.length > 8 ? '…' : '') +
+          ' · error=' + summarizeError(lastError));
+      }
       const shouldReview = translations.size > 0 &&
         batchContext.run.translationMode === 'literary' &&
         batchContext.run.reviewEnabled;
@@ -2496,13 +2539,24 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
 
 
 
+    const finishedUsage = summarizeTurnUsage(takeRunUsage(runId));
     store.appendEvent(projectId, runId, 'run.finished', {
       status: finishedRun.status,
       counts: finishedRun.counts || {},
       error: finishedRun.error || null,
       // 本运行累计 token 消耗（仅初译模型调用；审校/预处理各自有 model.usage 事件）。
-      usage: summarizeTurnUsage(takeRunUsage(runId)),
+      usage: finishedUsage,
     });
+    // run 级终点必须在文件日志里也留一行：只写 project_events 时，日志里看不出
+    // 「哪一次 run 结束了、结果如何」，排查只能靠打开项目 DB。
+    const finishedLine = 'run finished · project=' + projectId + ' · run=' + runId +
+      ' · status=' + finishedRun.status +
+      ' · counts=' + JSON.stringify(finishedRun.counts || {}) +
+      ' · wall=' + Math.round((Date.now() - runStartedAt) / 1000) + 's' +
+      ' · ' + finishedUsage +
+      (finishedRun.error ? ' · error=' + summarizeError(finishedRun.error) : '');
+    if (['failed', 'cancelled'].includes(String(finishedRun.status))) logWarn('document-agent', finishedLine);
+    else logInfo('document-agent', finishedLine);
     if (['completed', 'partial'].includes(finishedRun.status)) {
       scheduleChineseEditorialProfileRefresh(projectId, runId);
     }
