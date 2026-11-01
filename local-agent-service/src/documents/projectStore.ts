@@ -1537,7 +1537,17 @@ export class DocumentProjectStore {
         latestAccepted.set(row.segment_id, row);
       }
     }
-    const failedRows = db.prepare("SELECT segment_id FROM run_segments WHERE status = 'failed' ORDER BY updated_at DESC").all() as Array<{ segment_id: string }>;
+    const manuallyAcceptedIds = new Set(acceptedRows
+      .filter((row) => row.origin === 'manual' && row.source_hash === currentHashById.get(row.segment_id))
+      .map((row) => row.segment_id));
+    // Failed rows are valid only for the source revision and exact source hash that failed.
+    const failedRows = db.prepare(
+      "SELECT rs.segment_id FROM run_segments rs " +
+      "JOIN translation_runs r ON r.run_id = rs.run_id " +
+      "JOIN source_segments current ON current.source_revision_id = ? " +
+      "AND current.segment_id = rs.segment_id AND current.source_hash = rs.source_hash " +
+      "WHERE rs.status = 'failed' AND r.source_revision_id = ? ORDER BY rs.updated_at DESC",
+    ).all(sourceRevisionId, sourceRevisionId) as Array<{ segment_id: string }>;
     const failedIds = new Set(failedRows.map((row) => row.segment_id));
     const idSet = new Set((scope.ids || []).map(String));
     const chapter = (scope.chapter || '').trim();
@@ -1546,7 +1556,11 @@ export class DocumentProjectStore {
       if (scopeType === 'all') return true;
       if (scopeType === 'ids') return idSet.has(segment.segment_id);
       if (scopeType === 'chapter') return !!chapter && (segment.context_path === chapter || segment.context_path.startsWith(chapter + ' >'));
-      if (scopeType === 'failed') return failedIds.has(segment.segment_id);
+      if (scopeType === 'failed') {
+        if (!failedIds.has(segment.segment_id) || manuallyAcceptedIds.has(segment.segment_id)) return false;
+        const accepted = latestAccepted.get(segment.segment_id);
+        return !accepted || accepted.run_fingerprint !== runFingerprint;
+      }
       const accepted = latestAccepted.get(segment.segment_id);
       return !accepted || accepted.source_hash !== segment.source_hash || (accepted.origin !== 'manual' && accepted.run_fingerprint !== runFingerprint);
     });
