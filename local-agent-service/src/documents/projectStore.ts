@@ -8,7 +8,7 @@
  */
 import { createHash, randomUUID } from 'node:crypto';
 import { readdirSync, mkdirSync } from 'node:fs';
-import { writeFile } from 'node:fs/promises';
+import { rename, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { DATA_DIR } from '../config.ts';
@@ -862,12 +862,16 @@ export class DocumentProjectStore {
     db.prepare('INSERT INTO project_meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, value);
   }
 
-  private insertSourceRevision(db: DatabaseSync, projectId: string, title: string, format: DocumentFormat, fileName: string, segments: ProjectSegment[]) {
-    const revisionId = randomUUID();
+  private insertSourceRevision(
+    db: DatabaseSync, projectId: string, title: string, format: DocumentFormat, fileName: string,
+    segments: ProjectSegment[], revisionId = randomUUID(),
+    sourceFile?: { relativePath: string; sha256: string; size: number },
+  ) {
     const fingerprint = sourceFingerprint(segments);
     const createdAt = isoNow();
-    db.prepare('INSERT INTO source_revisions(revision_id, file_name, format, source_fingerprint, parser_version, segment_count, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .run(revisionId, fileName, format, fingerprint, 'segment-contract-v1', segments.length, createdAt);
+    db.prepare('INSERT INTO source_revisions(revision_id, file_name, format, source_fingerprint, parser_version, segment_count, source_file_path, source_file_hash, source_file_size, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(revisionId, fileName, format, fingerprint, 'segment-contract-v1', segments.length,
+        sourceFile?.relativePath ?? null, sourceFile?.sha256 ?? null, sourceFile?.size ?? null, createdAt);
     const insert = db.prepare('INSERT INTO source_segments(source_revision_id, segment_id, ordinal, text, kind, context_path, page, level, marker, path, start_time, end_time, source_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
     segments.forEach((segment, index) => insert.run(revisionId, segment.id, index, segment.text, segment.kind || 'paragraph',
       segment.contextPath || '', segment.page ?? null, segment.level ?? null, segment.marker ?? null,
@@ -937,7 +941,11 @@ export class DocumentProjectStore {
    * 活跃 Run/预处理会阻止版本切换；新的 revision 会重新计算稳定片段 ID 与 source hash，
    * 旧 Run、审计报告和 TranslationBrief 快照仍绑定其创建时的 revision。
    */
-  createSourceRevision(projectId: string, input: Omit<CreateProjectInput, 'prompt'>): ProjectSummary {
+  createSourceRevision(
+    projectId: string,
+    input: Omit<CreateProjectInput, 'prompt'>,
+    sourceFile?: { revisionId: string; relativePath: string; sha256: string; size: number },
+  ): ProjectSummary {
     const segments = validateSegments(input.segments);
     const current = this.getProject(projectId);
     if (!current) throw Object.assign(new Error('找不到文档项目'), { status: 404 });
@@ -972,7 +980,8 @@ export class DocumentProjectStore {
           );
         }
       }
-      revision = this.insertSourceRevision(db, projectId, title, format, fileName, segments);
+      revision = this.insertSourceRevision(db, projectId, title, format, fileName, segments,
+        sourceFile?.revisionId, sourceFile ? { relativePath: sourceFile.relativePath, sha256: sourceFile.sha256, size: sourceFile.size } : undefined);
       db.exec('COMMIT');
     } catch (error) {
       try { db.exec('ROLLBACK'); } catch { /* the transaction may already have committed */ }
@@ -981,6 +990,65 @@ export class DocumentProjectStore {
     this.catalogDb().prepare('UPDATE document_projects SET title = ?, format = ?, source_file_name = ?, source_fingerprint = ?, updated_at = ? WHERE project_id = ?')
       .run(title, format, fileName, revision.fingerprint, revision.createdAt, projectId);
     return this.getProject(projectId)!;
+  }
+
+  /**
+   * 原始文件更新先写入不可变文件，再在 SQLite 事务中登记文件元数据并切换 current revision。
+   * 事务失败会清理新文件；异常退出最多留下无引用文件，不会让 current revision 指向缺失文件。
+   */
+  async createSourceRevisionWithFile(
+    projectId: string,
+    input: Omit<CreateProjectInput, 'prompt'>,
+    fileName: string,
+    bytes: Uint8Array,
+  ): Promise<{ project: ProjectSummary; sourceFile: { saved: true; size: number; sha256: string; sourceRevisionId: string } }> {
+    if (!(bytes instanceof Uint8Array) || bytes.byteLength < 1) {
+      throw Object.assign(new Error('原始文件内容为空'), { status: 400 });
+    }
+    if (bytes.byteLength > MAX_DOCUMENT_SOURCE_BYTES) {
+      throw Object.assign(new Error('原始文件超过 ' + Math.round(MAX_DOCUMENT_SOURCE_BYTES / 1024 / 1024) + ' MiB 上限；可通过 LOCAL_AGENT_MAX_DOCUMENT_SOURCE_MB 调整本机导入上限'), { status: 413 });
+    }
+    const current = this.getProject(projectId);
+    if (!current) throw Object.assign(new Error('找不到文档项目'), { status: 404 });
+    const format = normalizeFormat(input.format || current.format);
+    const cleanName = path.basename(String(fileName || '')).replace(/[\\x00-\\x1f]/g, '').slice(0, 240) || ('source.' + format);
+    const extension = path.extname(cleanName).replace(/^\\./, '').toLowerCase();
+    if (extension && extension !== format.toLowerCase()) {
+      throw Object.assign(new Error('原始文件扩展名与项目格式不匹配'), { status: 400 });
+    }
+    const revisionId = randomUUID();
+    const relativePath = path.join('sources', revisionId + '.' + format);
+    const revisionDir = path.dirname(this.projectPath(projectId));
+    const targetPath = path.resolve(revisionDir, relativePath);
+    const tempPath = targetPath + '.tmp';
+    if (!targetPath.startsWith(revisionDir + path.sep)) throw new Error('原始文件路径不安全');
+    mkdirSync(path.dirname(targetPath), { recursive: true });
+    const copied = Buffer.from(bytes);
+    const sourceHash = createHash('sha256').update(copied).digest('hex');
+    let targetCreated = false;
+    try {
+      await writeFile(tempPath, copied, { flag: 'wx' });
+      await rename(tempPath, targetPath);
+      targetCreated = true;
+      const title = (input.title || current.title).trim().slice(0, 500) || current.title;
+      const project = this.createSourceRevision(projectId, {
+        ...input, title, format, sourceFileName: cleanName,
+      }, { revisionId, relativePath, sha256: sourceHash, size: copied.byteLength });
+      const sourceFile = {
+        saved: true as const, size: copied.byteLength, sha256: sourceHash, sourceRevisionId: revisionId,
+      };
+      this.addEvent(projectId, null, 'source.file-saved', {
+        sourceRevisionId: revisionId, fileName: cleanName, size: copied.byteLength, sha256: sourceHash,
+      });
+      return { project, sourceFile };
+    } catch (error) {
+      const currentRevisionId = this.getProject(projectId)?.currentSourceRevisionId;
+      if (currentRevisionId !== revisionId) {
+        await unlink(tempPath).catch(() => undefined);
+        if (targetCreated) await unlink(targetPath).catch(() => undefined);
+      }
+      throw error;
+    }
   }
 
   /**
