@@ -11,121 +11,121 @@
     {
       "method": "GET",
       "path": "/health",
-      "source": "src/routes.ts",
+      "source": "src/localApiRoutes.ts",
       "signature": "url.pathname === '/health'"
     },
     {
       "method": "GET",
       "path": "/api/settings/diagnostics",
-      "source": "src/routes.ts",
+      "source": "src/localApiRoutes.ts",
       "signature": "url.pathname === '/api/settings/diagnostics'"
     },
     {
       "method": "GET",
       "path": "/v1/models",
-      "source": "src/routes.ts",
+      "source": "src/localApiRoutes.ts",
       "signature": "url.pathname === '/v1/models'"
     },
     {
       "method": "GET",
       "path": "/api/codebuddy/models",
-      "source": "src/routes.ts",
+      "source": "src/localApiRoutes.ts",
       "signature": "url.pathname === '/api/codebuddy/models'"
     },
     {
       "method": "GET",
       "path": "/api/codebuddy/config-options",
-      "source": "src/routes.ts",
+      "source": "src/localApiRoutes.ts",
       "signature": "url.pathname === '/api/codebuddy/config-options'"
     },
     {
       "method": "GET",
       "path": "/api/history",
-      "source": "src/routes.ts",
+      "source": "src/localApiRoutes.ts",
       "signature": "url.pathname === '/api/history'"
     },
     {
       "method": "DELETE",
       "path": "/api/history",
-      "source": "src/routes.ts",
+      "source": "src/localApiRoutes.ts",
       "signature": "url.pathname === '/api/history'"
     },
     {
       "method": "POST",
       "path": "/api/cache/translation/get",
-      "source": "src/routes.ts",
+      "source": "src/localApiRoutes.ts",
       "signature": "url.pathname === '/api/cache/translation/get'"
     },
     {
       "method": "POST",
       "path": "/api/cache/translation/set",
-      "source": "src/routes.ts",
+      "source": "src/localApiRoutes.ts",
       "signature": "url.pathname === '/api/cache/translation/set'"
     },
     {
       "method": "POST",
       "path": "/api/cache/translation/delete",
-      "source": "src/routes.ts",
+      "source": "src/localApiRoutes.ts",
       "signature": "url.pathname === '/api/cache/translation/delete'"
     },
     {
       "method": "DELETE",
       "path": "/api/cache/translation",
-      "source": "src/routes.ts",
+      "source": "src/localApiRoutes.ts",
       "signature": "url.pathname === '/api/cache/translation'"
     },
     {
       "method": "POST",
       "path": "/api/documents/session/summary",
-      "source": "src/routes.ts",
+      "source": "src/localApiRoutes.ts",
       "signature": "url.pathname === '/api/documents/session/summary'"
     },
     {
       "method": "POST",
       "path": "/api/documents/session/get",
-      "source": "src/routes.ts",
+      "source": "src/localApiRoutes.ts",
       "signature": "url.pathname === '/api/documents/session/get'"
     },
     {
       "method": "POST",
       "path": "/api/documents/session/save",
-      "source": "src/routes.ts",
+      "source": "src/localApiRoutes.ts",
       "signature": "url.pathname === '/api/documents/session/save'"
     },
     {
       "method": "DELETE",
       "path": "/api/documents/session/{sessionId}",
-      "source": "src/routes.ts",
+      "source": "src/localApiRoutes.ts",
       "signature": "url.pathname.startsWith('/api/documents/session/')"
     },
     {
       "method": "POST",
       "path": "/api/documents/batches",
-      "source": "src/routes.ts",
+      "source": "src/localApiRoutes.ts",
       "signature": "url.pathname === '/api/documents/batches'"
     },
     {
       "method": "GET",
       "path": "/api/config/task-prompts",
-      "source": "src/routes.ts",
+      "source": "src/localApiRoutes.ts",
       "signature": "url.pathname === '/api/config/task-prompts'"
     },
     {
       "method": "POST",
       "path": "/v1/chat/completions",
-      "source": "src/routes.ts",
+      "source": "src/longTaskRoutes.ts",
       "signature": "url.pathname === '/v1/chat/completions'"
     },
     {
       "method": "POST",
       "path": "/api/translate/document/literary/analyze",
-      "source": "src/routes.ts",
+      "source": "src/longTaskRoutes.ts",
       "signature": "url.pathname.endsWith('/analyze')"
     },
     {
       "method": "POST",
       "path": "/api/translate/document/literary/review",
-      "source": "src/routes.ts",
+      "source": "src/longTaskRoutes.ts",
       "signature": "'POST /api/translate/document/literary/review'"
     },
     {

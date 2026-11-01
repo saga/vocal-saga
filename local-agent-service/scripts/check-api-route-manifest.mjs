@@ -39,28 +39,37 @@ for (const route of manifest.routes) {
 // require each one to be represented in the manifest. The existing forward check
 // above catches stale signatures; this catches newly added handlers that forgot
 // to update the manifest. This is intentionally a lightweight source check, not an AST.
-const commonSource = sourceCache.get('src/routes.ts');
-const commonRoutes = manifestBySource.get('src/routes.ts') || [];
-const commonConditions = commonSource.matchAll(/if\s*\(([\s\S]*?)\)\s*\{/g);
-for (const match of commonConditions) {
-  const condition = match[1];
-  if (!/req\.method\s*===/.test(condition) || !condition.includes('url.pathname')) continue;
-  const method = condition.match(/req\.method\s*===\s*'([A-Z]+)'/)?.[1];
-  assert.ok(method, `could not determine HTTP method from route condition: ${condition}`);
-  assert.ok(
-    commonRoutes.some((route) => route.method === method && condition.includes(route.signature)),
-    `API route manifest is missing a handler in src/routes.ts: ${method} (${condition.trim()})`,
-  );
+//
+// 分发入口可能分布在多个文件（总路由 + 各分组路由器），逐个文件按清单里登记的
+// source 反查，避免新增分组路由器后校验静默失效。
+const DISPATCH_SOURCES = ['src/routes.ts', 'src/localApiRoutes.ts', 'src/longTaskRoutes.ts'];
+for (const dispatchSource of DISPATCH_SOURCES) {
+  const source = sourceCache.get(dispatchSource);
+  if (!source) continue;
+  const routes = manifestBySource.get(dispatchSource) || [];
+  for (const match of source.matchAll(/if\s*\(([\s\S]*?)\)\s*\{/g)) {
+    const condition = match[1];
+    if (!/req\.method\s*===/.test(condition) || !condition.includes('url.pathname')) continue;
+    const method = condition.match(/req\.method\s*===\s*'([A-Z]+)'/)?.[1];
+    assert.ok(method, `could not determine HTTP method from route condition: ${condition}`);
+    assert.ok(
+      routes.some((route) => route.method === method && condition.includes(route.signature)),
+      `API route manifest is missing a handler in ${dispatchSource}: ${method} (${condition.trim()})`,
+    );
+  }
 }
 
 // The three one-shot literary/OpenAI endpoints are dispatched through the
 // supported-method set rather than an outer req.method/pathname condition.
-const supportedBlock = commonSource.match(/const supported = new Set\(\[([\s\S]*?)\]\);/);
-assert.ok(supportedBlock, 'could not locate supported endpoint set in src/routes.ts');
+const longTaskSource = sourceCache.get('src/longTaskRoutes.ts');
+assert.ok(longTaskSource, 'could not read src/longTaskRoutes.ts');
+const longTaskRoutes = manifestBySource.get('src/longTaskRoutes.ts') || [];
+const supportedBlock = longTaskSource.match(/const SUPPORTED_LONG_TASKS = new Set\(\[([\s\S]*?)\]\);/);
+assert.ok(supportedBlock, 'could not locate supported endpoint set in src/longTaskRoutes.ts');
 for (const match of supportedBlock[1].matchAll(/'([A-Z]+) (\/[^']+)'/g)) {
   const [, method, path] = match;
   assert.ok(
-    commonRoutes.some((route) => route.method === method && route.path === path),
+    longTaskRoutes.some((route) => route.method === method && route.path === path),
     `API route manifest is missing supported endpoint: ${method} ${path}`,
   );
 }
