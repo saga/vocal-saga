@@ -246,6 +246,77 @@ test('detached reviewer limiter never exceeds its own concurrency budget', async
   })));
   assert.equal(maxActive, 2);
 });
+
+test('review limiter expands after translation drains so idle pool slots are not wasted', async () => {
+  // 回归：闸门上限曾经冻结在创建那一刻，翻译全部结束后审校仍然是 1 路，
+  // 实测 386s 的 run 里有 284s（74%）是翻译做完之后在等串行审校。
+  const { createConcurrencyLimiter } = await import('../src/documents/translationAgent.ts');
+  const limit = createConcurrencyLimiter(1);
+  let active = 0;
+  let maxActive = 0;
+  const started = [];
+  const run = (index) => limit(async () => {
+    started.push(index);
+    active++;
+    maxActive = Math.max(maxActive, active);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    active--;
+  });
+
+  const tasks = [0, 1, 2, 3].map(run);
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(maxActive, 1, '翻译期间审校只能占 1 个槽位');
+  assert.equal(limit.pending(), 4);
+
+  assert.equal(limit.setConcurrency(4), 4);
+  assert.equal(limit.getConcurrency(), 4);
+  await Promise.all(tasks);
+  assert.equal(maxActive, 4, '扩容后排队中的审校应当立即并行');
+  assert.equal(started.length, 4);
+});
+
+test('review limiter never interrupts running work when the ceiling is lowered', async () => {
+  const { createConcurrencyLimiter } = await import('../src/documents/translationAgent.ts');
+  const limit = createConcurrencyLimiter(4);
+  let active = 0;
+  let maxActive = 0;
+  const tasks = Array.from({ length: 4 }, () => limit(async () => {
+    active++;
+    maxActive = Math.max(maxActive, active);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    active--;
+  }));
+  limit.setConcurrency(1);
+  await Promise.all(tasks);
+  assert.equal(maxActive, 4, '已在跑的审校不能被调低上限打断');
+  assert.equal(limit.getConcurrency(), 1);
+});
+
+test('short tail batches merge only when they fit the documented batch limits', async () => {
+  const { mergeShortTailBatch } = await import('../src/documents/translationAgent.ts');
+  const strategy = { maxBatchSegments: 16, maxBatchSourceChars: 8000 };
+  const seg = (id, chars, chapter = 'Chapter 1') => ({ id, text: 'x'.repeat(chars), contextPath: chapter });
+
+  // 尾批只有 1 段且字符装得下 → 合并，省掉一份完整 brief 与一次审校调用。
+  const merged = mergeShortTailBatch([[seg('a', 100), seg('b', 100)], [seg('c', 100)]], strategy, true);
+  assert.deepEqual(merged.map((batch) => batch.length), [3]);
+
+  // 合并后会突破 maxBatchSourceChars → 保持原样（该上限是硬约束）。
+  const tooLarge = mergeShortTailBatch([[seg('a', 4_100)], [seg('b', 4_100)]], strategy, true);
+  assert.deepEqual(tooLarge.map((batch) => batch.length), [1, 1]);
+
+  // 跨章节不合并。
+  const crossChapter = mergeShortTailBatch(
+    [[seg('a', 100, 'Chapter 1')], [seg('b', 100, 'Chapter 2')]], strategy, true,
+  );
+  assert.deepEqual(crossChapter.map((batch) => batch.length), [1, 1]);
+
+  // 尾批超过阈值（16/3=5）不合并。
+  const longTail = mergeShortTailBatch(
+    [[seg('a', 100)], Array.from({ length: 6 }, (_, i) => seg('t' + i, 10))], strategy, true,
+  );
+  assert.deepEqual(longTail.map((batch) => batch.length), [1, 6]);
+});
 test('document batch scheduler stops adding queued work after a fatal worker error', async () => {
   const { runWithConcurrency } = await import('../src/documents/translationAgent.ts');
   const started = [];

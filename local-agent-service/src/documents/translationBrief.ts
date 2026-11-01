@@ -1199,6 +1199,11 @@ export function buildTranslationBrief(
   diagnostic.contextComponents = componentDiagnostics;
   brief.contextChars = serialized.length;
   brief.contextHash = createHash('sha256').update(serialized, 'utf8').digest('hex');
+  // contextBudgetChars 是「建议预算」，不是硬约束：上下文证据不因提示词体积被删除。
+  // 但它必须可见——否则用户改了配置、看到日志里写着 18000，却不知道实际发了 18750。
+  const budgetExcess = strategy.contextBudgetChars > 0
+    ? brief.contextChars - strategy.contextBudgetChars : 0;
+  (brief.contextDiagnostics as any).contextBudgetExcessChars = budgetExcess > 0 ? budgetExcess : 0;
   logInfo('translation-brief', 'assembled · segments=' + brief.sourceSegmentIds.length +
     ' · chars=' + brief.contextChars +
     ' · graphMappings=' + (Array.isArray((brief.contextGraph as any)?.nameMappings) ? (brief.contextGraph as any).nameMappings.length : 0) +
@@ -1206,7 +1211,8 @@ export function buildTranslationBrief(
     ' · voiceEntities=' + (Array.isArray((brief.voiceContext as any)?.entities) ? (brief.voiceContext as any).entities.length : 0) +
     ' · voiceCharacters=' + (Array.isArray((brief.voiceContext as any)?.characterVoices) ? (brief.voiceContext as any).characterVoices.length : 0) +
     ' · preceding=' + brief.precedingSegments.length +
-    ' · componentChars=' + componentLargest);
+    ' · componentChars=' + componentLargest +
+    (budgetExcess > 0 ? ' · 超建议预算=' + budgetExcess + '（未裁剪）' : ''));
   return brief;
 }
 

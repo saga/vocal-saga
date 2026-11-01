@@ -7,6 +7,7 @@ import {
   codeBuddyThinkingOption,
   normalizeCodeBuddyTaskProfile,
   normalizeCodeBuddyTaskProfiles,
+  resolveEffectiveTaskModel,
 } from '../src/agents/taskProfiles.ts';
 import { buildWorkbuddyOptions } from '../src/agents/workbuddy.ts';
 
@@ -85,4 +86,16 @@ test('contextWindow is opt-in and normalized without changing task defaults', ()
   const explicit = normalizeCodeBuddyTaskProfile({ contextWindow: '1000000' }, 'translation');
   assert.equal(explicit.contextWindow, 1_000_000);
   assert.equal(normalizeCodeBuddyTaskProfile({ contextWindow: '1M' }, 'translation').contextWindow, undefined);
+});
+
+test('effective model prefers the task profile over the pool default', () => {
+  // 回归：审计事件曾经记录池默认模型（glm-5.3-flash），而 runner 实际用的是
+  // taskProfile.model（deepseek-v4.1-flash），日志上的模型名因此是错的。
+  const profile = normalizeCodeBuddyTaskProfile({ model: 'deepseek-v4.1-flash' }, 'translation');
+  assert.equal(resolveEffectiveTaskModel('glm-5.3-flash', profile), 'deepseek-v4.1-flash');
+  assert.equal(resolveEffectiveTaskModel('glm-5.3-flash', undefined), 'glm-5.3-flash');
+  assert.equal(resolveEffectiveTaskModel('', undefined), '<runtime-default>');
+  // 'auto' 表示「不覆盖」，回落到基础模型。
+  assert.equal(resolveEffectiveTaskModel('glm-5.3-flash', { ...profile, model: 'auto' }), 'glm-5.3-flash');
+  assert.equal(resolveEffectiveTaskModel('glm-5.3-flash', { ...profile, model: '  ' }), 'glm-5.3-flash');
 });

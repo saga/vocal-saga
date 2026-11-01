@@ -20,6 +20,24 @@ function describeTask(requestId: string, sessionScope?: string): string {
   return '通用模型请求';
 }
 
+/**
+ * 每次模型调用都要在文件日志里留下「耗时 / 输出量 / token」。
+ *
+ * 这里曾经对 workflow 调用直接 return，理由是「它们有自己的事件」。但事件在 SQLite 里，
+ * 文件日志是排查时第一眼看到的东西：文档初译因此完全没有调用级日志，一次 run 里
+ * 每个批次花了多久、产出多少字，只能在 DB 里拼。代价远大于那点日志量。
+ */
+function logModelStart(
+  agent: AgentSpec, prompt: string, systemPrompt: string, requestId: string,
+  sessionScope: string | undefined, mode: string,
+): void {
+  logInfo('model', describeTask(requestId, sessionScope) + ' · 开始 · request=' + requestId.slice(0, 12) +
+    ' · ' + agent.provider + '/' + (agent.model || '运行时默认模型') +
+    ' · 模式=' + mode + ' · 输入=' + prompt.length.toLocaleString() +
+    ' 字符 · 系统指令=' + systemPrompt.length.toLocaleString() + ' 字符' +
+    (isWorkflowManaged(sessionScope) ? ' · 工作流' : ''));
+}
+
 function compactOutputSummary(value: unknown): string {
   if (typeof value === 'string') return '文本 ' + value.length + ' 字符';
   if (Array.isArray(value)) return '数组 ' + value.length + ' 项';
@@ -32,26 +50,15 @@ function compactOutputSummary(value: unknown): string {
   return counts.length ? counts.join(' ') : 'JSON 字段 ' + Object.keys(row).slice(0, 8).join(', ');
 }
 
-function logModelStart(
-  agent: AgentSpec, prompt: string, systemPrompt: string, requestId: string,
-  sessionScope: string | undefined, mode: string,
-): void {
-  if (isWorkflowManaged(sessionScope)) return;
-  logInfo('model', describeTask(requestId, sessionScope) + ' · 开始 · request=' + requestId.slice(0, 12) +
-    ' · ' + agent.provider + '/' + (agent.model || '运行时默认模型') +
-    ' · 模式=' + mode + ' · 输入=' + prompt.length.toLocaleString() +
-    ' 字符 · 系统指令=' + systemPrompt.length.toLocaleString() + ' 字符');
-}
-
 function logModelSuccess(
   agent: AgentSpec, output: unknown, requestId: string, sessionScope: string | undefined,
   startedAt: number, mode: string, usage: TurnUsage | null = null,
 ): void {
-  if (isWorkflowManaged(sessionScope)) return;
   logInfo('model', describeTask(requestId, sessionScope) + ' · 完成 · request=' + requestId.slice(0, 12) +
     ' · ' + agent.provider + '/' + (agent.model || '运行时默认模型') +
     ' · 耗时=' + ((Date.now() - startedAt) / 1000).toFixed(1) + 's · 输出=' + compactOutputSummary(output) +
-    ' · ' + formatTurnUsageLog(usage) + ' · 模式=' + mode);
+    ' · ' + formatTurnUsageLog(usage) + ' · 模式=' + mode +
+    (isWorkflowManaged(sessionScope) ? ' · 工作流' : ''));
 }
 
 function logModelFailure(
@@ -60,9 +67,9 @@ function logModelFailure(
 ): void {
   const message = error instanceof Error ? error.message : String(error);
   const duration = ((Date.now() - startedAt) / 1000).toFixed(1) + 's';
-  if (isWorkflowManaged(sessionScope)) return;
   logError('model', describeTask(requestId, sessionScope) + ' · 失败 · request=' + requestId.slice(0, 12) +
-    ' · ' + agent.provider + '/' + (agent.model || '运行时默认模型') + ' · 耗时=' + duration + ' · ' + message);
+    ' · ' + agent.provider + '/' + (agent.model || '运行时默认模型') + ' · 耗时=' + duration + ' · ' + message +
+    (isWorkflowManaged(sessionScope) ? ' · 工作流' : ''));
   if (process.env.LOCAL_AGENT_LOG_LEVEL === 'debug' && error instanceof Error && error.stack) {
     logError('model', error.stack);
   }

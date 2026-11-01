@@ -188,3 +188,17 @@ export function codeBuddyThinkingOption(profile: CodeBuddyTaskProfile): Record<s
   }
   return { type: 'adaptive' };
 }
+
+/**
+ * 本次调用真正会用的模型名。
+ *
+ * runner 会在调用前把 agent.model 换成 taskProfile.model，但审计事件记录的是换之前的
+ * agent.model（= 池默认模型），于是日志里写着一个模型、实际跑的是另一个。排查速度时
+ * 这条会直接把人带偏，所以所有 usage / prompt 事件都必须用这个函数取值。
+ */
+export function resolveEffectiveTaskModel(baseModel: unknown, profile?: CodeBuddyTaskProfile): string {
+  const override = String(profile?.model || '').trim();
+  if (override && override.toLowerCase() !== 'auto') return override;
+  const base = String(baseModel || '').trim();
+  return base || '<runtime-default>';
+}

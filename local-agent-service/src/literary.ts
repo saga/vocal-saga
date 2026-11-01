@@ -1,7 +1,7 @@
 import { runAgentJson } from './agents/runner.ts';
 import { REVIEW_TIMEOUT_MS } from './config.ts';
-import { formatTurnUsageLog } from './agents/usage.ts';
-import { getCodeBuddyTaskProfile } from './agents/taskProfiles.ts';
+import { formatTurnUsageLog, summarizeTurnUsage } from './agents/usage.ts';
+import { getCodeBuddyTaskProfile, resolveEffectiveTaskModel } from './agents/taskProfiles.ts';
 import { parseAgentModel } from './json.ts';
 import { buildProjectVoiceContext, sanitizeProjectLiteraryMemory } from './documents/voiceContext.ts';
 import { logInfo } from './log.ts';
@@ -616,13 +616,23 @@ export async function runLiteraryReview(body: any, requestId: string, sessionSco
     ? buildChineseLiteraryEditingPrompt({ body, segments, voiceContext })
     : buildLiteraryReviewPrompt({ body, segments, reviewFocus, translationBrief, precedingSegments, voiceContext, contextGraph });
   const agent = parseAgentModel(body.model || 'auto', body.runtime || body.provider || '');
+  const reviewProfile = getCodeBuddyTaskProfile(body, reviewFocus === 'style' ? 'styleReview' : 'accuracyReview');
+  const reviewModel = resolveEffectiveTaskModel(agent.model, reviewProfile);
   const modelRun = await runAgentJson(
     agent, prompt, systemPrompt, LITERARY_REVIEW_SCHEMA, requestId, sessionScope,
-    getCodeBuddyTaskProfile(body, reviewFocus === 'style' ? 'styleReview' : 'accuracyReview'),
+    reviewProfile,
     { timeoutMs: REVIEW_TIMEOUT_MS },
   );
   const parsed = modelRun.result;
-  if (modelRun.usage) logInfo('literary-review', formatTurnUsageLog(modelRun.usage) + ' · request=' + requestId.slice(0, 12));
+  // 审校调用的耗时/轮次/模型必须进日志：它现在占整个 run 的 80%+，
+  // 只打 token 数无法回答「为什么这一批要一分多钟」。
+  if (modelRun.usage) {
+    logInfo('literary-review', formatTurnUsageLog(modelRun.usage) +
+      ' · duration=' + (modelRun.usage.durationMs != null ? (modelRun.usage.durationMs / 1000).toFixed(1) + 's' : '未计量') +
+      ' · turns=' + (modelRun.usage.numTurns ?? '未计量') +
+      ' · model=' + reviewModel +
+      ' · request=' + requestId.slice(0, 12));
+  }
   if (!Array.isArray(parsed.results)) throw new Error('Reviewer 返回格式异常；请重试，扩展端会保留初译');
   const byId = new Map(segments.map((item) => [item.id, item]));
   const translations: Record<string, string> = {};
@@ -713,6 +723,11 @@ export async function runLiteraryReview(body: any, requestId: string, sessionSco
     systemPromptChars: systemPrompt.length,
     contextChars,
     translationBriefHash: translationBrief?.contextHash || null,
+    // 审校用量随结果一起回传，让调用方能写进 project_events 并计入 run 级合计。
+    // 之前审校的 token 只出现在文件日志里，审计账本里查不到，run 级成本永远是残缺的。
+    usage: modelRun.usage,
+    usageSummary: summarizeTurnUsage(modelRun.usage),
+    model: reviewModel,
   };
 }
 

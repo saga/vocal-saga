@@ -11,7 +11,7 @@ import { parseAgentModel } from '../json.ts';
 import { positiveIntegerEnv, REVIEW_TIMEOUT_MS, WORKBUDDY_POOL_SIZE } from '../config.ts';
 import { runAgentStructured } from '../agents/runner.ts';
 import { addTurnUsage, summarizeTurnUsage, type TurnUsage } from '../agents/usage.ts';
-import { getCodeBuddyTaskProfile } from '../agents/taskProfiles.ts';
+import { getCodeBuddyTaskProfile, resolveEffectiveTaskModel } from '../agents/taskProfiles.ts';
 import { runLiteraryReview } from '../literary.ts';
 import { getDocumentProjectStore, normalizeDocumentTranslationStrategy, type DocumentTranslationStrategy } from './projectStore.ts';
 import { sourceLanguageMatches, sourceLanguagePromptLabel, applyRunLanguageDirection } from './languageMatch.ts';
@@ -151,6 +151,9 @@ type TranslationItem = { id: string; text: string; kind?: string; contextPath?: 
  */
 const CONFIGURED_TRANSLATION_CONCURRENCY = positiveIntegerEnv('LOCAL_AGENT_DOCUMENT_TRANSLATION_CONCURRENCY', 6);
 const CONFIGURED_REVIEW_CONCURRENCY = positiveIntegerEnv('LOCAL_AGENT_DOCUMENT_REVIEW_CONCURRENCY', 4);
+// 翻译排空后的审校并发上限。默认不额外限制，直接吃满会话池；
+// 想保留翻译期那种克制行为的机器可以调小。
+const CONFIGURED_REVIEW_DRAIN_CONCURRENCY = positiveIntegerEnv('LOCAL_AGENT_DOCUMENT_REVIEW_DRAIN_CONCURRENCY', 64);
 
 export type DocumentBatchRole = 'translation' | 'review';
 
@@ -294,11 +297,30 @@ export async function runWithConcurrency<T>(
 }
 
 /** A FIFO limiter for detached reviews. Waiting jobs reserve no Workbuddy slot until admitted. */
-export function createConcurrencyLimiter(concurrency: number): <T>(task: () => Promise<T>) => Promise<T> {
-  const limit = Math.max(1, Math.floor(concurrency) || 1);
+/**
+ * 可调并发闸门。
+ *
+ * 原来的实现把上限冻结在创建那一刻，于是「翻译排空后把空闲槽位让给审校」做不到：
+ * 翻译全部结束后，审校闸门仍然是 1，3 个会话槽位空转到 run 结束。实测一次 386s 的
+ * run 里有 284s（74%）是翻译做完之后在等串行审校。
+ *
+ * setConcurrency 只调上限、不抢占：调高时按顺序唤醒等待者，调低时不会中断在跑的任务。
+ */
+export interface ConcurrencyLimiter {
+  <T>(task: () => Promise<T>): Promise<T>;
+  /** 调整上限；返回实际生效值。 */
+  setConcurrency(next: number): number;
+  /** 当前上限。 */
+  getConcurrency(): number;
+  /** 在跑 + 排队的任务数，用于判断是否还有活干。 */
+  pending(): number;
+}
+
+export function createConcurrencyLimiter(concurrency: number): ConcurrencyLimiter {
+  let limit = Math.max(1, Math.floor(concurrency) || 1);
   let active = 0;
   const waiting: Array<() => void> = [];
-  return async <T>(task: () => Promise<T>): Promise<T> => {
+  const limiter = async <T>(task: () => Promise<T>): Promise<T> => {
     if (active >= limit) await new Promise<void>((resolve) => waiting.push(resolve));
     else active++;
     try {
@@ -309,6 +331,22 @@ export function createConcurrencyLimiter(concurrency: number): <T>(task: () => P
       else active--;
     }
   };
+  limiter.setConcurrency = (next: number): number => {
+    const value = Math.max(1, Math.floor(next) || 1);
+    if (value === limit) return limit;
+    limit = value;
+    // 扩容后把空出来的许可直接交给排队者，否则要等下一个任务自然结束才会下沉。
+    while (active < limit && waiting.length) {
+      const wake = waiting.shift();
+      if (!wake) break;
+      active++;
+      wake();
+    }
+    return limit;
+  };
+  limiter.getConcurrency = () => limit;
+  limiter.pending = () => active + waiting.length;
+  return limiter;
 }
 
 /**
@@ -423,7 +461,39 @@ export function buildBatches(
     }
   }
   if (current.length) batches.push(current);
-  return batches;
+  return mergeShortTailBatch(batches, strategy, respectChapterBoundaries);
+}
+
+/**
+ * 把过短的尾批并回前一批。
+ *
+ * 尾批的代价和批次大小无关：它同样要一份 15–20k 字符的 brief，同样要一次完整的审校调用。
+ * 实测 run 723c0b97 把 7 段切成 6+1，那 1 段单独付了 16,689 字符 brief + 25.4 秒审校。
+ * 合并只在「不越段数上限、不越 maxBatchSourceChars、章节相同」时才做。
+ */
+export function mergeShortTailBatch(
+  batches: TranslationItem[][],
+  strategy: Pick<DocumentTranslationStrategy, 'maxBatchSegments' | 'maxBatchSourceChars'>,
+  respectChapterBoundaries = false,
+): TranslationItem[][] {
+  if (batches.length < 2) return batches;
+  const last = batches[batches.length - 1];
+  const previous = batches[batches.length - 2];
+  const tailThreshold = Math.max(1, Math.floor(strategy.maxBatchSegments / 3));
+  if (last.length > tailThreshold) return batches;
+  if (previous.length + last.length > strategy.maxBatchSegments) return batches;
+  if (respectChapterBoundaries &&
+      (previous[0]?.contextPath || '') !== (last[0]?.contextPath || '')) return batches;
+  const sizeOf = (batch: TranslationItem[]) =>
+    batch.reduce((sum, item) => sum + item.text.length + (item.contextPath?.length || 0), 0);
+  // maxBatchSourceChars 是硬上限，不能为了少一次调用就突破它：超过预算的批次会让
+  // 单次请求的上下文失去可预期性，也会破坏现有的分批契约（有测试锁定这一点）。
+  if (sizeOf(previous) + sizeOf(last) > strategy.maxBatchSourceChars) return batches;
+  const merged = [...batches.slice(0, -2), [...previous, ...last]];
+  logInfo('document-agent', 'batch tail merged · ' + previous.length + '+' + last.length +
+    ' → ' + (previous.length + last.length) + ' 段 · batches=' + batches.length + ' → ' + merged.length +
+    ' · 省下一次完整 brief 与一次审校调用');
+  return merged;
 }
 
 /** Split only missing translation items into bounded retry groups, preserving order and IDs. */
@@ -1077,17 +1147,22 @@ async function translateBatch(context: any, items: TranslationItem[], requestId:
   const voiceContext = translationBrief?.voiceContext;
   const count = (value: unknown) => Array.isArray(value) ? value.length : 0;
   const requestStartedAt = Date.now();
+  // 记录「本次实际生效」的模型，而不是池默认模型。两者经常不同（池默认 auto → glm-5.3-flash，
+  // 任务配置却是 deepseek-v4.1-flash），写错会让所有基于日志的速度分析指向错误的模型。
+  const translationProfile = getCodeBuddyTaskProfile(context.prompt.config || {}, 'translation');
+  const effectiveModel = resolveEffectiveTaskModel(agent.model, translationProfile);
   // 审计账本保存实际发送的 Prompt 与 schema；正文是本地用户数据，不能只留字符数。
   store.appendEvent(context.project.projectId, context.run.runId, 'batch.prompt.ready', {
     stage: 'translate',
     batchIndex,
     requestId,
     provider: agent.provider,
-    model: agent.model || '<runtime-default>',
-    thinkingMode: getCodeBuddyTaskProfile(context.prompt.config || {}, 'translation').thinkingMode,
-    thinkingBudgetTokens: getCodeBuddyTaskProfile(context.prompt.config || {}, 'translation').thinkingBudgetTokens,
-    effort: getCodeBuddyTaskProfile(context.prompt.config || {}, 'translation').effort,
-    fallbackModel: getCodeBuddyTaskProfile(context.prompt.config || {}, 'translation').fallbackModel,
+    model: effectiveModel,
+    requestedModel: agent.model || '<runtime-default>',
+    thinkingMode: translationProfile.thinkingMode,
+    thinkingBudgetTokens: translationProfile.thinkingBudgetTokens,
+    effort: translationProfile.effort,
+    fallbackModel: translationProfile.fallbackModel,
     translationMode: context.run.translationMode,
     sourceLang: context.run.sourceLang,
     targetLang: context.run.targetLang,
@@ -1139,7 +1214,7 @@ async function translateBatch(context: any, items: TranslationItem[], requestId:
   try {
     const modelRun = await runAgentStructured(
       agent, userPrompt, systemPrompt, TRANSLATION_SCHEMA, requestId, sessionScope,
-      getCodeBuddyTaskProfile(context.prompt.config || {}, 'translation'),
+      translationProfile,
     );
     value = modelRun.result;
     const turnUsage = modelRun.usage;
@@ -1147,22 +1222,22 @@ async function translateBatch(context: any, items: TranslationItem[], requestId:
     if (turnUsage) {
       store.appendEvent(context.project.projectId, context.run.runId, 'model.usage', {
         stage: 'translate', batchIndex, requestId,
-        provider: agent.provider, model: agent.model || '<runtime-default>',
-        thinkingMode: getCodeBuddyTaskProfile(context.prompt.config || {}, 'translation').thinkingMode,
-        thinkingBudgetTokens: getCodeBuddyTaskProfile(context.prompt.config || {}, 'translation').thinkingBudgetTokens,
-        effort: getCodeBuddyTaskProfile(context.prompt.config || {}, 'translation').effort,
-        fallbackModel: getCodeBuddyTaskProfile(context.prompt.config || {}, 'translation').fallbackModel,
+        provider: agent.provider, model: effectiveModel, requestedModel: agent.model || '<runtime-default>',
+        thinkingMode: translationProfile.thinkingMode,
+        thinkingBudgetTokens: translationProfile.thinkingBudgetTokens,
+        effort: translationProfile.effort,
+        fallbackModel: translationProfile.fallbackModel,
         ...summarizeTurnUsage(turnUsage),
       });
     }
   } catch (error) {
     store.appendEvent(context.project.projectId, context.run.runId, 'model.call.failed', {
       stage: 'translate', batchIndex, requestId,
-      provider: agent.provider, model: agent.model || '<runtime-default>',
-      thinkingMode: getCodeBuddyTaskProfile(context.prompt.config || {}, 'translation').thinkingMode,
-      thinkingBudgetTokens: getCodeBuddyTaskProfile(context.prompt.config || {}, 'translation').thinkingBudgetTokens,
-      effort: getCodeBuddyTaskProfile(context.prompt.config || {}, 'translation').effort,
-      fallbackModel: getCodeBuddyTaskProfile(context.prompt.config || {}, 'translation').fallbackModel,
+      provider: agent.provider, model: effectiveModel, requestedModel: agent.model || '<runtime-default>',
+      thinkingMode: translationProfile.thinkingMode,
+      thinkingBudgetTokens: translationProfile.thinkingBudgetTokens,
+      effort: translationProfile.effort,
+      fallbackModel: translationProfile.fallbackModel,
       durationMs: Date.now() - requestStartedAt,
       error: (error instanceof Error ? error.message : String(error)).slice(0, 500),
     });
@@ -1211,7 +1286,7 @@ async function translateBatch(context: any, items: TranslationItem[], requestId:
   store.appendEvent(context.project.projectId, context.run.runId, 'batch.model.response', {
     stage: 'translate', batchIndex, requestId,
     audit: { responseShape: 'parsed-structured-output', response: value, acceptedTranslations: Array.from(translations, ([id, text]) => ({ id, text })), outputDiagnostics },
-    provider: agent.provider, model: agent.model || '<runtime-default>',
+    provider: agent.provider, model: effectiveModel,
     durationMs: Date.now() - requestStartedAt,
     requestedSegments: items.length,
     returnedSegments: translations.size,
@@ -1494,6 +1569,9 @@ export async function runLiteraryReviewWithMissingRetry(input: Record<string, an
       promptChars: Number(initial.promptChars || 0) + Number(retry.promptChars || 0),
       systemPromptChars: Math.max(Number(initial.systemPromptChars || 0), Number(retry.systemPromptChars || 0)),
       contextChars: Number(initial.contextChars || 0) + Number(retry.contextChars || 0),
+      // 补审是第二次模型调用，用量必须合并，否则审校成本永远只记首轮。
+      usage: addTurnUsage(initial.usage ?? null, retry.usage ?? null),
+      usageSummary: summarizeTurnUsage(addTurnUsage(initial.usage ?? null, retry.usage ?? null)),
       retryError: undefined,
     };
   } catch (error) {
@@ -1653,10 +1731,18 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
         WORKBUDDY_POOL_SIZE,
         modelReviewEnabled,
         Math.min(strategy.translationConcurrency, CONFIGURED_TRANSLATION_CONCURRENCY),
-        reviewStrength === 'strong'
-          ? Math.min(strategy.reviewConcurrency, CONFIGURED_REVIEW_CONCURRENCY)
-          : 1,
+        // 审校并行度一律尊重用户配置（strong/medium 都是真的发模型请求）。
+        // 这里曾经对 medium 硬编码 1，把项目配置的 2 和 env 的 4 全部覆盖掉，
+        // 结果是 4 个审校批次排队跑完 332s，占整个 run 的 86%。
+        reviewStrength === 'weak'
+          ? 1
+          : Math.min(strategy.reviewConcurrency, CONFIGURED_REVIEW_CONCURRENCY),
       );
+    // 翻译排空后审校可以独占整个会话池：strategy.reviewConcurrency 和
+    // LOCAL_AGENT_DOCUMENT_REVIEW_CONCURRENCY 表达的都是「翻译还在跑的时候给审校留几个槽」，
+    // 不是审校吞吐的硬上限。翻译做完后所有槽位都空着，继续按翻译期的分配值排队纯属浪费。
+    // 需要保留上限的机器可以设 LOCAL_AGENT_DOCUMENT_REVIEW_DRAIN_CONCURRENCY。
+    const reviewDrainConcurrency = Math.min(poolSize, CONFIGURED_REVIEW_DRAIN_CONCURRENCY);
     // run 起点：日志里必须能看出这一次 Run 是哪一个项目、哪个范围、多少段、多少批、
     // 用什么并发和审校强度。缺了这些，"为什么慢/为什么没跑"只能去翻 DB。
     logInfo('document-agent', 'run started · project=' + projectId + ' · run=' + runId +
@@ -1667,14 +1753,24 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
       ' · translateConcurrency=' + translationConcurrency +
       ' · reviewStrength=' + reviewStrength +
       ' · reviewConcurrency=' + reviewConcurrency +
+      ' · reviewDrainConcurrency=' + (modelReviewEnabled ? reviewDrainConcurrency : 0) +
       ' · provider=' + context.run.provider +
-      ' · model=' + (context.run.model || '<运行时默认>'));
+      ' · model=' + resolveEffectiveTaskModel(
+        parseAgentModel(context.run.model || 'auto', context.run.provider || 'workbuddy').model,
+        getCodeBuddyTaskProfile(context.prompt.config || {}, 'translation'),
+      ) +
+      ' · reviewModel=' + resolveEffectiveTaskModel(
+        parseAgentModel(context.run.model || 'auto', context.run.provider || 'workbuddy').model,
+        getCodeBuddyTaskProfile(context.prompt.config || {},
+          reviewStrength === 'strong' ? 'styleReview' : 'accuracyReview'),
+      ));
     store.appendEvent(projectId, runId, 'plan.ready', {
       batchCount: batches.length,
       segmentCount: items.length,
       strategy: 'bounded-parallel',
       translationConcurrency,
       reviewConcurrency,
+      reviewDrainConcurrency: modelReviewEnabled ? reviewDrainConcurrency : 0,
       reviewStrength,
       reviewModelCallsPerBatch: reviewStrength === 'strong' ? 2 : reviewStrength === 'medium' ? 1 : 0,
       poolSize,
@@ -1693,6 +1789,17 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
     store.appendEvent(projectId, runId, 'run.context.ready', {
       provider: context.run.provider,
       model: context.run.model,
+      // 「请求的模型」和「实际生效的模型」经常不同（池默认 auto → glm-5.3-flash，
+      // 任务配置却是 deepseek-v4.1-flash）。只写 context.run.model 会让审计账本说谎。
+      effectiveModel: resolveEffectiveTaskModel(
+        parseAgentModel(context.run.model || 'auto', context.run.provider || 'workbuddy').model,
+        getCodeBuddyTaskProfile(context.prompt.config || {}, 'translation'),
+      ),
+      effectiveReviewModel: resolveEffectiveTaskModel(
+        parseAgentModel(context.run.model || 'auto', context.run.provider || 'workbuddy').model,
+        getCodeBuddyTaskProfile(context.prompt.config || {},
+          reviewStrength === 'strong' ? 'styleReview' : 'accuracyReview'),
+      ),
       translationMode: context.run.translationMode,
       sourceLang: context.run.sourceLang,
       targetLang: context.run.targetLang,
@@ -2090,6 +2197,21 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
           }
         }
         const reviewDurationMs = Date.now() - reviewStartedAt;
+        // 审校的模型用量以前只出现在文件日志里，project_events 查不到，
+        // 于是 run 级成本统计永远缺审校那一半（而审校正是最贵的一半）。
+        if (review.usage) addRunUsage(runId, review.usage);
+        if (review.usageSummary) {
+          store.appendEvent(projectId, runId, 'model.usage', {
+            stage: 'review', batchIndex, requestId: runId + '-review-' + batchIndex,
+            provider: batchContext.run.provider, model: review.model || null,
+            thinkingMode: getCodeBuddyTaskProfile(batchContext.prompt.config || {},
+              reviewStrength === 'strong' ? 'styleReview' : 'accuracyReview').thinkingMode,
+            effort: getCodeBuddyTaskProfile(batchContext.prompt.config || {},
+              reviewStrength === 'strong' ? 'styleReview' : 'accuracyReview').effort,
+            reviewStrength,
+            ...review.usageSummary,
+          });
+        }
         store.appendEvent(projectId, runId, 'stage.completed', {
           stage: 'review',
           batchIndex,
@@ -2115,6 +2237,7 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
           ' · missing=' + (Array.isArray(review.missingIds) ? review.missingIds.length : 0) +
           ' · revised=' + revisedCount +
           ' · promptChars=' + (review.promptChars || 0) +
+          ' · model=' + (review.model || '<运行时默认>') +
           ' · durationMs=' + reviewDurationMs);
         if ((review.missingIds || []).length || review.retryError) {
           store.appendEvent(projectId, runId, 'stage.warning', {
@@ -2432,6 +2555,25 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
       translationSchedulerError = error;
     }
 
+    // 翻译排空 = 会话池里再没有翻译占用。这一刻必须把审校闸门提到整个池子的宽度，
+    // 否则剩下的审校仍然一个接一个跑，空闲槽位纯属浪费（实测占 run 的 74%）。
+    const drainedAt = Date.now();
+    const pendingReviews = reviewLimiter.pending();
+    if (modelReviewEnabled && pendingReviews > 0 && reviewDrainConcurrency > reviewLimiter.getConcurrency()) {
+      const applied = reviewLimiter.setConcurrency(reviewDrainConcurrency);
+      store.appendEvent(projectId, runId, 'review.drain.expanded', {
+        from: reviewConcurrency,
+        to: applied,
+        pendingReviews,
+        translationWallMs: drainedAt - runStartedAt,
+        policy: 'idle-pool-handover',
+      });
+      logInfo('document-agent', 'review drain · run=' + runId +
+        ' · 翻译已排空 · 审校并发 ' + reviewConcurrency + ' → ' + applied +
+        ' · 待审批次=' + pendingReviews +
+        ' · translationWall=' + Math.round((drainedAt - runStartedAt) / 1000) + 's');
+    }
+
     // Wait for all detached reviews before computing the terminal run status. Translation and
     // review overlap, but a run cannot be accepted as complete while its reviewers are pending.
     const reviewResults = await Promise.allSettled(reviewTasks);
@@ -2549,11 +2691,13 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
     });
     // run 级终点必须在文件日志里也留一行：只写 project_events 时，日志里看不出
     // 「哪一次 run 结束了、结果如何」，排查只能靠打开项目 DB。
+    // summarizeTurnUsage 返回对象，直接字符串拼接会得到 "[object Object]"，
+    // 于是 run 级 token/成本/轮次在日志里全部丢失（这一行原本就是为回答"花了多少"加的）。
     const finishedLine = 'run finished · project=' + projectId + ' · run=' + runId +
       ' · status=' + finishedRun.status +
       ' · counts=' + JSON.stringify(finishedRun.counts || {}) +
       ' · wall=' + Math.round((Date.now() - runStartedAt) / 1000) + 's' +
-      ' · ' + finishedUsage +
+      ' · usage=' + (finishedUsage ? JSON.stringify(finishedUsage) : '未计量') +
       (finishedRun.error ? ' · error=' + summarizeError(finishedRun.error) : '');
     if (['failed', 'cancelled'].includes(String(finishedRun.status))) logWarn('document-agent', finishedLine);
     else logInfo('document-agent', finishedLine);

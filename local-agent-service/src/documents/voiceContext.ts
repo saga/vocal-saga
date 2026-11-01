@@ -770,7 +770,12 @@ export function buildProjectVoiceContext(
   for (const [key, value] of Object.entries(result)) {
     sectionChars[key] = JSON.stringify(value ?? null)?.length || 0;
   }
-  const largestSections = Object.entries(sectionChars).slice(0, 6)
+  // 必须按大小排序：之前直接 slice(0,6) 取的是「声明顺序前 6 个」，
+  // 于是每次都打印同一组 editorial-profile 小字段（version:1、policyVersion:37…），
+  // 而真正占字节的 entities / recentExamples 永远不出现，这行诊断等于没有。
+  const largestSections = Object.entries(sectionChars)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 6)
     .map(([key, chars]) => key + ':' + chars).join(',');
   const exampleOrigins = (Array.isArray(result.recentExamples) ? result.recentExamples : [])
     .reduce((counts: Record<string, number>, item: any) => {
