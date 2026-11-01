@@ -12,13 +12,13 @@ import { sendApiError, sendJson } from '../middleware.ts';
 import { logError, logWarn } from '../log.ts';
 import { parseDocumentFile } from './ingest.ts';
 import { startContextGraphAnalysis, getContextGraph, getContextGraphStatus, reviewContextGraphItem, reviewContextGraphItems } from './contextGraph.ts';
+import { runProjectQualityAudit } from './qualityAudit.ts';
+import { createQualityRepairRun } from './qualityRepairRun.ts';
 import {
-  runProjectQualityAudit,
-  createQualityRepairRun,
   createProjectQualityEvaluation,
   submitProjectQualityEvaluationReviews,
   getProjectQualityEvaluation,
-} from './qualityAudit.ts';
+} from './qualityEvaluation.ts';
 
 function bodyObject(value: unknown): Record<string, any> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {

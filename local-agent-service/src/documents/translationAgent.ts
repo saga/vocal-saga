@@ -18,7 +18,11 @@ import { normalizeDocumentTranslationStrategy, type DocumentTranslationStrategy 
 import { sourceLanguageMatches, sourceLanguagePromptLabel, applyRunLanguageDirection } from './languageMatch.ts';
 import { buildProjectVoiceContext, sanitizeProjectLiteraryMemory } from './voiceContext.ts';
 import { buildTranslationBrief, summarizeTranslationBrief, type TranslationBrief } from './translationBrief.ts';
-import { runProjectQualityAudit, createQualityRepairRun, englishResidueFindings, numericFindings, terminologyFindings } from './qualityAudit.ts';
+import { runProjectQualityAudit } from './qualityAudit.ts';
+import { createQualityRepairRun } from './qualityRepairRun.ts';
+import { numericFindings } from './qualityNumeric.ts';
+import { terminologyFindings } from './qualityNames.ts';
+import { englishResidueFindings } from './qualityResidueFindings.ts';
 import { CONTEXT_GRAPH_ANALYSIS_VERSION, getContextGraphStatus, startContextGraphAnalysis } from './contextGraph.ts';
 import { logError, logInfo, logWarn, summarizeError } from '../log.ts';
 import { scheduleChineseEditorialProfileRefresh } from './chineseEditorialProfile.ts';

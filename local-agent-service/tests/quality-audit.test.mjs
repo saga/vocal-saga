@@ -14,13 +14,13 @@ const realNovelFixture = JSON.parse(readFileSync(
 ));
 
 const { getDocumentProjectStore } = await import('../src/documents/projectStore.ts');
+const { runProjectQualityAudit } = await import('../src/documents/qualityAudit.ts');
+const { createQualityRepairRun } = await import('../src/documents/qualityRepairRun.ts');
 const {
-  runProjectQualityAudit,
-  createQualityRepairRun,
   createProjectQualityEvaluation,
   submitProjectQualityEvaluationReviews,
   getProjectQualityEvaluation,
-} = await import('../src/documents/qualityAudit.ts');
+} = await import('../src/documents/qualityEvaluation.ts');
 
 test('book audit finds missing translations, confirmed-name drift and repeated-line variation; repair remains a candidate run', () => {
   const store = getDocumentProjectStore();
