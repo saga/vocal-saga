@@ -13,7 +13,8 @@ import { runAgentStructured } from '../agents/runner.ts';
 import { addTurnUsage, summarizeTurnUsage, type TurnUsage } from '../agents/usage.ts';
 import { getCodeBuddyTaskProfile, resolveEffectiveTaskModel } from '../agents/taskProfiles.ts';
 import { runLiteraryReview } from '../literary.ts';
-import { getDocumentProjectStore, normalizeDocumentTranslationStrategy, type DocumentTranslationStrategy } from './projectStore.ts';
+import { getDocumentProjectStore, type DocumentProjectStore } from './projectStore.ts';
+import { normalizeDocumentTranslationStrategy, type DocumentTranslationStrategy } from './documentStrategy.ts';
 import { sourceLanguageMatches, sourceLanguagePromptLabel, applyRunLanguageDirection } from './languageMatch.ts';
 import { buildProjectVoiceContext, sanitizeProjectLiteraryMemory } from './voiceContext.ts';
 import { buildTranslationBrief, summarizeTranslationBrief, type TranslationBrief } from './translationBrief.ts';
@@ -29,6 +30,13 @@ import {
   validateTranslationContextDelta,
   type ValidatedTranslationContextDelta,
 } from './translationContextDelta.ts';
+import {
+  buildCanonicalMarkerReminder, buildCanonicalTermProtections, canonicalMarkerCountsMatch, canonicalTermPattern,
+  describeCanonicalMarkerMismatch, isCompatibleCanonicalAlias, isGenericCanonicalNameForm, maskCanonicalTermText,
+  normalizeCanonicalTerm, normalizeContextDeltaCanonicalTargets, protectCanonicalReviewSegments,
+  restoreCanonicalMarkersDeep, restoreCanonicalTermMarkers,
+  type CanonicalMarkerMismatch,
+} from './canonicalTermProtection.ts';
 
 const evidenceSchema = {
   type: 'array',
@@ -523,362 +531,6 @@ export function chunkMissingTranslationItems<T>(items: readonly T[], chunkSize =
   return groups;
 }
 
-/** 强规范译名保护信息：占位标记、源形式与目标译名。 */
-export interface CanonicalTermProtection {
-  marker: string;
-  sourceForm: string;
-  target: string;
-}
-
-/** 规范化专名：NFKC、小写、统一撇号与空白。 */
-function normalizeCanonicalTerm(value: string): string {
-  return value.normalize('NFKC').toLocaleLowerCase().replace(/[’]/g, "'").replace(/\s+/g, ' ').trim();
-}
-
-// Standalone titles and generic references are contextual language, not canonical entity names.
-const NON_CANONICAL_NAME_FORMS = new Set([
-  'lord', 'general', 'sire', 'council', 'regent', 'regents', 'ship',
-  'sir', 'madam', 'madame', 'captain', 'lady', 'samurai',
-]);
-
-/** 判断是否为通用头衔/称谓，不作为规范译名保护。 */
-function isGenericCanonicalNameForm(value: string): boolean {
-  const normalized = normalizeCanonicalTerm(value)
-    .replace(/^(?:the|a|an)\s+/, '')
-    .replace(/(?:['’]s|[.!?]+)$/g, '').trim();
-  return NON_CANONICAL_NAME_FORMS.has(normalized);
-}
-
-/** 提取专名身份 token，忽略冠词与通用头衔。 */
-function canonicalIdentityTokens(value: string): string[] {
-  const ignored = new Set(['the', 'a', 'an', 'lord', 'general', 'sire', 'sir', 'lady', 'madam', 'madame', 'captain', 'master', 'mr', 'mrs', 'ms', 'san', 'sama', 'of']);
-  return normalizeCanonicalTerm(value).replace(/['’]s\b/g, '')
-    .match(/[a-z0-9]+/g)?.filter((token) => !ignored.has(token)) || [];
-}
-
-/** 判断别名与规范源名是否身份兼容。 */
-function isCompatibleCanonicalAlias(canonicalSource: string, alias: string): boolean {
-  const sourceTokens = canonicalIdentityTokens(canonicalSource);
-  const aliasTokens = canonicalIdentityTokens(alias);
-  if (!sourceTokens.length || !aliasTokens.length) return true;
-  return sourceTokens.some((sourceToken) => aliasTokens.some((aliasToken) =>
-    sourceToken === aliasToken || sourceToken.startsWith(aliasToken) || aliasToken.startsWith(sourceToken)));
-}
-
-/** 转义正则特殊字符。 */
-function escapeCanonicalTermRegex(value: string): string {
-  return value.split('').map((char) => '.^$*+?()[]{}|\\'.includes(char) ? '\\' + char : char).join('');
-}
-
-/** 构建专名匹配正则（拉丁词边界/CJK 子串）。 */
-function canonicalTermPattern(value: string): string {
-  const escaped = value.trim().split(/\s+/).map(escapeCanonicalTermRegex).join('\\s+').replace(/['’]/g, "['’]");
-  // Latin names require token boundaries (King must not match Kingfisher); CJK terms use
-  // exact substring matching because adjacent CJK characters do not have word boundaries.
-  return /^[A-Za-z0-9][A-Za-z0-9\s._'’\-]*$/.test(value)
-    ? '(?<![\\p{L}\\p{N}])' + escaped + '(?![\\p{L}\\p{N}])'
-    : escaped;
-}
-
-/**
- * Only map terms backed by a source-visible, operational mapping. Prefer confirmed LiteraryMemory
- * targets over Context Graph targets; contradictory mappings at the same authority level fail closed.
- * 仅保护源文可见、可操作的规范译名映射；确认记忆优先于图谱；同级矛盾映射失败闭合。
- */
-export function buildCanonicalTermProtections(
-  items: Array<{ id: string; text: string }>,
-  contextGraph: Record<string, unknown> | null,
-  targetLang = 'zh',
-): CanonicalTermProtection[] {
-  const mappings = Array.isArray((contextGraph as any)?.nameMappings)
-    ? (contextGraph as any).nameMappings as Array<Record<string, any>>
-    : [];
-  const priorityFor = (status: unknown): number => {
-    if (status === 'confirmed-memory') return 4;
-    if (status === 'confirmed') return 3;
-    if (status === 'auto') return 2;
-    if (status === 'run-canonical') return 1;
-    return 0;
-  };
-  const active = mappings.filter((mapping) => {
-    const sourceStatus = String(mapping?.sourceStatus || '');
-    if (priorityFor(sourceStatus) <= 0 ||
-        typeof mapping?.source !== 'string' || !mapping.source.trim() ||
-        typeof mapping?.target !== 'string' || !mapping.target.trim()) return false;
-    const explicitlyConfirmed = sourceStatus === 'confirmed' ||
-      (sourceStatus === 'confirmed-memory' && mapping.confirmationSource === 'user-confirmed');
-    const kind = String(mapping.kind || 'other');
-    if (!explicitlyConfirmed && !isWorthCanonicalEntityMapping({ source: mapping.source, kind, explicitBookSpecificMeaning: mapping.explicitBookSpecificMeaning === true })) return false;
-    return validateCanonicalTarget({
-      source: mapping.source, target: mapping.target, targetLang, kind,
-    }).valid;
-  });
-  type NameCandidate = { sourceForm: string; target: string; priority: number; conflicting: boolean };
-  const candidateByName = new Map<string, NameCandidate>();
-  for (const mapping of active) {
-    const target = String(mapping.target).trim();
-    const priority = priorityFor(mapping.sourceStatus);
-    const canonicalSource = String(mapping.source).trim();
-    const forms = [canonicalSource, ...(Array.isArray(mapping.aliases) ? mapping.aliases : [])]
-      .filter((value): value is string => typeof value === 'string' && !!value.trim())
-      .filter((value) => !isGenericCanonicalNameForm(value))
-      .filter((value) => value === canonicalSource || isCompatibleCanonicalAlias(canonicalSource, value));
-    for (const rawForm of forms) {
-      const sourceForm = rawForm.trim();
-      const key = normalizeCanonicalTerm(sourceForm);
-      if (!key || !items.some((item) => new RegExp(canonicalTermPattern(sourceForm), 'iu').test(item.text))) continue;
-      const existing = candidateByName.get(key);
-      if (!existing || priority > existing.priority) {
-        // An explicitly maintained LiteraryMemory mapping takes precedence over a stale
-        // Context Graph proposal; the winning target must be the same in prompt and restore.
-        candidateByName.set(key, { sourceForm, target, priority, conflicting: false });
-      } else if (priority === existing.priority &&
-          normalizeCanonicalTerm(existing.target) !== normalizeCanonicalTerm(target)) {
-        // Two equally authoritative, contradictory mappings are genuinely ambiguous. Fail
-        // closed instead of choosing based on incidental array order.
-        existing.conflicting = true;
-      }
-    }
-  }
-  const conflictingNames = new Set(Array.from(candidateByName.entries())
-    .filter(([, value]) => value.conflicting).map(([key]) => key));
-  const protections = Array.from(candidateByName.entries())
-    .filter(([key, value]) => !conflictingNames.has(key) && !value.conflicting)
-    .map(([, item]) => ({ sourceForm: item.sourceForm, target: item.target }))
-    .sort((a, b) => b.sourceForm.length - a.sourceForm.length)
-    .map((item, index) => ({
-      marker: '__VSA_TERM_' + String(index).padStart(3, '0') + '__',
-      sourceForm: item.sourceForm,
-      target: item.target,
-    }));
-  logInfo('canonical-terms', 'protections=' + protections.length +
-    ' · candidates=' + candidateByName.size +
-    ' · conflicting=' + conflictingNames.size +
-    (protections.length ? ' · ' + protections.map((p) => p.sourceForm + '→' + p.target).join(', ') : ''));
-  return protections;
-}
-
-/**
- * Context deltas are model-generated metadata, not a second source of truth for canonical names.
- * When the current batch already used a validated TranslationBrief mapping, normalize matching
- * entity proposals to that exact target before persisting the delta. This keeps contradictory
- * "米诺原"/"源氏" proposals from reintroducing a conflict after the translated text was protected.
- * It does not promote unmapped candidates or create target evidence that the model did not provide.
- */
-export function normalizeContextDeltaCanonicalTargets(
-  delta: ValidatedTranslationContextDelta,
-  protections: CanonicalTermProtection[],
-): number {
-  const keyOf = (value: unknown): string => normalizeCanonicalTerm(String(value || ''))
-    .replace(/^(?:the|a|an)\s+/, '')
-    .replace(/(?:['’]s)\b/g, '')
-    .trim();
-  const targetBySource = new Map<string, string>();
-  const conflicts = new Set<string>();
-  for (const protection of protections) {
-    const key = keyOf(protection.sourceForm);
-    if (!key) continue;
-    const existing = targetBySource.get(key);
-    if (existing && normalizeCanonicalTerm(existing) !== normalizeCanonicalTerm(protection.target)) {
-      conflicts.add(key);
-    } else {
-      targetBySource.set(key, protection.target);
-    }
-  }
-  let normalizedCount = 0;
-  for (const candidate of delta.entityCandidates || []) {
-    const key = keyOf(candidate.canonicalSource);
-    const canonicalTarget = targetBySource.get(key);
-    if (!canonicalTarget || conflicts.has(key) ||
-        normalizeCanonicalTerm(candidate.targetProposal) === normalizeCanonicalTerm(canonicalTarget)) continue;
-    candidate.targetProposal = canonicalTarget;
-    candidate.reason = [
-      candidate.reason,
-      '服务端已按本次 TranslationBrief 的有效规范名称映射统一候选译名。',
-    ].filter(Boolean).join(' ').slice(0, 180);
-    normalizedCount++;
-  }
-  return normalizedCount;
-}
-
-/**
- * 将源文中出现的强规范译名替换为占位标记，避免模型翻译/改写。
- * @param text 原文
- * @param protections 保护列表
- * @returns 替换后的文本
- */
-export function maskCanonicalTermText(text: string, protections: CanonicalTermProtection[]): string {
-  if (!text || !protections.length) return text;
-  const byName = new Map(protections.map((item) => [normalizeCanonicalTerm(item.sourceForm), item]));
-  const alternatives = protections.map((item) => canonicalTermPattern(item.sourceForm)).join('|');
-  if (!alternatives) return text;
-  return text.replace(new RegExp(alternatives, 'giu'), (match) =>
-    byName.get(normalizeCanonicalTerm(match))?.marker ?? match,
-  );
-}
-
-/**
- * 将文本中的占位标记还原为源形式或目标译名。
- * @param text 含占位标记的文本
- * @param protections 保护列表
- * @param mode 'source' 还原源形式，'target'（默认）还原目标译名
- * @returns 还原后的文本
- */
-export function restoreCanonicalTermMarkers(
-  text: string,
-  protections: CanonicalTermProtection[],
-  mode: 'source' | 'target' = 'target',
-): string {
-  let result = text;
-  for (const item of protections) {
-    result = result.replaceAll(item.marker, mode === 'source' ? item.sourceForm : item.target);
-  }
-  return result;
-}
-
-/** Verify every protected marker occurs in the output exactly as often as it occurs
- * in the masked source. A mere includes() check lets the model drop repeated mentions silently. 校验每个受保护标记在输出中的出现次数与掩码源一致，避免模型静默丢弃重复提及。 */
-export function canonicalMarkerCountsMatch(
-  maskedSource: string,
-  maskedTranslation: string,
-  protections: CanonicalTermProtection[],
-): boolean {
-  return describeCanonicalMarkerMismatch(maskedSource, maskedTranslation, protections).length === 0;
-}
-
-/** 占位标记出现次数不匹配的明细。 */
-export interface CanonicalMarkerMismatch {
-  marker: string;
-  sourceForm: string;
-  expected: number;
-  actual: number;
-}
-
-/**
- * 逐条比对标记出现次数，返回不匹配的明细。
- *
- * 只记「哪个片段被拒」无法区分两种完全不同的失败：模型把标记当普通词翻译掉了（actual=0），
- * 还是把重复出现的标记合并了一次（expected=2/actual=1）。前者要改提示词，后者是输出被压缩，
- * 处置方式不同，所以必须留下期望值与实际值。
- */
-export function describeCanonicalMarkerMismatch(
-  maskedSource: string,
-  maskedTranslation: string,
-  protections: CanonicalTermProtection[],
-): CanonicalMarkerMismatch[] {
-  const count = (value: string, marker: string) => value.split(marker).length - 1;
-  const mismatches: CanonicalMarkerMismatch[] = [];
-  for (const term of protections) {
-    const expected = count(maskedSource, term.marker);
-    const actual = count(maskedTranslation, term.marker);
-    if (expected !== actual) {
-      mismatches.push({ marker: term.marker, sourceForm: term.sourceForm, expected, actual });
-    }
-  }
-  return mismatches;
-}
-
-/**
- * 在 user prompt 末尾重申本批的规范译名标记。
- *
- * 标记约束原本只在 system prompt 的契约里出现一次，模型在长批次里仍会把它当普通文本
- * 「顺手翻译」掉：实测 69 个受保护片段里 14 个（20%）因标记数量不符被整段丢弃并重发，
- * 补译吃掉 19% 的翻译墙钟。把本批实际出现的标记列在 payload 之后（recency 位置）
- * 只多几十个字符，能直接减少这类白跑。
- */
-export function buildCanonicalMarkerReminder(
-  maskedSources: string[],
-  protections: CanonicalTermProtection[],
-): string {
-  if (!protections.length) return '';
-  const counts = new Map<string, number>();
-  for (const text of maskedSources) {
-    for (const term of protections) {
-      const occurrences = text.split(term.marker).length - 1;
-      if (occurrences > 0) counts.set(term.marker, (counts.get(term.marker) || 0) + occurrences);
-    }
-  }
-  if (!counts.size) return '';
-  const entries = Array.from(counts.entries()).sort((a, b) => a[0].localeCompare(b[0]));
-  const shown = entries.slice(0, 12).map(([marker, occurrences]) => marker + '×' + occurrences).join(' ');
-  return '\n\n【标记校验】本批 translated_text 必须逐字保留下列占位标记，出现次数不得减少：' +
-    shown + (entries.length > 12 ? ' 等 ' + entries.length + ' 种' : '') +
-    '。标记不是文字，不要翻译、改写、拆分或删除；少一个就会导致整段译文被丢弃重译。';
-}
-
-/**
- * 将目标译文中出现的强规范译名替换为占位标记（用于 Reviewer 草稿保护）。
- * @param text 目标译文
- * @param protections 保护列表
- * @returns 替换后的文本
- */
-export function maskCanonicalTargetText(text: string, protections: CanonicalTermProtection[]): string {
-  if (!text || !protections.length) return text;
-  const byTarget = new Map<string, CanonicalTermProtection>();
-  for (const item of protections) {
-    const key = normalizeCanonicalTerm(item.target);
-    if (key && !byTarget.has(key)) byTarget.set(key, item);
-  }
-  const targets = Array.from(byTarget.values()).sort((a, b) => b.target.length - a.target.length);
-  const alternatives = targets.map((item) => canonicalTermPattern(item.target)).join('|');
-  if (!alternatives) return text;
-  return text.replace(new RegExp(alternatives, 'giu'), (match) =>
-    byTarget.get(normalizeCanonicalTerm(match))?.marker ?? match,
-  );
-}
-
-/** Mask both source names and their canonical target in Reviewer drafts, preventing review from
- * reintroducing an alternative rendering after the first translation was already corrected. 在 Reviewer 草稿中同时掩码源名称与规范译名，防止审校在初译已修正后重新引入替代译法。 */
-export function protectCanonicalReviewSegments<T extends { id: string; source: string; draft: string }>(
-  segments: T[],
-  contextGraph: Record<string, unknown> | null,
-): { protections: CanonicalTermProtection[]; segments: T[] } {
-  const protections = buildCanonicalTermProtections(
-    segments.map((item) => ({ id: item.id, text: item.source })),
-    contextGraph,
-  );
-  if (!protections.length) return { protections, segments };
-  return {
-    protections,
-    segments: segments.map((item) => {
-      const source = maskCanonicalTermText(item.source, protections);
-      const sourceScopedProtections = protections.filter((term) => source.includes(term.marker));
-      return {
-        ...item,
-        source,
-        draft: maskCanonicalTargetText(item.draft, sourceScopedProtections),
-      };
-    }),
-  };
-}
-
-/**
- * 递归还原对象/数组/字符串中的占位标记；sourceExcerpt 字段按源形式还原。
- * @param value 任意值
- * @param protections 保护列表
- * @param mode 还原模式
- * @returns 还原后的值
- */
-export function restoreCanonicalMarkersDeep(
-  value: unknown,
-  protections: CanonicalTermProtection[],
-  mode: 'source' | 'target' = 'target',
-): unknown {
-  if (typeof value === 'string') return restoreCanonicalTermMarkers(value, protections, mode);
-  if (Array.isArray(value)) {
-    return value.map((item) => restoreCanonicalMarkersDeep(item, protections, mode));
-  }
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(Object.entries(value as Record<string, unknown>)
-      .map(([key, item]) => [
-        key,
-        // sourceExcerpt is evidence against the original source; restoring it to the target
-        // language would make a valid quoted finding fail server-side grounding checks.
-        restoreCanonicalMarkersDeep(item, protections, key === 'sourceExcerpt' ? 'source' : mode),
-      ]));
-  }
-  return value;
-}
 
 /**
  * Standalone re-review requests originate in the extension and are not backed by an immutable
@@ -1824,139 +1476,317 @@ async function ensureLiteraryPreprocessingBeforeRun(
  * 负责读取固定版本、规划批次与并发预算、在每批次的模型调用/审校/持久化之间推进，
  * 并将暂停、取消、部分失败和终态反映到 SQLite。所有模型返回后的写入都必须重新检查 Run 状态。
  */
+/**
+ * Run 执行的准备阶段：校验终态、确认全书预处理就绪、固定批次与并发预算，
+ * 并把 plan.ready / run.context.ready 写进事件流。
+ *
+ * 返回 null 表示这次运行不该继续（已进入终态、预处理未就绪、或没有待译片段）。
+ * 抽出后 executeRun 只剩「执行批次 → 收尾」两段，准备规则的改动不再和批处理纠缠。
+ */
+async function prepareRunExecution(
+  store: DocumentProjectStore,
+  projectId: string,
+  runId: string,
+): Promise<PreparedRunExecution | null> {
+  const context = store.getRunContext(projectId, runId);
+  if (!context.prompt) throw new Error('找不到本次运行使用的 Prompt 版本');
+  const initialStatus = context.run.status;
+  if (initialStatus === 'completed' || initialStatus === 'cancelled' || initialStatus === 'awaiting_acceptance') return null;
+
+  // Full-book analysis and evidence are service-owned; the extension submits the Run and renders status.
+  if (!(await ensureLiteraryPreprocessingBeforeRun(projectId, runId, context.run as Record<string, any>))) return null;
+
+  if (!store.setRunStatus(projectId, runId, 'running', null) ||
+      store.getRunStatus(projectId, runId) !== 'running') {
+    store.appendEvent(projectId, runId, 'run.start-discarded', {
+      reason: 'Run entered a terminal state before the execution worker acquired it',
+    });
+    return null;
+  }
+  store.appendEvent(projectId, runId, 'stage.started', { stage: 'translate', label: '开始翻译' });
+
+  const items = store.getRunSegmentsForExecution(projectId, runId) as TranslationItem[];
+  if (!items.length) {
+    store.finishRun(projectId, runId);
+    return null;
+  }
+  const strategy = normalizeDocumentTranslationStrategy(context.prompt?.config?.translationStrategy);
+  const batches = buildBatches(items, context.run.translationMode === 'literary', strategy);
+
+  // 审校强度只在文学模式下有意义；技术模式本来就不审校。
+  const reviewStrength = context.run.translationMode === 'literary' && context.run.reviewEnabled
+    ? strategy.reviewStrength
+    : 'off' as const;
+  const reviewEnabled = reviewStrength !== 'off';
+  // 只有 strong/medium 会真的发模型请求；weak 是纯本地确定性检查，不该占会话槽位。
+  const modelReviewEnabled = reviewStrength === 'strong' || reviewStrength === 'medium';
+  const { poolSize, translationConcurrency, reviewConcurrency, detachReviews } =
+    resolveDocumentRunConcurrencyBudget(
+      WORKBUDDY_POOL_SIZE,
+      modelReviewEnabled,
+      Math.min(strategy.translationConcurrency, CONFIGURED_TRANSLATION_CONCURRENCY),
+      // 审校并行度一律尊重用户配置（strong/medium 都是真的发模型请求）。
+      // 这里曾经对 medium 硬编码 1，把项目配置的 2 和 env 的 4 全部覆盖掉，
+      // 结果是 4 个审校批次排队跑完 332s，占整个 run 的 86%。
+      reviewStrength === 'weak'
+        ? 1
+        : Math.min(strategy.reviewConcurrency, CONFIGURED_REVIEW_CONCURRENCY),
+    );
+  // 翻译排空后审校可以独占整个会话池：strategy.reviewConcurrency 和
+  // LOCAL_AGENT_DOCUMENT_REVIEW_CONCURRENCY 表达的都是「翻译还在跑的时候给审校留几个槽」，
+  // 不是审校吞吐的硬上限。翻译做完后所有槽位都空着，继续按翻译期的分配值排队纯属浪费。
+  // 需要保留上限的机器可以设 LOCAL_AGENT_DOCUMENT_REVIEW_DRAIN_CONCURRENCY。
+  const reviewDrainConcurrency = Math.min(poolSize, CONFIGURED_REVIEW_DRAIN_CONCURRENCY);
+  // run 起点：日志里必须能看出这一次 Run 是哪一个项目、哪个范围、多少段、多少批、
+  // 用什么并发和审校强度。缺了这些，"为什么慢/为什么没跑"只能去翻 DB。
+  logInfo('document-agent', 'run started · project=' + projectId + ' · run=' + runId +
+    ' · mode=' + context.run.translationMode +
+    ' · scope=' + JSON.stringify(context.run.scope || {}) +
+    ' · segments=' + items.length +
+    ' · batches=' + batches.length +
+    ' · translateConcurrency=' + translationConcurrency +
+    ' · reviewStrength=' + reviewStrength +
+    ' · reviewConcurrency=' + reviewConcurrency +
+    ' · reviewDrainConcurrency=' + (modelReviewEnabled ? reviewDrainConcurrency : 0) +
+    ' · provider=' + context.run.provider +
+    ' · model=' + resolveEffectiveTaskModel(
+      parseAgentModel(context.run.model || 'auto', context.run.provider || 'workbuddy').model,
+      getCodeBuddyTaskProfile(context.prompt.config || {}, 'translation'),
+    ) +
+    ' · reviewModel=' + resolveEffectiveTaskModel(
+      parseAgentModel(context.run.model || 'auto', context.run.provider || 'workbuddy').model,
+      getCodeBuddyTaskProfile(context.prompt.config || {},
+        reviewStrength === 'strong' ? 'styleReview' : 'accuracyReview'),
+    ));
+  store.appendEvent(projectId, runId, 'plan.ready', {
+    batchCount: batches.length,
+    segmentCount: items.length,
+    strategy: 'bounded-parallel',
+    translationConcurrency,
+    reviewConcurrency,
+    reviewDrainConcurrency: modelReviewEnabled ? reviewDrainConcurrency : 0,
+    reviewStrength,
+    reviewModelCallsPerBatch: reviewStrength === 'strong' ? 2 : reviewStrength === 'medium' ? 1 : 0,
+    poolSize,
+    reviewTimeoutMs: reviewEnabled ? REVIEW_TIMEOUT_MS : 0,
+    maxBatchSegments: strategy.maxBatchSegments,
+    maxBatchSourceChars: strategy.maxBatchSourceChars,
+    precedingContextSegments: strategy.precedingContextSegments,
+    contextBudgetChars: strategy.contextBudgetChars,
+    maxModelAttempts: strategy.maxModelAttempts,
+    sessionStrategy: 'independent-per-batch',
+  });
+  const memory = context.memory && typeof context.memory === 'object' ? context.memory as Record<string, any> : {};
+  const configuredGlossary = context.prompt.config?.glossary as any;
+  const glossaryTerms = Array.isArray(configuredGlossary?.document_terms)
+    ? configuredGlossary.document_terms.length : 0;
+  store.appendEvent(projectId, runId, 'run.context.ready', {
+    provider: context.run.provider,
+    model: context.run.model,
+    // 「请求的模型」和「实际生效的模型」经常不同（池默认 auto → glm-5.3-flash，
+    // 任务配置却是 deepseek-v4.1-flash）。只写 context.run.model 会让审计账本说谎。
+    effectiveModel: resolveEffectiveTaskModel(
+      parseAgentModel(context.run.model || 'auto', context.run.provider || 'workbuddy').model,
+      getCodeBuddyTaskProfile(context.prompt.config || {}, 'translation'),
+    ),
+    effectiveReviewModel: resolveEffectiveTaskModel(
+      parseAgentModel(context.run.model || 'auto', context.run.provider || 'workbuddy').model,
+      getCodeBuddyTaskProfile(context.prompt.config || {},
+        reviewStrength === 'strong' ? 'styleReview' : 'accuracyReview'),
+    ),
+    translationMode: context.run.translationMode,
+    sourceLang: context.run.sourceLang,
+    targetLang: context.run.targetLang,
+    reviewEnabled,
+    reviewStrength,
+    promptRevisionId: context.run.promptRevisionId,
+    memoryRevisionId: context.memoryRevisionId || null,
+    systemPromptChars: typeof context.prompt.systemPrompt === 'string' ? context.prompt.systemPrompt.length : 0,
+    userPromptTemplateChars: typeof context.prompt.userPromptTemplate === 'string' ? context.prompt.userPromptTemplate.length : 0,
+    glossaryTerms,
+    memoryEntities: Array.isArray(memory.entities) ? memory.entities.length : 0,
+    confirmedEntities: Array.isArray(memory.entities) ? memory.entities.filter((item: any) => item?.reviewStatus === 'confirmed').length : 0,
+    memoryRelationships: Array.isArray(memory.relationships) ? memory.relationships.length : 0,
+    chapterSummaries: Array.isArray(memory.chapterSummaries) ? memory.chapterSummaries.length : 0,
+    characterVoices: Array.isArray(memory.characterVoices) ? memory.characterVoices.length : 0,
+    confirmedCharacterVoices: Array.isArray(memory.characterVoices) ? memory.characterVoices.filter((item: any) => item?.status === 'confirmed').length : 0,
+    relationshipVoiceRules: Array.isArray(memory.relationshipVoiceRules) ? memory.relationshipVoiceRules.length : 0,
+    voiceAnchors: Array.isArray(memory.voiceAnchors) ? memory.voiceAnchors.length : 0,
+    promptFingerprint: context.prompt.fingerprint || null,
+  });
+
+  const reviewLimiter = createConcurrencyLimiter(reviewConcurrency);
+  const reviewTasks: Promise<void>[] = [];
+  return {
+    context, items, batches, strategy, reviewStrength, reviewEnabled, modelReviewEnabled,
+    poolSize, translationConcurrency, reviewConcurrency, detachReviews, reviewDrainConcurrency,
+    reviewLimiter, reviewTasks,
+  };
+}
+
+/** 准备阶段产出：后续批处理直接消费，不再回读数据库。 */
+interface PreparedRunExecution {
+  context: ReturnType<DocumentProjectStore['getRunContext']>;
+  items: TranslationItem[];
+  batches: TranslationItem[][];
+  strategy: DocumentTranslationStrategy;
+  reviewStrength: 'strong' | 'medium' | 'weak' | 'off';
+  reviewEnabled: boolean;
+  modelReviewEnabled: boolean;
+  poolSize: number;
+  translationConcurrency: number;
+  reviewConcurrency: number;
+  detachReviews: boolean;
+  reviewDrainConcurrency: number;
+  reviewLimiter: ReturnType<typeof createConcurrencyLimiter>;
+  reviewTasks: Promise<void>[];
+}
+
+/**
+ * Run 执行的收尾阶段：终结 Run、自动采纳候选、写 run.finished 事件，并触发全书质量审计。
+ *
+ * 从 executeRun 抽出：这一段只在所有批次结束后执行一次，和批处理没有共享状态，
+ * 单独成函数后收尾策略（自动采纳、自动补译范围）可以独立阅读与调整。
+ */
+function finalizeRunExecution(
+  store: DocumentProjectStore,
+  projectId: string,
+  runId: string,
+  context: ReturnType<DocumentProjectStore['getRunContext']>,
+  runStartedAt: number,
+): void {
+  let finishedRun = store.finishRun(projectId, runId);
+
+  // 候选采纳属于服务端 Run 的最终化，不依赖浏览器工作区保持打开。
+  // Store 的事务仍会检查来源版本与更新过的人工修订，不允许自动采纳覆盖人工版本。
+  if (finishedRun.status === 'awaiting_acceptance' && Number(finishedRun.counts?.candidate || 0) > 0) {
+    try {
+      finishedRun = autoAcceptFinishedRunCandidates(projectId, runId);
+      store.appendEvent(projectId, runId, 'translations.auto-accepted', {
+        acceptedCount: Number(finishedRun.counts?.accepted || 0),
+        remainingCandidateCount: Number(finishedRun.counts?.candidate || 0),
+        preservedManualCount: Number(finishedRun.counts?.manualPreserved || 0),
+        policy: 'validated-finalization; manual-edits-and-source-hashes-protected',
+      });
+    } catch (acceptError) {
+      // Translation candidates stay durable and the extension recovery path can retry the same idempotent operation.
+      store.appendEvent(projectId, runId, 'stage.warning', {
+        stage: 'acceptance',
+        warning: '服务端自动采纳未完成，候选已保留供恢复：' +
+          (acceptError instanceof Error ? acceptError.message : String(acceptError)),
+      });
+    }
+  }
+
+
+
+  const finishedUsage = summarizeTurnUsage(takeRunUsage(runId));
+  store.appendEvent(projectId, runId, 'run.finished', {
+    status: finishedRun.status,
+    counts: finishedRun.counts || {},
+    error: finishedRun.error || null,
+    // 本运行累计 token 消耗（仅初译模型调用；审校/预处理各自有 model.usage 事件）。
+    usage: finishedUsage,
+  });
+  // run 级终点必须在文件日志里也留一行：只写 project_events 时，日志里看不出
+  // 「哪一次 run 结束了、结果如何」，排查只能靠打开项目 DB。
+  // summarizeTurnUsage 返回对象，直接字符串拼接会得到 "[object Object]"，
+  // 于是 run 级 token/成本/轮次在日志里全部丢失（这一行原本就是为回答"花了多少"加的）。
+  const finishedLine = 'run finished · project=' + projectId + ' · run=' + runId +
+    ' · status=' + finishedRun.status +
+    ' · counts=' + JSON.stringify(finishedRun.counts || {}) +
+    ' · wall=' + Math.round((Date.now() - runStartedAt) / 1000) + 's' +
+    ' · usage=' + (finishedUsage ? JSON.stringify(finishedUsage) : '未计量') +
+    (finishedRun.error ? ' · error=' + summarizeError(finishedRun.error) : '');
+  if (['failed', 'cancelled'].includes(String(finishedRun.status))) logWarn('document-agent', finishedLine);
+  else logInfo('document-agent', finishedLine);
+  if (['completed', 'partial'].includes(finishedRun.status)) {
+    scheduleChineseEditorialProfileRefresh(projectId, runId);
+  }
+
+  // 完整/部分运行结束后仍执行全书质量审计；但自动补译只允许覆盖父 Run 实际包含的片段，最多一轮。
+  // 局部 Run 不得因全书其它位置缺译而扩大执行范围；启发式英文残留、数字差异、重复表达和规范名冲突
+  // 留给有界 Reviewer/非阻塞报告处理。
+  if (['completed', 'partial'].includes(finishedRun.status)) {
+    try {
+      const audit = runProjectQualityAudit(projectId);
+      const automationScope = (context.run.scope && typeof context.run.scope === 'object')
+        ? (context.run.scope as Record<string, any>).automation : undefined;
+      const isAutomaticRepairPass = automationScope?.kind === 'quality-audit-repair' &&
+        Number(automationScope.pass) >= 1;
+
+      // A book-level audit is useful after any Run, but its missing-translation findings
+      // must not silently widen a selected/chapter/stale Run into unrelated book translation.
+      // Use the immutable run_segments membership, not a re-evaluation of the current scope.
+      const parentRunSegmentIds = new Set(store.getRunSegmentIds(projectId, runId));
+      const allMissingFindings = (Array.isArray(audit.findings) ? audit.findings : [])
+        .filter((finding: any) => finding.type === 'missing-translation' && finding.repairable === true);
+      const inScopeMissingFindings = allMissingFindings.filter((finding: any) =>
+        Array.isArray(finding.segmentIds) &&
+        finding.segmentIds.some((segmentId: unknown) => parentRunSegmentIds.has(String(segmentId))),
+      );
+      const missingFindings = !isAutomaticRepairPass ? inScopeMissingFindings.slice(0, 100) : [];
+      if (missingFindings.length) {
+        const repair = createQualityRepairRun(
+          projectId,
+          String(audit.auditId),
+          missingFindings.map((finding: any) => String(finding.findingId)),
+          [],
+          { automatic: true, parentRunId: runId },
+        );
+        store.appendEvent(projectId, runId, 'quality-audit.auto-repair-scheduled', {
+          auditId: audit.auditId,
+          repairRunId: repair.run.runId,
+          segmentCount: repair.segmentIds.length,
+          maximumAutomaticPasses: 1,
+          findingType: 'missing-translation',
+          parentRunScopeSegmentCount: parentRunSegmentIds.size,
+          inScopeMissingTranslationCount: inScopeMissingFindings.length,
+          outOfScopeMissingTranslationCount: allMissingFindings.length - inScopeMissingFindings.length,
+          scopePolicy: 'automatic-repair-is-restricted-to-parent-run-segments',
+        });
+        startProjectTranslationRun(projectId, repair.run.runId);
+      } else {
+        store.appendEvent(projectId, runId, 'quality-audit.auto-disposition', {
+          auditId: audit.auditId,
+          findingCount: Array.isArray(audit.findings) ? audit.findings.length : 0,
+          inScopeMissingTranslationCount: inScopeMissingFindings.length,
+          outOfScopeMissingTranslationCount: allMissingFindings.length - inScopeMissingFindings.length,
+          automaticRepairSkipped: isAutomaticRepairPass
+            ? 'automatic-repair-pass-limit'
+            : inScopeMissingFindings.length
+              ? 'automatic-repair-batch-limit-reached'
+              : allMissingFindings.length
+                ? 'no-in-scope-missing-translation'
+                : 'no-deterministic-missing-translation',
+          remainingFindingsAreNonBlocking: true,
+        });
+      }
+    } catch (auditError) {
+      // Quality audit is an additional safety net: it must never turn persisted translations into a failed Run.
+      try {
+        store.appendEvent(projectId, runId, 'stage.warning', {
+          stage: 'quality-audit',
+          warning: '译文已保存，但自动全书审计未完成：' +
+            (auditError instanceof Error ? auditError.message : String(auditError)),
+        });
+      } catch {
+        logWarn('document-agent', 'automatic quality audit failed and warning could not be persisted');
+      }
+    }
+  }
+}
+
 async function executeRun(projectId: string, runId: string): Promise<void> {
   const store = getDocumentProjectStore();
   const runStartedAt = Date.now();
   try {
-    const context = store.getRunContext(projectId, runId);
-    if (!context.prompt) throw new Error('找不到本次运行使用的 Prompt 版本');
-    const initialStatus = context.run.status;
-    if (initialStatus === 'completed' || initialStatus === 'cancelled' || initialStatus === 'awaiting_acceptance') return;
-
-    // Full-book analysis and evidence are service-owned; the extension submits the Run and renders status.
-    if (!(await ensureLiteraryPreprocessingBeforeRun(projectId, runId, context.run as Record<string, any>))) return;
-
-    if (!store.setRunStatus(projectId, runId, 'running', null) ||
-        store.getRunStatus(projectId, runId) !== 'running') {
-      store.appendEvent(projectId, runId, 'run.start-discarded', {
-        reason: 'Run entered a terminal state before the execution worker acquired it',
-      });
-      return;
-    }
-    store.appendEvent(projectId, runId, 'stage.started', { stage: 'translate', label: '开始翻译' });
-
-    const items = store.getRunSegmentsForExecution(projectId, runId) as TranslationItem[];
-    if (!items.length) {
-      store.finishRun(projectId, runId);
-      return;
-    }
-    const strategy = normalizeDocumentTranslationStrategy(context.prompt?.config?.translationStrategy);
-    const batches = buildBatches(items, context.run.translationMode === 'literary', strategy);
-
-    // 审校强度只在文学模式下有意义；技术模式本来就不审校。
-    const reviewStrength = context.run.translationMode === 'literary' && context.run.reviewEnabled
-      ? strategy.reviewStrength
-      : 'off' as const;
-    const reviewEnabled = reviewStrength !== 'off';
-    // 只有 strong/medium 会真的发模型请求；weak 是纯本地确定性检查，不该占会话槽位。
-    const modelReviewEnabled = reviewStrength === 'strong' || reviewStrength === 'medium';
-    const { poolSize, translationConcurrency, reviewConcurrency, detachReviews } =
-      resolveDocumentRunConcurrencyBudget(
-        WORKBUDDY_POOL_SIZE,
-        modelReviewEnabled,
-        Math.min(strategy.translationConcurrency, CONFIGURED_TRANSLATION_CONCURRENCY),
-        // 审校并行度一律尊重用户配置（strong/medium 都是真的发模型请求）。
-        // 这里曾经对 medium 硬编码 1，把项目配置的 2 和 env 的 4 全部覆盖掉，
-        // 结果是 4 个审校批次排队跑完 332s，占整个 run 的 86%。
-        reviewStrength === 'weak'
-          ? 1
-          : Math.min(strategy.reviewConcurrency, CONFIGURED_REVIEW_CONCURRENCY),
-      );
-    // 翻译排空后审校可以独占整个会话池：strategy.reviewConcurrency 和
-    // LOCAL_AGENT_DOCUMENT_REVIEW_CONCURRENCY 表达的都是「翻译还在跑的时候给审校留几个槽」，
-    // 不是审校吞吐的硬上限。翻译做完后所有槽位都空着，继续按翻译期的分配值排队纯属浪费。
-    // 需要保留上限的机器可以设 LOCAL_AGENT_DOCUMENT_REVIEW_DRAIN_CONCURRENCY。
-    const reviewDrainConcurrency = Math.min(poolSize, CONFIGURED_REVIEW_DRAIN_CONCURRENCY);
-    // run 起点：日志里必须能看出这一次 Run 是哪一个项目、哪个范围、多少段、多少批、
-    // 用什么并发和审校强度。缺了这些，"为什么慢/为什么没跑"只能去翻 DB。
-    logInfo('document-agent', 'run started · project=' + projectId + ' · run=' + runId +
-      ' · mode=' + context.run.translationMode +
-      ' · scope=' + JSON.stringify(context.run.scope || {}) +
-      ' · segments=' + items.length +
-      ' · batches=' + batches.length +
-      ' · translateConcurrency=' + translationConcurrency +
-      ' · reviewStrength=' + reviewStrength +
-      ' · reviewConcurrency=' + reviewConcurrency +
-      ' · reviewDrainConcurrency=' + (modelReviewEnabled ? reviewDrainConcurrency : 0) +
-      ' · provider=' + context.run.provider +
-      ' · model=' + resolveEffectiveTaskModel(
-        parseAgentModel(context.run.model || 'auto', context.run.provider || 'workbuddy').model,
-        getCodeBuddyTaskProfile(context.prompt.config || {}, 'translation'),
-      ) +
-      ' · reviewModel=' + resolveEffectiveTaskModel(
-        parseAgentModel(context.run.model || 'auto', context.run.provider || 'workbuddy').model,
-        getCodeBuddyTaskProfile(context.prompt.config || {},
-          reviewStrength === 'strong' ? 'styleReview' : 'accuracyReview'),
-      ));
-    store.appendEvent(projectId, runId, 'plan.ready', {
-      batchCount: batches.length,
-      segmentCount: items.length,
-      strategy: 'bounded-parallel',
-      translationConcurrency,
-      reviewConcurrency,
-      reviewDrainConcurrency: modelReviewEnabled ? reviewDrainConcurrency : 0,
-      reviewStrength,
-      reviewModelCallsPerBatch: reviewStrength === 'strong' ? 2 : reviewStrength === 'medium' ? 1 : 0,
-      poolSize,
-      reviewTimeoutMs: reviewEnabled ? REVIEW_TIMEOUT_MS : 0,
-      maxBatchSegments: strategy.maxBatchSegments,
-      maxBatchSourceChars: strategy.maxBatchSourceChars,
-      precedingContextSegments: strategy.precedingContextSegments,
-      contextBudgetChars: strategy.contextBudgetChars,
-      maxModelAttempts: strategy.maxModelAttempts,
-      sessionStrategy: 'independent-per-batch',
-    });
-    const memory = context.memory && typeof context.memory === 'object' ? context.memory as Record<string, any> : {};
-    const configuredGlossary = context.prompt.config?.glossary as any;
-    const glossaryTerms = Array.isArray(configuredGlossary?.document_terms)
-      ? configuredGlossary.document_terms.length : 0;
-    store.appendEvent(projectId, runId, 'run.context.ready', {
-      provider: context.run.provider,
-      model: context.run.model,
-      // 「请求的模型」和「实际生效的模型」经常不同（池默认 auto → glm-5.3-flash，
-      // 任务配置却是 deepseek-v4.1-flash）。只写 context.run.model 会让审计账本说谎。
-      effectiveModel: resolveEffectiveTaskModel(
-        parseAgentModel(context.run.model || 'auto', context.run.provider || 'workbuddy').model,
-        getCodeBuddyTaskProfile(context.prompt.config || {}, 'translation'),
-      ),
-      effectiveReviewModel: resolveEffectiveTaskModel(
-        parseAgentModel(context.run.model || 'auto', context.run.provider || 'workbuddy').model,
-        getCodeBuddyTaskProfile(context.prompt.config || {},
-          reviewStrength === 'strong' ? 'styleReview' : 'accuracyReview'),
-      ),
-      translationMode: context.run.translationMode,
-      sourceLang: context.run.sourceLang,
-      targetLang: context.run.targetLang,
-      reviewEnabled,
-      reviewStrength,
-      promptRevisionId: context.run.promptRevisionId,
-      memoryRevisionId: context.memoryRevisionId || null,
-      systemPromptChars: typeof context.prompt.systemPrompt === 'string' ? context.prompt.systemPrompt.length : 0,
-      userPromptTemplateChars: typeof context.prompt.userPromptTemplate === 'string' ? context.prompt.userPromptTemplate.length : 0,
-      glossaryTerms,
-      memoryEntities: Array.isArray(memory.entities) ? memory.entities.length : 0,
-      confirmedEntities: Array.isArray(memory.entities) ? memory.entities.filter((item: any) => item?.reviewStatus === 'confirmed').length : 0,
-      memoryRelationships: Array.isArray(memory.relationships) ? memory.relationships.length : 0,
-      chapterSummaries: Array.isArray(memory.chapterSummaries) ? memory.chapterSummaries.length : 0,
-      characterVoices: Array.isArray(memory.characterVoices) ? memory.characterVoices.length : 0,
-      confirmedCharacterVoices: Array.isArray(memory.characterVoices) ? memory.characterVoices.filter((item: any) => item?.status === 'confirmed').length : 0,
-      relationshipVoiceRules: Array.isArray(memory.relationshipVoiceRules) ? memory.relationshipVoiceRules.length : 0,
-      voiceAnchors: Array.isArray(memory.voiceAnchors) ? memory.voiceAnchors.length : 0,
-      promptFingerprint: context.prompt.fingerprint || null,
-    });
-
-    const reviewLimiter = createConcurrencyLimiter(reviewConcurrency);
-    const reviewTasks: Promise<void>[] = [];
+    const prepared = await prepareRunExecution(store, projectId, runId);
+    if (!prepared) return;
+    const {
+      context, items, batches, strategy, reviewStrength, reviewEnabled, modelReviewEnabled, poolSize,
+      translationConcurrency, reviewConcurrency, detachReviews, reviewDrainConcurrency, reviewLimiter, reviewTasks,
+    } = prepared;
 
     const reviewBatch = async (
       batchContext: any,
@@ -2790,126 +2620,7 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
       }
     }
 
-    let finishedRun = store.finishRun(projectId, runId);
-
-    // 候选采纳属于服务端 Run 的最终化，不依赖浏览器工作区保持打开。
-    // Store 的事务仍会检查来源版本与更新过的人工修订，不允许自动采纳覆盖人工版本。
-    if (finishedRun.status === 'awaiting_acceptance' && Number(finishedRun.counts?.candidate || 0) > 0) {
-      try {
-        finishedRun = autoAcceptFinishedRunCandidates(projectId, runId);
-        store.appendEvent(projectId, runId, 'translations.auto-accepted', {
-          acceptedCount: Number(finishedRun.counts?.accepted || 0),
-          remainingCandidateCount: Number(finishedRun.counts?.candidate || 0),
-          preservedManualCount: Number(finishedRun.counts?.manualPreserved || 0),
-          policy: 'validated-finalization; manual-edits-and-source-hashes-protected',
-        });
-      } catch (acceptError) {
-        // Translation candidates stay durable and the extension recovery path can retry the same idempotent operation.
-        store.appendEvent(projectId, runId, 'stage.warning', {
-          stage: 'acceptance',
-          warning: '服务端自动采纳未完成，候选已保留供恢复：' +
-            (acceptError instanceof Error ? acceptError.message : String(acceptError)),
-        });
-      }
-    }
-
-
-
-    const finishedUsage = summarizeTurnUsage(takeRunUsage(runId));
-    store.appendEvent(projectId, runId, 'run.finished', {
-      status: finishedRun.status,
-      counts: finishedRun.counts || {},
-      error: finishedRun.error || null,
-      // 本运行累计 token 消耗（仅初译模型调用；审校/预处理各自有 model.usage 事件）。
-      usage: finishedUsage,
-    });
-    // run 级终点必须在文件日志里也留一行：只写 project_events 时，日志里看不出
-    // 「哪一次 run 结束了、结果如何」，排查只能靠打开项目 DB。
-    // summarizeTurnUsage 返回对象，直接字符串拼接会得到 "[object Object]"，
-    // 于是 run 级 token/成本/轮次在日志里全部丢失（这一行原本就是为回答"花了多少"加的）。
-    const finishedLine = 'run finished · project=' + projectId + ' · run=' + runId +
-      ' · status=' + finishedRun.status +
-      ' · counts=' + JSON.stringify(finishedRun.counts || {}) +
-      ' · wall=' + Math.round((Date.now() - runStartedAt) / 1000) + 's' +
-      ' · usage=' + (finishedUsage ? JSON.stringify(finishedUsage) : '未计量') +
-      (finishedRun.error ? ' · error=' + summarizeError(finishedRun.error) : '');
-    if (['failed', 'cancelled'].includes(String(finishedRun.status))) logWarn('document-agent', finishedLine);
-    else logInfo('document-agent', finishedLine);
-    if (['completed', 'partial'].includes(finishedRun.status)) {
-      scheduleChineseEditorialProfileRefresh(projectId, runId);
-    }
-
-    // 完整/部分运行结束后仍执行全书质量审计；但自动补译只允许覆盖父 Run 实际包含的片段，最多一轮。
-    // 局部 Run 不得因全书其它位置缺译而扩大执行范围；启发式英文残留、数字差异、重复表达和规范名冲突
-    // 留给有界 Reviewer/非阻塞报告处理。
-    if (['completed', 'partial'].includes(finishedRun.status)) {
-      try {
-        const audit = runProjectQualityAudit(projectId);
-        const automationScope = (context.run.scope && typeof context.run.scope === 'object')
-          ? (context.run.scope as Record<string, any>).automation : undefined;
-        const isAutomaticRepairPass = automationScope?.kind === 'quality-audit-repair' &&
-          Number(automationScope.pass) >= 1;
-
-        // A book-level audit is useful after any Run, but its missing-translation findings
-        // must not silently widen a selected/chapter/stale Run into unrelated book translation.
-        // Use the immutable run_segments membership, not a re-evaluation of the current scope.
-        const parentRunSegmentIds = new Set(store.getRunSegmentIds(projectId, runId));
-        const allMissingFindings = (Array.isArray(audit.findings) ? audit.findings : [])
-          .filter((finding: any) => finding.type === 'missing-translation' && finding.repairable === true);
-        const inScopeMissingFindings = allMissingFindings.filter((finding: any) =>
-          Array.isArray(finding.segmentIds) &&
-          finding.segmentIds.some((segmentId: unknown) => parentRunSegmentIds.has(String(segmentId))),
-        );
-        const missingFindings = !isAutomaticRepairPass ? inScopeMissingFindings.slice(0, 100) : [];
-        if (missingFindings.length) {
-          const repair = createQualityRepairRun(
-            projectId,
-            String(audit.auditId),
-            missingFindings.map((finding: any) => String(finding.findingId)),
-            [],
-            { automatic: true, parentRunId: runId },
-          );
-          store.appendEvent(projectId, runId, 'quality-audit.auto-repair-scheduled', {
-            auditId: audit.auditId,
-            repairRunId: repair.run.runId,
-            segmentCount: repair.segmentIds.length,
-            maximumAutomaticPasses: 1,
-            findingType: 'missing-translation',
-            parentRunScopeSegmentCount: parentRunSegmentIds.size,
-            inScopeMissingTranslationCount: inScopeMissingFindings.length,
-            outOfScopeMissingTranslationCount: allMissingFindings.length - inScopeMissingFindings.length,
-            scopePolicy: 'automatic-repair-is-restricted-to-parent-run-segments',
-          });
-          startProjectTranslationRun(projectId, repair.run.runId);
-        } else {
-          store.appendEvent(projectId, runId, 'quality-audit.auto-disposition', {
-            auditId: audit.auditId,
-            findingCount: Array.isArray(audit.findings) ? audit.findings.length : 0,
-            inScopeMissingTranslationCount: inScopeMissingFindings.length,
-            outOfScopeMissingTranslationCount: allMissingFindings.length - inScopeMissingFindings.length,
-            automaticRepairSkipped: isAutomaticRepairPass
-              ? 'automatic-repair-pass-limit'
-              : inScopeMissingFindings.length
-                ? 'automatic-repair-batch-limit-reached'
-                : allMissingFindings.length
-                  ? 'no-in-scope-missing-translation'
-                  : 'no-deterministic-missing-translation',
-            remainingFindingsAreNonBlocking: true,
-          });
-        }
-      } catch (auditError) {
-        // Quality audit is an additional safety net: it must never turn persisted translations into a failed Run.
-        try {
-          store.appendEvent(projectId, runId, 'stage.warning', {
-            stage: 'quality-audit',
-            warning: '译文已保存，但自动全书审计未完成：' +
-              (auditError instanceof Error ? auditError.message : String(auditError)),
-          });
-        } catch {
-          logWarn('document-agent', 'automatic quality audit failed and warning could not be persisted');
-        }
-      }
-    }
+    finalizeRunExecution(store, projectId, runId, context, runStartedAt);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     try {

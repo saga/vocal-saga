@@ -9,7 +9,8 @@ import { createHash } from 'node:crypto';
 import { logInfo } from '../log.ts';
 import { buildProjectVoiceContext } from './voiceContext.ts';
 import { buildProjectContextGraphBundle, CONTEXT_GRAPH_ANALYSIS_VERSION } from './contextGraph.ts';
-import { getDocumentProjectStore, normalizeDocumentTranslationStrategy } from './projectStore.ts';
+import { getDocumentProjectStore } from './projectStore.ts';
+import { normalizeDocumentTranslationStrategy } from './documentStrategy.ts';
 import { isWorthCanonicalEntityMapping, normalizeCanonicalEntityKind, validateCanonicalTarget } from './canonicalEntityPolicy.ts';
 
 export const TRANSLATION_BRIEF_POLICY_VERSION = 'translation-brief-v10-bounded-examples';

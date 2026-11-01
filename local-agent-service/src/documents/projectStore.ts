@@ -6,6 +6,7 @@
  * write. The project database is the source of truth for source revisions, prompts, runs,
  * candidate translations and human-approved edits.
  */
+
 import { createHash, randomUUID } from 'node:crypto';
 import { readdirSync, mkdirSync } from 'node:fs';
 import { rename, unlink, writeFile } from 'node:fs/promises';
@@ -16,130 +17,18 @@ import { sanitizeProjectLiteraryMemory } from './voiceContext.ts';
 import { mergeTranslationContextDeltasIntoMemory } from './translationContextDelta.ts';
 import { sourceLanguageMatches } from './languageMatch.ts';
 import { normalizeCodeBuddyTaskProfiles } from '../agents/taskProfiles.ts';
-import { formatLogLine, logError, logInfo, logWarn } from '../log.ts';
+import { logError, logInfo, logWarn } from '../log.ts';
+import { createProjectSchema } from './projectSchema.ts';
+import {
+  DEFAULT_DOCUMENT_TRANSLATION_STRATEGY, MAX_DOCUMENT_SOURCE_BYTES, normalizeDocumentReviewStrength,
+  normalizeDocumentTranslationStrategy, normalizePromptStyle,
+  type DocumentFormat, type DocumentTranslationStrategy, type ProjectPrompt, type ProjectSegment, type RunStatus,
+} from './documentStrategy.ts';
+import {
+  formatFailedSegmentSummary, hash, isoNow, normalizeFormat, parseJson, segmentHash, sourceFingerprint, validateSegments,
+} from './documentStoreUtils.ts';
+import { logWorkflowEvent } from './documentWorkflowLog.ts';
 
-export type DocumentFormat = 'epub' | 'pdf' | 'txt' | 'md' | 'html' | 'docx' | 'srt' | 'vtt' | 'json';
-const configuredSourceLimitMb = Number.parseInt(process.env.LOCAL_AGENT_MAX_DOCUMENT_SOURCE_MB || '512', 10);
-export const MAX_DOCUMENT_SOURCE_BYTES =
-  (Number.isFinite(configuredSourceLimitMb) && configuredSourceLimitMb >= 20 ? configuredSourceLimitMb : 512) * 1024 * 1024;
-
-export type RunStatus = 'queued' | 'running' | 'paused' | 'awaiting_acceptance' | 'partial' | 'completed' | 'failed' | 'cancelled';
-
-function formatFailedSegmentSummary(count: number): string {
-  return `本次运行有 ${count} 个片段未能完成，已生成的译文已保留。这不代表译文质量不合格；请查看“未完成片段详情”了解原因，需要时可只重试这些片段。`;
-}
-
-export interface ProjectSegment {
-  id: string;
-  text: string;
-  kind?: string;
-  contextPath?: string;
-  page?: number | null;
-  level?: number;
-  marker?: string;
-  /** EPUB spine href / original document part used to reconstruct the source layout. */
-  path?: string;
-  start?: string;
-  end?: string;
-}
-
-export type DocumentReviewStrength = 'strong' | 'medium' | 'weak' | 'off';
-
-export const DOCUMENT_REVIEW_STRENGTHS: readonly DocumentReviewStrength[] = ['strong', 'medium', 'weak', 'off'];
-
-export function normalizeDocumentReviewStrength(input: unknown): DocumentReviewStrength {
-  const value = typeof input === 'string' ? input.trim().toLowerCase() : '';
-  return (DOCUMENT_REVIEW_STRENGTHS as readonly string[]).includes(value)
-    ? value as DocumentReviewStrength
-    : DEFAULT_DOCUMENT_TRANSLATION_STRATEGY.reviewStrength;
-}
-
-export interface DocumentTranslationStrategy {
-  /** Maximum source segments in one model request. */
-  maxBatchSegments: number;
-  /** Maximum source characters in one batch, excluding prompt/context overhead. */
-  maxBatchSourceChars: number;
-  /** Requested concurrent initial-translation batches; capped by the actual provider pool. */
-  translationConcurrency: number;
-  /** Requested concurrent reviewer jobs; capped by the actual provider pool. */
-  reviewConcurrency: number;
-  /**
-   * 审校强度。只有 strong 会真的占用 reviewConcurrency 个槽位。
-   * - strong：文风审校 + 准确性审校，两次模型调用（历史行为）
-   * - medium：一次合并审校调用，兼顾 must_fix 与文风 findings
-   * - weak：不调模型，只做数字/专名/英文残留等确定性检查
-   * - off：不审校
-   */
-  reviewStrength: DocumentReviewStrength;
-  /** Number of earlier source segments offered for disambiguation, never translated again. */
-  precedingContextSegments: number;
-  /** Soft character budget for optional historical accepted-translation examples in TranslationBrief. */
-  contextBudgetChars: number;
-  /** Total attempts for a batch, including the initial model request. */
-  maxModelAttempts: number;
-}
-
-export const DEFAULT_DOCUMENT_TRANSLATION_STRATEGY: DocumentTranslationStrategy = {
-  maxBatchSegments: 16,
-  maxBatchSourceChars: 8000,
-  translationConcurrency: 4,
-  reviewConcurrency: 2,
-  reviewStrength: 'medium',
-  precedingContextSegments: 4,
-  contextBudgetChars: 18000,
-  maxModelAttempts: 2,
-};
-
-/** Validate UI/API values and preserve hard upper bounds even for hand-crafted API requests. */
-export function normalizeDocumentTranslationStrategy(input: unknown): DocumentTranslationStrategy {
-  const raw = input && typeof input === 'object' && !Array.isArray(input)
-    ? input as Record<string, unknown>
-    : {};
-  const integer = (key: keyof DocumentTranslationStrategy, fallback: number, min: number, max: number) => {
-    const value = raw[key];
-    if (typeof value !== 'number' && typeof value !== 'string') return fallback;
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? Math.max(min, Math.min(max, Math.round(parsed))) : fallback;
-  };
-  return {
-    maxBatchSegments: integer('maxBatchSegments', DEFAULT_DOCUMENT_TRANSLATION_STRATEGY.maxBatchSegments, 4, 24),
-    maxBatchSourceChars: integer('maxBatchSourceChars', DEFAULT_DOCUMENT_TRANSLATION_STRATEGY.maxBatchSourceChars, 2000, 12000),
-    translationConcurrency: integer('translationConcurrency', DEFAULT_DOCUMENT_TRANSLATION_STRATEGY.translationConcurrency, 1, 6),
-    reviewConcurrency: integer('reviewConcurrency', DEFAULT_DOCUMENT_TRANSLATION_STRATEGY.reviewConcurrency, 1, 4),
-    reviewStrength: normalizeDocumentReviewStrength(raw.reviewStrength),
-    precedingContextSegments: integer('precedingContextSegments', DEFAULT_DOCUMENT_TRANSLATION_STRATEGY.precedingContextSegments, 0, 6),
-    contextBudgetChars: integer('contextBudgetChars', DEFAULT_DOCUMENT_TRANSLATION_STRATEGY.contextBudgetChars, 4000, 18000),
-    maxModelAttempts: integer('maxModelAttempts', DEFAULT_DOCUMENT_TRANSLATION_STRATEGY.maxModelAttempts, 1, 2),
-  };
-}
-
-/** 文风是提示词的一部分：随项目保存，重新生成提示词时保持同一文风。 */
-const DOCUMENT_PROMPT_STYLES = ['default', 'jinyong', 'acheng', 'wangxiaobo', 'ja-source-natural'] as const;
-
-export function normalizePromptStyle(input: unknown): string {
-  const value = String(input ?? '').trim();
-  return (DOCUMENT_PROMPT_STYLES as readonly string[]).includes(value) ? value : 'default';
-}
-
-export interface ProjectPrompt {
-  name?: string;
-  systemPrompt?: string;
-  userPromptTemplate?: string;
-  sourceLang?: string;
-  targetLang?: string;
-  /** 生成 systemPrompt 时使用的文风；随项目保存，打开项目时按它重建提示词。 */
-  promptStyle?: string;
-  provider?: string;
-  model?: string;
-  translationMode?: 'technical' | 'literary';
-  literaryReview?: boolean;
-  glossary?: unknown;
-  translationStrategy?: Partial<DocumentTranslationStrategy>;
-  /** Immutable per-task CodeBuddy reasoning and supplemental prompt settings. */
-  taskProfiles?: unknown;
-  /** Confirmed book entities/style memory included as read-only Agent context. */
-  literaryMemory?: unknown;
-}
 
 export interface ProjectSummary {
   projectId: string;
@@ -177,274 +66,6 @@ const DEFAULT_SYSTEM_PROMPT = [
   'Return only a JSON object with a translations array. Each item must contain the original id and translated_text. Return each requested id exactly once. Never return HTML or Markdown around the JSON.',
 ].join('\n');
 
-/**
- * 进程内单调递增的时间戳。
- *
- * 所有「哪一条更新」的判断都比 created_at / accepted_at，而这些列是毫秒精度的。
- * 同一毫秒内写入的两条记录会打平，比较时旧记录可能压过新记录
- * （典型场景：Agent 候选与人工修订在同一个 tick 内落库）。
- * 这里保证同一进程内不会产生相同的时间戳。
- *
- * 跨进程仍可能打平（本机服务与 CLI 可能同时打开同一个项目库），
- * 因此 acceptCandidates 另用插入顺序（rowid）作为判据。
- */
-let lastStampMs = 0;
-function isoNow(): string {
-  const now = Math.max(Date.now(), lastStampMs + 1);
-  lastStampMs = now;
-  return new Date(now).toISOString();
-}
-function hash(value: string): string { return createHash('sha256').update(value, 'utf8').digest('hex'); }
-function parseJson<T>(value: unknown, fallback: T): T {
-  if (typeof value !== 'string') return fallback;
-  try { return JSON.parse(value) as T; } catch { return fallback; }
-}
-function normalizeFormat(value: string): DocumentFormat {
-  const format = value.toLowerCase().replace(/^\./, '');
-  if (['epub', 'pdf', 'txt', 'md', 'html', 'docx', 'srt', 'vtt', 'json'].includes(format)) return format as DocumentFormat;
-  throw Object.assign(new Error('不支持的文档格式：' + value), { status: 400 });
-}
-function validateSegments(input: unknown): ProjectSegment[] {
-  if (!Array.isArray(input) || input.length < 1 || input.length > 100_000) {
-    throw Object.assign(new Error('segments 必须是 1-100000 个片段的数组'), { status: 400 });
-  }
-  const seen = new Set<string>();
-  const result: ProjectSegment[] = [];
-  for (const raw of input) {
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
-    const item = raw as Record<string, unknown>;
-    if (typeof item.id !== 'string' || !item.id.trim() || typeof item.text !== 'string') continue;
-    const id = item.id.trim().slice(0, 200);
-    if (seen.has(id)) throw Object.assign(new Error('segments 包含重复 ID：' + id), { status: 400 });
-    seen.add(id);
-    result.push({
-      id,
-      text: item.text,
-      kind: typeof item.kind === 'string' ? item.kind.slice(0, 40) : 'paragraph',
-      contextPath: typeof item.contextPath === 'string' ? item.contextPath.slice(0, 500) : '',
-      page: Number.isFinite(item.page) ? Number(item.page) : null,
-      ...(Number.isFinite(item.level) ? { level: Number(item.level) } : {}),
-      ...(typeof item.marker === 'string' ? { marker: item.marker.slice(0, 80) } : {}),
-      ...(typeof item.path === 'string' ? { path: item.path.slice(0, 1000) } : {}),
-      ...(typeof item.start === 'string' ? { start: item.start.slice(0, 40) } : {}),
-      ...(typeof item.end === 'string' ? { end: item.end.slice(0, 40) } : {}),
-    });
-  }
-  if (!result.length) throw Object.assign(new Error('没有可持久化的文档片段'), { status: 400 });
-  return result;
-}
-
-function segmentHash(segment: ProjectSegment): string {
-  return hash(JSON.stringify([segment.text, segment.kind || 'paragraph', segment.contextPath || '', segment.page ?? null, segment.level ?? null, segment.marker ?? '', segment.path ?? '', segment.start ?? '', segment.end ?? '']));
-}
-function sourceFingerprint(segments: ProjectSegment[]): string {
-  return hash(JSON.stringify(segments.map((segment) => [segment.id, segmentHash(segment)])));
-}
-
-function traceDuration(value: unknown): string {
-  const ms = Number(value);
-  if (!Number.isFinite(ms) || ms < 0) return '';
-  return ms >= 60000 ? Math.floor(ms / 60000) + 'm' + Math.round((ms % 60000) / 1000) + 's' : (ms / 1000).toFixed(1) + 's';
-}
-
-function traceStage(value: unknown): string {
-  switch (String(value || '')) {
-    case 'translate': return '初译';
-    case 'review': return '准确性/术语审校';
-    case 'style-review': return '人物声音/文风审校';
-    case 'validate': return '结果校验';
-    case 'sample': return '全书扫描';
-    case 'model-analysis': return '全书人物与译名分析';
-    default: return String(value || 'Agent');
-  }
-}
-
-/** Print only user-actionable workflow milestones; never print full novel text or prompts. */
-function logWorkflowEvent(runId: string | null, type: string, rawPayload: unknown): void {
-  if (process.env.NODE_TEST_CONTEXT || process.env.NODE_ENV === 'test') return;
-  const p = rawPayload && typeof rawPayload === 'object' ? rawPayload as Record<string, any> : {};
-  const run = runId ? runId.slice(0, 8) : 'project';
-  const batch = p.batchIndex ? '批次 ' + p.batchIndex + (p.batchCount ? '/' + p.batchCount : '') : '';
-  let message = '';
-  let level: 'info' | 'warn' | 'error' = 'info';
-  switch (type) {
-    case 'plan.ready':
-      message = '执行计划就绪 · ' + (p.segmentCount ?? '?') + ' 段 / ' + (p.batchCount ?? '?') + ' 批 · 初译并发 ' + (p.translationConcurrency ?? '?') + ' · 审校并发 ' + (p.reviewConcurrency ?? 0);
-      break;
-    case 'run.context.ready':
-      message = '运行上下文已固定 · ' + (p.provider || '?') + ' / ' + (p.model || '运行时默认模型') + ' · ' + (p.sourceLang || '?') + '→' + (p.targetLang || '?') + ' · 实体 ' + (p.memoryEntities ?? 0) + ' · 人物声音 ' + (p.characterVoices ?? 0);
-      break;
-    case 'batch.started':
-      message = '初译开始 ' + batch + ' · ' + (Array.isArray(p.segmentIds) ? p.segmentIds.length : '?') + ' 段 · 前文 ' + (p.precedingContextCount ?? 0) + ' 段 · ' + (p.chapter || '按文档顺序');
-      break;
-    case 'batch.prompt.ready': {
-      const mappings = Array.isArray(p.contextGraphNameMappingPreview)
-        ? p.contextGraphNameMappingPreview.slice(0, 4).map((item: any) => String(item.source || '') + '→' + String(item.target || '')).join('、')
-        : '';
-      message = '模型调用开始 · ' + traceStage(p.stage) + ' ' + batch + ' · ' + (p.provider || '?') + ' / ' + (p.model || '运行时默认模型') +
-        ' · 输入 ' + (p.sourceChars ?? '?') + ' 字符 · 上下文 ' + (p.translationBriefChars ?? 0) + ' 字符 · 规范译名 ' +
-        (p.contextGraphNameMappingCount ?? 0) + (mappings ? '（' + mappings + '）' : '');
-      break;
-    }
-    case 'batch.model.response':
-      message = '模型返回 · ' + traceStage(p.stage) + ' ' + batch + ' · ' + (p.returnedSegments ?? 0) + '/' + (p.requestedSegments ?? 0) + ' 段 · ' +
-        (traceDuration(p.durationMs) || '耗时未知') + (p.missingCount ? ' · 缺少 ' + p.missingCount + ' 段，将定向重试' : '');
-      if (p.missingCount) level = 'warn';
-      break;
-    case 'translation-brief.ready':
-      message = 'TranslationBrief 已组装 ' + batch + ' · ' + (p.contextChars ?? 0) + ' 字符 · 实体 ' + (p.entityCount ?? 0) +
-        ' · 人物声音 ' + (p.characterVoiceCount ?? 0) + ' · 规范译名 ' + (p.nameMappingCount ?? 0);
-      break;
-    case 'review.context.ready':
-      message = '审校上下文就绪 ' + batch + ' · 原文 ' + (p.segmentCount ?? 0) + ' 段 · 注入实体 ' + (p.injectedEntities ?? 0) +
-        ' · 人物声音 ' + (p.injectedCharacterVoices ?? 0) + ' · 锚点 ' + (p.injectedVoiceAnchors ?? 0);
-      break;
-    case 'batch.translation.completed':
-      message = '初译候选已保存 ' + batch + ' · ' + (p.candidateCount ?? 0) + ' 段' +
-        (Array.isArray(p.failedIds) && p.failedIds.length ? ' · 未完成 ' + p.failedIds.length + ' 段' : '') +
-        ' · 审校' + (p.reviewScheduled ? '已排队' : '未启用');
-      if (Array.isArray(p.failedIds) && p.failedIds.length) level = 'warn';
-      break;
-    case 'batch.completed':
-      message = '批次流程结束 ' + batch + ' · 候选 ' + (p.candidateCount ?? 0) + ' 段 · 未完成 ' + (Array.isArray(p.failedIds) ? p.failedIds.length : 0) + ' 段';
-      if (Array.isArray(p.failedIds) && p.failedIds.length) level = 'warn';
-      break;
-    case 'run.finished': {
-      const counts = p.counts && typeof p.counts === 'object' ? p.counts : {};
-      message = '运行结束 · 状态 ' + (p.status || '未知') + ' · 候选 ' + (counts.candidate ?? 0) +
-        ' · 已接受 ' + (counts.accepted ?? 0) + ' · 未完成 ' + (counts.failed ?? 0) + (p.error ? ' · ' + String(p.error).slice(0, 200) : '');
-      if (p.status === 'failed' || p.status === 'partial') level = 'warn';
-      break;
-    }
-    case 'stage.started':
-      message = String(p.label || traceStage(p.stage)) + '开始 ' + batch;
-      break;
-    case 'stage.completed':
-      message = String(p.label || traceStage(p.stage)) + '完成 ' + batch +
-        (p.durationMs != null ? ' · ' + traceDuration(p.durationMs) : '') +
-        (p.findingCount != null ? ' · 发现 ' + p.findingCount + ' 项' : '') +
-        (p.revisedCount != null ? ' · 修订候选 ' + p.revisedCount + ' 段' : '') +
-        (p.styleFindingCount != null ? ' · 文风建议 ' + p.styleFindingCount + ' 项' : '');
-      break;
-    case 'stage.warning':
-      message = traceStage(p.stage) + '告警 ' + batch + ' · ' + String(p.warning || p.error || '阶段未完整执行').replace(/\s+/g, ' ').slice(0, 220);
-      level = 'warn';
-      break;
-    case 'batch.partial':
-      message = '批次响应不完整 ' + batch + ' · 第 ' + (p.attempt ?? '?') + ' 次 · 缺少 ' +
-        (Array.isArray(p.missingIds) ? p.missingIds.length : 0) + ' 段，开始定向重试';
-      level = 'warn';
-      break;
-    case 'batch.output.validation':
-      message = '输出结构校验 ' + batch + ' · 重复 ID ' + (p.duplicateCount ?? 0) + ' · 未知 ID ' + (p.unexpectedCount ?? 0) + ' · 格式错误 ' + (p.malformedRowCount ?? 0);
-      level = 'warn';
-      break;
-    case 'model.call.failed':
-      message = '模型调用失败 · ' + traceStage(p.stage) + ' ' + batch + ' · ' + String(p.error || '未知错误').replace(/\s+/g, ' ').slice(0, 240);
-      level = 'error';
-      break;
-    case 'batch.discarded':
-      message = '批次被丢弃 ' + batch + ' · ' + String(p.reason || p.error || '未说明原因').replace(/\s+/g, ' ').slice(0, 240);
-      level = 'warn';
-      break;
-    case 'review.audit.failed':
-      message = '审校失败 · ' + traceStage(p.stage) + ' ' + batch + ' · ' +
-        String(p.error || p.reason || '未知错误').replace(/\s+/g, ' ').slice(0, 240) +
-        '（保留初译，不阻塞运行）';
-      level = 'warn';
-      break;
-    case 'review.discarded':
-      message = '审校结果被丢弃 ' + batch + ' · ' + String(p.reason || p.error || '未说明原因').replace(/\s+/g, ' ').slice(0, 240);
-      level = 'warn';
-      break;
-    case 'translation.context-delta.discarded':
-      message = '上下文增量被丢弃 ' + batch + ' · ' + String(p.reason || p.error || '未说明原因').replace(/\s+/g, ' ').slice(0, 240);
-      level = 'warn';
-      break;
-    case 'run.start-discarded':
-      message = '运行未启动即被丢弃 · ' + String(p.reason || '运行已进入终态');
-      level = 'warn';
-      break;
-    case 'run.failed':
-      message = '运行失败 · ' + String(p.error || '未知错误').replace(/\s+/g, ' ').slice(0, 240);
-      level = 'error';
-      break;
-    case 'literary-memory.saved': {
-      const profiles = Array.isArray(p.characterProfiles) ? p.characterProfiles : [];
-      const kings = profiles.filter((profile: any) =>
-        /\b(?:the\s+)?king\b/iu.test(String(profile.canonicalSourceName || '')) ||
-        (Array.isArray(profile.aliases) && profile.aliases.some((alias: unknown) => /\b(?:the\s+)?king\b/iu.test(String(alias)))));
-      message = '文学记忆已保存 · 实体 ' + (p.entityCount ?? '?') +
-        ' · 人物声音 ' + (p.characterCount ?? '?') +
-        '（确认 ' + (p.confirmedCharacterCount ?? '?') + ' / 候选 ' + (p.candidateCharacterCount ?? '?') + ' / 拒绝 ' + (p.rejectedCharacterCount ?? '?') + '）' +
-        (kings.length ? ' · King画像 ' + kings.map((profile: any) =>
-          String(profile.canonicalSourceName || '?') + ':' + String(profile.status || '?')).join('、')
-          : ' · 未保存 King/the King 声音画像');
-      if (!kings.length) level = 'warn';
-      break;
-    }
-    case 'context-graph.phase':
-      message = '全书预处理 · ' + traceStage(p.phase) + ' · ' +
-        (p.sampleCount != null ? '样本 ' + p.sampleCount + ' 段' : (p.segmentCount ?? '?') + ' 段原文') +
-        (p.sourceLang ? ' · ' + p.sourceLang + '→' + (p.targetLang || '?') : '') +
-        (p.model ? ' · ' + (p.provider || '?') + ' / ' + p.model : '');
-      break;
-    case 'context-graph.scan.completed':
-      message = '全书扫描完成 · ' + (p.segmentCount ?? '?') + ' 段 / ' + (p.chapterCount ?? '?') + ' 章 · 名称候选 ' +
-        (p.nameCandidateCount ?? 0) + ' · 抽样 ' + (p.sampleCount ?? 0) + ' 段';
-      break;
-    case 'context-graph.output-audit': {
-      const raw = p.rawCounts && typeof p.rawCounts === 'object' ? p.rawCounts : {};
-      const saved = p.persistedCounts && typeof p.persistedCounts === 'object' ? p.persistedCounts : {};
-      const evidence = p.evidenceValidation && typeof p.evidenceValidation === 'object' ? p.evidenceValidation : {};
-      const coverage = Array.isArray(p.candidateCoverage) ? p.candidateCoverage : [];
-      const gaps = coverage.filter((item: any) =>
-        Number(item.mentions) >= 20 && Number(item.chapterCount) >= 3 && !item.returnedAsCharacter)
-        .slice(0, 4).map((item: any) => String(item.name || '') + '（' + item.mentions + ' 次）').filter(Boolean);
-      const dropped = Array.isArray(p.modelCharacters) ? p.modelCharacters
-        .filter((item: any) => item.disposition === 'dropped-no-valid-evidence')
-        .slice(0, 4).map((item: any) => {
-          const reasons = Object.entries(item.invalidEvidenceReasons || {})
-            .map(([reason, count]) => reason + ':' + String(count)).join(',');
-          return String(item.name || '<无名>') + (reasons ? ' [' + reasons + ']' : '');
-        }) : [];
-      const reasons = evidence.byReason && typeof evidence.byReason === 'object'
-        ? Object.entries(evidence.byReason).map(([reason, count]) => reason + ':' + String(count)).join('、')
-        : '';
-      message = '模型输出与证据校验 · 原始人物 ' + (raw.characters ?? '?') + ' / 保存人物 ' + (saved.characters ?? '?') +
-        ' · 原始实体 ' + (raw.entities ?? '?') + ' / 保存实体 ' + (saved.entities ?? '?') +
-        ' · 无效证据 ' + (evidence.invalidEvidenceCount ?? '?') +
-        (reasons ? '（' + reasons + '）' : '') +
-        (gaps.length ? ' · 高频名称未列为人物：' + gaps.join('、') : '') +
-        (dropped.length ? ' · 因证据被丢弃：' + dropped.join('；') : '');
-      if (Number(evidence.invalidEvidenceCount) > 0 || gaps.length || dropped.length) level = 'warn';
-      break;
-    }
-    case 'context-graph.completed':
-      message = '全书预处理完成 · 人物 ' + (p.characterCount ?? 0) + ' · 实体 ' + (p.entityCount ?? 0) + ' · 关系 ' +
-        (p.relationshipCount ?? 0) + ' · 规范译名 ' + (p.canonicalNameMappingCount ?? 0) + ' · 无效证据 ' + (p.invalidEvidenceCount ?? 0);
-      break;
-    case 'context-graph.failed':
-      message = '全书预处理失败 · ' + String(p.error || '未知错误').replace(/\s+/g, ' ').slice(0, 240);
-      level = 'error';
-      break;
-    default:
-      // 兜底：新增的失败类事件类型也必须出现在终端。
-      // 之前只给已知类型写文案，新增事件（如 batch.discarded）会掉进这里被静默丢弃，
-      // 于是「批次没了、Run 却还在跑」这类问题在日志里完全看不出来。
-      if (/(?:failed|discarded|error|timeout)$/i.test(type)) {
-        message = type + ' · ' + String(p.error || p.reason || JSON.stringify(p)).replace(/\s+/g, ' ').slice(0, 240);
-        level = 'warn';
-        break;
-      }
-      return;
-  }
-  if (!message) return;
-  const line = formatLogLine('agent', 'run=' + run + ' ' + message);
-  if (level === 'error') console.error(line);
-  else if (level === 'warn') console.warn(line);
-  else console.info(line);
-}
 
 export class DocumentProjectStore {
   private catalog?: DatabaseSync;
@@ -541,97 +162,6 @@ export class DocumentProjectStore {
   }
 
   /**
-   * 创建项目数据库的全部表结构与索引，并对旧版本数据库执行增量列迁移。
-   * 迁移只增列、不删数据，保证历史项目可继续读取。
-   */
-  private createProjectSchema(db: DatabaseSync): void {
-    db.exec('PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;');
-    db.exec(
-      'CREATE TABLE IF NOT EXISTS project_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);' +
-      'CREATE TABLE IF NOT EXISTS source_revisions (' +
-      'revision_id TEXT PRIMARY KEY, file_name TEXT NOT NULL, format TEXT NOT NULL, source_fingerprint TEXT NOT NULL, ' +
-      'parser_version TEXT NOT NULL, segment_count INTEGER NOT NULL, created_at TEXT NOT NULL, source_file_path TEXT, source_file_hash TEXT, source_file_size INTEGER);' +
-      'CREATE TABLE IF NOT EXISTS source_segments (' +
-      'source_revision_id TEXT NOT NULL, segment_id TEXT NOT NULL, ordinal INTEGER NOT NULL, text TEXT NOT NULL, ' +
-      'kind TEXT NOT NULL, context_path TEXT NOT NULL, page INTEGER, level INTEGER, marker TEXT, path TEXT, start_time TEXT, end_time TEXT, source_hash TEXT NOT NULL, ' +
-      'PRIMARY KEY(source_revision_id, segment_id));' +
-      'CREATE INDEX IF NOT EXISTS idx_source_segments_order ON source_segments(source_revision_id, ordinal);' +
-      'CREATE TABLE IF NOT EXISTS prompt_revisions (' +
-      'prompt_revision_id TEXT PRIMARY KEY, name TEXT NOT NULL, system_prompt TEXT NOT NULL, user_prompt_template TEXT NOT NULL, ' +
-      'config_json TEXT NOT NULL, fingerprint TEXT NOT NULL, created_at TEXT NOT NULL);' +
-      'CREATE INDEX IF NOT EXISTS idx_prompt_revisions_created ON prompt_revisions(created_at DESC);' +
-      'CREATE TABLE IF NOT EXISTS literary_memory_revisions (' +
-      'memory_revision_id TEXT PRIMARY KEY, version INTEGER NOT NULL, memory_json TEXT NOT NULL, fingerprint TEXT NOT NULL, created_at TEXT NOT NULL);' +
-      'CREATE INDEX IF NOT EXISTS idx_literary_memory_created ON literary_memory_revisions(created_at DESC);' +
-      'CREATE TABLE IF NOT EXISTS translation_runs (' +
-      'run_id TEXT PRIMARY KEY, source_revision_id TEXT NOT NULL, prompt_revision_id TEXT NOT NULL, literary_memory_revision_id TEXT, status TEXT NOT NULL, '+
-      'scope_json TEXT NOT NULL, run_fingerprint TEXT NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL, source_lang TEXT NOT NULL, ' +
-      'target_lang TEXT NOT NULL, translation_mode TEXT NOT NULL, review_enabled INTEGER NOT NULL, parent_run_id TEXT, ' +
-      'created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT, error TEXT);' +
-      'CREATE INDEX IF NOT EXISTS idx_translation_runs_created ON translation_runs(created_at DESC);' +
-      'CREATE TABLE IF NOT EXISTS run_segments (' +
-      'run_id TEXT NOT NULL, segment_id TEXT NOT NULL, source_hash TEXT NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, ' +
-      'candidate_result_id TEXT, error TEXT, updated_at TEXT NOT NULL, PRIMARY KEY(run_id, segment_id));' +
-      'CREATE INDEX IF NOT EXISTS idx_run_segments_status ON run_segments(run_id, status);' +
-      'CREATE TABLE IF NOT EXISTS translation_results (' +
-      'result_id TEXT PRIMARY KEY, run_id TEXT, source_revision_id TEXT NOT NULL, prompt_revision_id TEXT, segment_id TEXT NOT NULL, ' +
-      'source_hash TEXT NOT NULL, run_fingerprint TEXT NOT NULL, translation_text TEXT NOT NULL, origin TEXT NOT NULL, ' +
-      'accepted INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, accepted_at TEXT);' +
-      'CREATE INDEX IF NOT EXISTS idx_translation_results_segment ON translation_results(segment_id, accepted, created_at DESC);' +
-      'CREATE INDEX IF NOT EXISTS idx_translation_results_run ON translation_results(run_id, created_at DESC);' +
-      'CREATE TABLE IF NOT EXISTS review_findings (' +
-      'finding_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, segment_id TEXT NOT NULL, category TEXT NOT NULL, ' +
-      'priority TEXT NOT NULL, finding_json TEXT NOT NULL, status TEXT NOT NULL DEFAULT \'pending\', created_at TEXT NOT NULL);' +
-      'CREATE INDEX IF NOT EXISTS idx_review_findings_run ON review_findings(run_id, segment_id);' +
-      'CREATE TABLE IF NOT EXISTS translation_briefs (' +
-      'run_id TEXT NOT NULL, batch_index INTEGER NOT NULL, source_revision_id TEXT NOT NULL, prompt_revision_id TEXT NOT NULL, ' +
-      'memory_revision_id TEXT, brief_hash TEXT NOT NULL, brief_chars INTEGER NOT NULL, source_segment_ids_json TEXT NOT NULL, brief_json TEXT NOT NULL, created_at TEXT NOT NULL, ' +
-      'PRIMARY KEY(run_id, batch_index));' +
-      'CREATE INDEX IF NOT EXISTS idx_translation_briefs_run ON translation_briefs(run_id, batch_index);' +
-      'CREATE TABLE IF NOT EXISTS translation_context_deltas (' +
-      'run_id TEXT NOT NULL, first_segment_id TEXT NOT NULL, batch_index INTEGER NOT NULL, first_ordinal INTEGER NOT NULL, ' +
-      'source_segment_ids_json TEXT NOT NULL, delta_json TEXT NOT NULL, validation_json TEXT NOT NULL, created_at TEXT NOT NULL, ' +
-      'PRIMARY KEY(run_id, first_segment_id));' +
-      'CREATE INDEX IF NOT EXISTS idx_translation_context_deltas_order ON translation_context_deltas(run_id, first_ordinal);' +
-      'CREATE TABLE IF NOT EXISTS quality_audits (' +
-      'audit_id TEXT PRIMARY KEY, source_revision_id TEXT NOT NULL, run_id TEXT, report_json TEXT NOT NULL, created_at TEXT NOT NULL);' +
-      'CREATE INDEX IF NOT EXISTS idx_quality_audits_created ON quality_audits(created_at DESC);' +
-      'CREATE TABLE IF NOT EXISTS quality_evaluations (' +
-      'evaluation_id TEXT PRIMARY KEY, source_revision_id TEXT NOT NULL, before_run_id TEXT NOT NULL, after_run_id TEXT NOT NULL, ' +
-      'report_json TEXT NOT NULL, blind_mapping_json TEXT NOT NULL, blind_reviews_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);' +
-      'CREATE INDEX IF NOT EXISTS idx_quality_evaluations_created ON quality_evaluations(created_at DESC);' +
-      'CREATE TABLE IF NOT EXISTS project_events (' +
-      'event_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, event_type TEXT NOT NULL, payload_json TEXT NOT NULL, created_at TEXT NOT NULL);' +
-      'CREATE INDEX IF NOT EXISTS idx_project_events_run ON project_events(run_id, event_id);'
-    );
-    // Add columns safely for project DBs created by earlier iterations of this feature.
-    // SQLite 项目可能早于独立文学记忆版本表创建；增量迁移不能丢旧的 Run / Prompt / 译文。
-    const runColumns = new Set(
-      (db.prepare('PRAGMA table_info(translation_runs)').all() as Array<{ name: string }>).map((column) => column.name),
-    );
-    if (!runColumns.has('literary_memory_revision_id')) db.exec('ALTER TABLE translation_runs ADD COLUMN literary_memory_revision_id TEXT');
-    const translationColumns = new Set(
-      (db.prepare('PRAGMA table_info(translation_results)').all() as Array<{ name: string }>).map((column) => column.name),
-    );
-    if (!translationColumns.has('accepted_at')) {
-      db.exec('ALTER TABLE translation_results ADD COLUMN accepted_at TEXT');
-      db.exec('UPDATE translation_results SET accepted_at = created_at WHERE accepted = 1 AND accepted_at IS NULL');
-    }
-    const sourceColumns = new Set(
-      (db.prepare('PRAGMA table_info(source_revisions)').all() as Array<{ name: string }>).map((column) => column.name),
-    );
-    if (!sourceColumns.has('source_file_path')) db.exec('ALTER TABLE source_revisions ADD COLUMN source_file_path TEXT');
-    if (!sourceColumns.has('source_file_hash')) db.exec('ALTER TABLE source_revisions ADD COLUMN source_file_hash TEXT');
-    if (!sourceColumns.has('source_file_size')) db.exec('ALTER TABLE source_revisions ADD COLUMN source_file_size INTEGER');
-    const segmentColumns = new Set(
-      (db.prepare('PRAGMA table_info(source_segments)').all() as Array<{ name: string }>).map((column) => column.name),
-    );
-    if (!segmentColumns.has('path')) db.exec('ALTER TABLE source_segments ADD COLUMN path TEXT');
-    if (!segmentColumns.has('start_time')) db.exec('ALTER TABLE source_segments ADD COLUMN start_time TEXT');
-    if (!segmentColumns.has('end_time')) db.exec('ALTER TABLE source_segments ADD COLUMN end_time TEXT');
-  }
-
-  /**
    * 打开（或创建）项目数据库，带缓存。
    * 非创建模式下会校验项目存在于 catalog 且未归档，避免打开孤儿数据库。
    */
@@ -644,7 +174,7 @@ export class DocumentProjectStore {
     }
     if (create) mkdirSync(path.dirname(filePath), { recursive: true });
     const db = new DatabaseSync(filePath);
-    this.createProjectSchema(db);
+    createProjectSchema(db);
     this.projectDbs.set(projectId, db);
     return db;
   }
@@ -660,7 +190,7 @@ export class DocumentProjectStore {
       const filePath = path.join(this.rootDir, entry.name, 'project.sqlite');
       try {
         const db = new DatabaseSync(filePath);
-        this.createProjectSchema(db);
+        createProjectSchema(db);
         const meta = new Map((db.prepare('SELECT key, value FROM project_meta').all() as Array<{ key: string; value: string }>).map((row) => [row.key, row.value]));
         const revisionId = meta.get('current_source_revision_id') || '';
         const revision = revisionId

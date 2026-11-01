@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { applyRunLanguageDirection, documentLanguageName } from '../src/documents/languageMatch.ts';
-import { normalizePromptStyle } from '../src/documents/projectStore.ts';
+import { normalizePromptStyle } from '../src/documents/documentStrategy.ts';
 
 /**
  * 项目里存的 systemPrompt 是「上一次生效的快照」：建项目时源语言是英语，

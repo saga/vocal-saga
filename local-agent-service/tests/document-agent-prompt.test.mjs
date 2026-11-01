@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildBatches, buildCanonicalTermProtections, buildStandaloneReviewContextGraph, buildStandaloneReviewMemory, buildStandaloneReviewVoiceContext, buildUserPrompt, canonicalMarkerCountsMatch, chunkMissingTranslationItems, maskCanonicalTermText, mergeConfirmedMemoryNameMappings, normalizeContextDeltaCanonicalTargets, protectCanonicalReviewSegments, restoreCanonicalMarkersDeep, restoreCanonicalTermMarkers } from '../src/documents/translationAgent.ts';
-import { normalizeDocumentTranslationStrategy } from '../src/documents/projectStore.ts';
+import { buildBatches, buildStandaloneReviewContextGraph, buildStandaloneReviewMemory, buildStandaloneReviewVoiceContext, buildUserPrompt, chunkMissingTranslationItems, mergeConfirmedMemoryNameMappings } from '../src/documents/translationAgent.ts';
+import { buildCanonicalTermProtections, canonicalMarkerCountsMatch, maskCanonicalTermText, normalizeContextDeltaCanonicalTargets, protectCanonicalReviewSegments, restoreCanonicalMarkersDeep, restoreCanonicalTermMarkers } from '../src/documents/canonicalTermProtection.ts';
+import { normalizeDocumentTranslationStrategy } from '../src/documents/documentStrategy.ts';
 import { buildProjectVoiceContext } from '../src/documents/voiceContext.ts';
 import { isLiteraryReviewFindingGrounded } from '../src/literary.ts';
 

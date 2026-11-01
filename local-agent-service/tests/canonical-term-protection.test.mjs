@@ -1,15 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
+import { buildUserPrompt } from '../src/documents/translationAgent.ts';
 import {
   buildCanonicalTermProtections,
   buildCanonicalMarkerReminder,
-  buildUserPrompt,
   canonicalMarkerCountsMatch,
   describeCanonicalMarkerMismatch,
   maskCanonicalTermText,
   restoreCanonicalTermMarkers,
-} from '../src/documents/translationAgent.ts';
+} from '../src/documents/canonicalTermProtection.ts';
 
 const items = [{
   id: 's1',

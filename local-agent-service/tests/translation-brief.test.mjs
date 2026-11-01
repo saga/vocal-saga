@@ -16,7 +16,8 @@ const { selectRecentPriorChapterSummaries } = await import('../src/documents/con
 const { contextGraphCandidateDisposition } = await import('../src/documents/contextGraph.ts');
 const { buildTranslationBrief, summarizeTranslationBrief, MAX_TRANSLATION_BRIEF_CHARS } = await import('../src/documents/translationBrief.ts');
 const { sanitizeProjectLiteraryMemory } = await import('../src/documents/voiceContext.ts');
-const { buildBatches, buildCanonicalTermProtections, buildUserPrompt } = await import('../src/documents/translationAgent.ts');
+const { buildBatches, buildUserPrompt } = await import('../src/documents/translationAgent.ts');
+const { buildCanonicalTermProtections } = await import('../src/documents/canonicalTermProtection.ts');
 
 test('TranslationBrief excludes rejected entities and preserves model-default target uncertainty', () => {
   const store = getDocumentProjectStore();

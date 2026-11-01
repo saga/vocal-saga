@@ -4,7 +4,8 @@
  * while model execution is owned by translationAgent. This keeps UI and CLI on one contract.
  */
 import type { Request, Response } from 'express';
-import { getDocumentProjectStore, MAX_DOCUMENT_SOURCE_BYTES } from './projectStore.ts';
+import { getDocumentProjectStore } from './projectStore.ts';
+import { MAX_DOCUMENT_SOURCE_BYTES } from './documentStrategy.ts';
 import { startProjectTranslationRun, isProjectRunActive } from './translationAgent.ts';
 import { applyChineseEditorialProfileReview, scheduleChineseEditorialProfileRefresh } from './chineseEditorialProfile.ts';
 import { sendApiError, sendJson } from '../middleware.ts';

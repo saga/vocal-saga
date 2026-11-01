@@ -5,7 +5,7 @@
 import { spawn } from 'node:child_process';
 import { inflateRawSync } from 'node:zlib';
 import path from 'node:path';
-import { MAX_DOCUMENT_SOURCE_BYTES, type DocumentFormat, type ProjectSegment } from './projectStore.ts';
+import { MAX_DOCUMENT_SOURCE_BYTES, type DocumentFormat, type ProjectSegment } from './documentStrategy.ts';
 
 const configuredExpandedLimitMb = Number.parseInt(process.env.LOCAL_AGENT_MAX_DOCUMENT_EXPANDED_MB || '1024', 10);
 const MAX_EXPANDED_BYTES =
