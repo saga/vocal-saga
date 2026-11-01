@@ -426,14 +426,6 @@ export function buildBatches(
   return batches;
 }
 
-/** Split only missing translation items into bounded retry groups, preserving order and IDs. */
-export function chunkMissingTranslationItems<T>(items: readonly T[], chunkSize = 4): T[][] {
-  const size = Math.max(1, Math.floor(chunkSize) || 1);
-  const groups: T[][] = [];
-  for (let offset = 0; offset < items.length; offset += size) groups.push(items.slice(offset, offset + size));
-  return groups;
-}
-
 export interface CanonicalTermProtection {
   marker: string;
   sourceForm: string;
