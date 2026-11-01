@@ -308,4 +308,4 @@ sqlite3 ... "SELECT json_extract(payload_json,'$.sourceChars'),
 - `graphMappingsExcludedNotMentioned` 继续反映批次外映射的排除数量
 - TranslationBrief 字符数和 Reviewer input tokens 应明显下降；具体降幅以新 Bundle 为准，不以旧数据推算为测试结果。
 
-本次代码通过 GitHub 直接提交到 `main`。由于当前执行环境未能运行仓库测试，新增回归测试尚未得到本地执行结果；不能将其标记为已通过。
+本次代码通过 GitHub 直接提交到 `main`。当前执行环境没有本地仓库，因此未在本地运行测试；GitHub Actions 的 Local Agent Service workflow 已在 commit `264125e1c759c2b587197788bc8f3e3ef236983b` 对应代码上通过：322 tests、TypeScript typecheck、API route manifest drift 检查和 deterministic book-scan benchmark 均成功。完整仓库 CI workflow 仍在执行中。
