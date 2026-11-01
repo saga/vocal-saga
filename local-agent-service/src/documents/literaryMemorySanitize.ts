@@ -1,0 +1,471 @@
+/**
+ * 文学记忆的清洗器：把不可信的输入投影成有界、可序列化的规范结构。
+ *
+ * 从 voiceContext 抽出：这里只负责结构/字段清洗；原文证据是否位于当前批次之前，
+ * 仍由 TranslationBrief 的时间过滤负责——不能把「通过 sanitizer」当成「事实已验证」。
+ */
+import { hasCompoundCanonicalSyntax, isWorthCanonicalEntityMapping, normalizeCanonicalEntityKind, validateCanonicalTarget } from './canonicalEntityPolicy.ts';
+import {
+  confirmationSource,
+  dedupeProjectEntities,
+  list,
+  MAX_ANCHORS,
+  MAX_MEMORY_BYTES,
+  MAX_RELATION_RULES,
+  normalizeEntityName,
+  numericConfidence,
+  safeHash,
+  status,
+  text,
+} from './literaryNormalizers.ts';
+
+/**
+ * 将保存的文学记忆归一化为有界、可序列化的内部结构。
+ * 这里只负责结构/字段清洗；原文证据是否位于当前批次之前，仍由 TranslationBrief 的时间过滤负责，
+ * 不能把“通过 sanitizer”当成“事实已验证”或“可在所有章节使用”。
+ */
+export function sanitizeProjectLiteraryMemory(input: unknown): Record<string, any> {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    return { version: 2, entities: [], relationships: [], styleGuide: {}, styleGuideStatus: 'candidate', chapterSummaries: [], recentExamples: [], characterVoices: [], relationshipVoiceRules: [], voiceAnchors: [] };
+  }
+  // Deliberately project known fields before measuring size. A caller may have extra
+  // properties such as a full source document or Context Graph payload; none belongs in
+  // LiteraryMemory and unknown fields must not make a valid structured memory fail to save.
+  const raw = input as Record<string, any>;
+  const entities = normalizeMemoryEntities(raw);
+  // Explicit user deletions survive after the visible entity/relation projection is removed.
+  // These compact tombstones prevent later model deltas from silently recreating deleted memory.
+  const rejectedItems = Array.isArray(raw.rejectedItems) ? raw.rejectedItems.slice(-2000).flatMap((item: any): any[] => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
+    if (item.type === 'entity') {
+      const source = text(item.source, 120);
+      if (!source) return [];
+      return [{
+        type: 'entity',
+        source,
+        kind: normalizeCanonicalEntityKind(item.kind),
+        aliases: list(item.aliases, 8, 80),
+      }];
+    }
+    if (item.type === 'relationship') {
+      const subject = text(item.subject, 120);
+      const predicate = text(item.predicate, 100);
+      const object = text(item.object, 120);
+      return subject && predicate && object ? [{ type: 'relationship', subject, predicate, object }] : [];
+    }
+    return [];
+  }) : [];
+  const relationships = Array.isArray(raw.relationships) ? raw.relationships.slice(0, 160).flatMap((item: any) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
+    const subject = text(item.subject, 120); const predicate = text(item.predicate, 100); const object = text(item.object, 120);
+    if (!subject || !predicate || !object) return [];
+    const evidenceRefs = Array.isArray(item.evidenceRefs) ? item.evidenceRefs.slice(0, 8).flatMap((ref: any) => {
+      if (!ref || typeof ref !== 'object' || Array.isArray(ref)) return [];
+      const segmentId = text(ref.segmentId, 160);
+      const sourceQuote = text(ref.sourceQuote, 240);
+      return segmentId && sourceQuote ? [{ segmentId, sourceQuote }] : [];
+    }) : [];
+    return [{
+      subject, predicate, object, evidence: text(item.evidence, 180),
+      ...(evidenceRefs.length ? { evidenceRefs } : {}),
+      reviewStatus: item.reviewStatus === 'rejected' ? 'rejected' : 'confirmed',
+      confirmationSource: item.reviewStatus === 'rejected' ? undefined : item.reviewStatus === 'confirmed'
+         ? (item.confirmationSource ? confirmationSource(item.confirmationSource, true) : 'legacy-unknown') : 'model-default',
+    }];
+  }) : [];
+  const style = raw.styleGuide && typeof raw.styleGuide === 'object' && !Array.isArray(raw.styleGuide) ? raw.styleGuide : {};
+  // 不把缺失维度固化成空串；允许值与 Context Graph 一致的 1000 字上限。
+  const styleGuide = {
+    ...(text(style.narrativeVoice, 1000) ? { narrativeVoice: text(style.narrativeVoice, 1000) } : {}),
+    ...(text(style.register, 1000) ? { register: text(style.register, 1000) } : {}),
+    ...(text(style.rhythm, 1000) ? { rhythm: text(style.rhythm, 1000) } : {}),
+    ...(text(style.dialogue, 1000) ? { dialogue: text(style.dialogue, 1000) } : {}),
+    ...(text(style.diction, 1000) ? { diction: text(style.diction, 1000) } : {}),
+    ...(list(style.rules, 24, 240).length ? { rules: list(style.rules, 24, 240) } : {}),
+    ...(list(style.avoid, 16, 240).length ? { avoid: list(style.avoid, 16, 240) } : {}),
+  };
+  const rawStyleGuideOrigin = raw.styleGuideOrigin;
+  const styleGuideStatus = raw.styleGuideAutoDisabled === true ? 'candidate'
+    : Object.keys(styleGuide).length && ['context-graph', 'user-edited', 'user-confirmed'].includes(String(rawStyleGuideOrigin))
+      ? 'confirmed' : 'candidate';
+  const styleGuideConfirmationSource = rawStyleGuideOrigin === 'user-edited' ? 'user-modified'
+    : rawStyleGuideOrigin === 'user-confirmed' ? 'user-confirmed'
+      : raw.styleGuideStatus === 'confirmed'
+        ? (raw.styleGuideConfirmationSource ? confirmationSource(raw.styleGuideConfirmationSource, true) : 'legacy-unknown')
+        : styleGuideStatus === 'confirmed' ? 'model-default' : undefined;
+  const styleGuideOrigin = ['context-graph', 'user-edited', 'user-confirmed', 'legacy-unknown'].includes(String(rawStyleGuideOrigin))
+    ? String(rawStyleGuideOrigin)
+    : styleGuideConfirmationSource === 'user-confirmed' ? 'user-confirmed' : 'legacy-unknown';
+  const styleGuideAnalysisVersion = text(raw.styleGuideAnalysisVersion, 120);
+  const styleGuideSourceRevisionId = text(raw.styleGuideSourceRevisionId, 200);
+  const styleGuideAutoDisabled = raw.styleGuideAutoDisabled === true;
+  const characterVoices = normalizeCharacterVoices(raw);
+  const validCharacterIds = new Set(characterVoices.map((item: any) => item.characterId));
+  const relationshipVoiceRules = Array.isArray(raw.relationshipVoiceRules) ? raw.relationshipVoiceRules.slice(0, MAX_RELATION_RULES).flatMap((item: any) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
+    const speakerId = text(item.speakerId, 100); const addresseeId = text(item.addresseeId, 100);
+    const evidenceSegmentIds = list(item.evidenceSegmentIds, 8, 160);
+    if (!validCharacterIds.has(speakerId) || !validCharacterIds.has(addresseeId)) return [];
+    const ruleStatus = item.status === 'rejected' ? 'rejected' : 'confirmed';
+    return [{
+      speakerId, addresseeId, status: ruleStatus,
+      ...(ruleStatus === 'confirmed' ? { confirmationSource: item.status === 'confirmed'
+        ? (item.confirmationSource ? confirmationSource(item.confirmationSource, true) : 'legacy-unknown') : 'model-default' } : {}),
+      baselineRegister: text(item.baselineRegister, 180), addressTerms: list(item.addressTerms, 8, 100),
+      directness: text(item.directness, 180), emotionalDistance: text(item.emotionalDistance, 180),
+      sceneDependentShift: text(item.sceneDependentShift, 180), evidenceSegmentIds,
+    }];
+  }) : [];
+  const voiceAnchors = Array.isArray(raw.voiceAnchors) ? raw.voiceAnchors.slice(0, MAX_ANCHORS).flatMap((item: any) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
+    const speakerId = text(item.speakerId, 100); const segmentId = text(item.segmentId, 160);
+    const source = text(item.source, 400); const target = text(item.target, 500);
+    if (!validCharacterIds.has(speakerId) || !segmentId || !source || !target) return [];
+    const attributionEvidence = text(item.attributionEvidence, 240);
+    const attributionConfidence = Number(item.attributionConfidence);
+    const claimedStatus = item.status === 'rejected' ? 'rejected' : 'approved';
+    // 老版本或缺少归属证据的锚点只能回到候选，不会因为 SQLite 中保存了 approved 就自动成为强约束。
+    const groundedAttribution = !!attributionEvidence && Number.isFinite(attributionConfidence);
+    return [{
+      anchorId: text(item.anchorId, 120) || 'anchor_' + safeHash(segmentId + source).slice(0, 12),
+      speakerId, addresseeId: text(item.addresseeId, 100), source, target, chapter: text(item.chapter, 120), segmentId,
+      status: claimedStatus,
+      ...(claimedStatus === 'approved' ? { confirmationSource: item.status === 'approved'
+        ? (item.confirmationSource ? confirmationSource(item.confirmationSource, true) : 'legacy-unknown') : 'model-default' } : {}),
+      approvedBy: status(item.approvedBy, ['user','reviewer','manual-edit','model-default'], 'model-default'),
+      ...(attributionEvidence ? { attributionEvidence } : {}),
+      ...(Number.isFinite(attributionConfidence) ? { attributionConfidence: Math.max(0, Math.min(1, attributionConfidence)) } : {}),
+      tags: list(item.tags, 8, 80),
+    }];
+  }) : [];
+  const chapterSummaries = Array.isArray(raw.chapterSummaries) ? raw.chapterSummaries.flatMap((item: any) => {
+    const chapter = text(item?.chapter, 120); const summary = text(item?.summary, 5000);
+    return chapter && summary ? [{ chapter, summary }] : [];
+  }) : [];
+  const recentExamples = Array.isArray(raw.recentExamples) ? raw.recentExamples.flatMap((item: any) => {
+    const source = text(item?.source, 260);
+    const target = text(item?.target, 320);
+    const chapter = text(item?.chapter, 120);
+    const segmentId = text(item?.segmentId, 160);
+    const origin = status(item?.origin, ['manual', 'agent', 'imported'], 'imported');
+    return source && target ? [{
+      source, target,
+      ...(chapter ? { chapter } : {}),
+      ...(segmentId ? { segmentId } : {}),
+      origin,
+    }] : [];
+  }) : [];
+  const chineseEditorialProfile = normalizeChineseEditorialProfile(raw);
+  const memory: Record<string, any> = {
+    version: 2, entities, relationships, styleGuide, styleGuideStatus,
+    ...(styleGuideConfirmationSource ? { styleGuideConfirmationSource } : {}),
+    styleGuideOrigin,
+    ...(styleGuideAnalysisVersion ? { styleGuideAnalysisVersion } : {}),
+    ...(styleGuideSourceRevisionId ? { styleGuideSourceRevisionId } : {}),
+    styleGuideAutoDisabled,
+    ...(chineseEditorialProfile ? { chineseEditorialProfile } : {}),
+    chapterSummaries, recentExamples, characterVoices, relationshipVoiceRules, voiceAnchors,
+    openQuestions: list(raw.openQuestions, 40, 200),
+    rejectedItems,
+  };
+  const rejectedEntityNames = rejectedItems.filter((item: any) => item.type === 'entity');
+  memory.entities = memory.entities.filter((entity: any) => !rejectedEntityNames.some((rejected: any) => {
+    const kindMatches = rejected.kind === entity.kind || rejected.kind === 'other' || entity.kind === 'other';
+    const names = new Set([rejected.source, ...(Array.isArray(rejected.aliases) ? rejected.aliases : [])].map(normalizeEntityName));
+    return kindMatches && [entity.source, ...(Array.isArray(entity.aliases) ? entity.aliases : [])]
+      .some((name: unknown) => names.has(normalizeEntityName(String(name || ''))));
+  }));
+  const rejectedRelationshipKeys = new Set(rejectedItems.filter((item: any) => item.type === 'relationship')
+    .map((item: any) => [item.subject, item.predicate, item.object].map(normalizeEntityName).join('|')));
+  memory.relationships = memory.relationships.filter((relation: any) =>
+    !rejectedRelationshipKeys.has([relation.subject, relation.predicate, relation.object].map(normalizeEntityName).join('|')));
+
+  enforceMemoryByteLimit(memory);
+  return memory;
+}
+
+/**
+ * 实体候选：逐条清洗译名质量与证据，再按来源名去重。
+ * 每条都会带上 canonicalMappingDisposition，供上层判断能否作为强映射注入。
+ */
+function normalizeMemoryEntities(raw: Record<string, any>): Array<Record<string, any>> {
+  const entities = dedupeProjectEntities(Array.isArray(raw.entities) ? raw.entities.slice(0, 120).flatMap((item: any) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
+    const source = text(item.source, 120); const target = text(item.target, 120);
+    if (!source || !target) return [];
+    const evidenceRefs = Array.isArray(item.evidenceRefs) ? item.evidenceRefs.slice(0, 8).flatMap((ref: any) => {
+      if (!ref || typeof ref !== 'object' || Array.isArray(ref)) return [];
+      const segmentId = text(ref.segmentId, 160);
+      const sourceQuote = text(ref.sourceQuote, 240);
+      return segmentId && sourceQuote ? [{ segmentId, sourceQuote }] : [];
+    }) : [];
+    const aliases = list(item.aliases, 8, 80);
+    const kind = normalizeCanonicalEntityKind(item.kind);
+    const explicitlyRejected = item.reviewStatus === 'rejected';
+    const confirmation = explicitlyRejected ? undefined : item.reviewStatus === 'confirmed'
+      ? (item.confirmationSource ? confirmationSource(item.confirmationSource, true) : 'legacy-unknown') : 'model-default';
+    const userConfirmed = item.reviewStatus === 'confirmed' && confirmation === 'user-confirmed';
+    const targetEvidenceRefs = Array.isArray(item.targetEvidenceRefs) ? item.targetEvidenceRefs.slice(-8).flatMap((ref: any) => {
+      if (!ref || typeof ref !== 'object' || Array.isArray(ref)) return [];
+      const segmentId = text(ref.segmentId, 160);
+      const sourceQuote = text(ref.sourceQuote, 240);
+      const targetSurface = text(ref.targetSurface, 120);
+      return segmentId && sourceQuote && targetSurface ? [{ segmentId, sourceQuote, targetSurface }] : [];
+    }) : [];
+    const targetConfidence = item.targetConfidence === 'corroborated' &&
+      new Set(targetEvidenceRefs.map((ref: any) => ref.segmentId)).size >= 2 ? 'corroborated' : 'candidate';
+    const targetQuality = validateCanonicalTarget({ source, target, targetLang: 'zh', kind });
+    const bookSpecificMeaning = item.bookSpecificMeaning === true;
+    const canonicalMappingDisposition = hasCompoundCanonicalSyntax(source) ? 'compound-name'
+      : !targetQuality.valid ? 'invalid-target'
+      : !userConfirmed && !isWorthCanonicalEntityMapping({
+          source, kind, mentions: Math.max(evidenceRefs.length, targetEvidenceRefs.length),
+          chapterCount: targetConfidence === 'corroborated' ? 2 : 0,
+          significance: text(item.description || item.evidence, 200),
+          explicitBookSpecificMeaning: bookSpecificMeaning,
+        }) ? 'low-value' : 'eligible';
+    return [{
+      source, target, kind, aliases, bookSpecificMeaning,
+      description: text(item.description, 200), evidence: text(item.evidence, 180),
+      ...(evidenceRefs.length ? { evidenceRefs } : {}),
+      ...(targetEvidenceRefs.length ? { targetEvidenceRefs } : {}),
+      targetConfidence,
+      canonicalMappingDisposition,
+      reviewStatus: explicitlyRejected ? 'rejected' : 'confirmed',
+      ...(confirmation ? { confirmationSource: confirmation } : {}),
+    }];
+  }) : []);
+  return entities;
+}
+
+/**
+ * 人物声音画像：证据、声线核心、对比规则一并清洗。
+ * 老版本把证据截到 8 条却不记录是否还有更多，这种记录被判为 evidenceTruncated，
+ * 时间检索时按「不完整」处理，宁可不注入也不注入可能失真的画像。
+ */
+function normalizeCharacterVoices(raw: Record<string, any>): Array<Record<string, any>> {
+  const characterVoices = Array.isArray(raw.characterVoices) ? raw.characterVoices.flatMap((item: any) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
+    const canonicalSourceName = text(item.canonicalSourceName || item.source || item.name, 120);
+    const characterId = text(item.characterId, 100);
+    // Old numeric defaults (Context Graph 0.55 and literary fallback 0.4) have no provenance; do not treat them as scores.
+    const profileConfidence = numericConfidence(item.confidence);
+    const profileConfidenceSource = profileConfidence !== null && item.confidenceSource === 'model_self_report'
+      ? 'model_self_report' as const
+      : undefined;
+    const voice = item.voiceCore && typeof item.voiceCore === 'object' && !Array.isArray(item.voiceCore) ? item.voiceCore : {};
+    const rawEvidence = Array.isArray(item.evidence) ? item.evidence : [];
+    // Old persisted records capped evidence to eight rows without recording whether more existed.
+    // They are ambiguous: their voiceCore may summarize later dialogue no longer present in the
+    // stored evidence list. Mark those legacy profiles incomplete so temporal retrieval fails closed.
+    const evidenceTruncated = item.evidenceTruncated === true ||
+      (item.evidencePolicyVersion !== 'character-evidence-v2-complete' && rawEvidence.length >= 8);
+    const evidence = rawEvidence.slice(-12).flatMap((ev: any) => {
+      if (!ev || typeof ev !== 'object' || Array.isArray(ev)) return [];
+      const segmentId = text(ev.segmentId, 160); const sourceQuote = text(ev.sourceQuote, 240);
+      const observation = text(ev.observation, 240); const dimension = text(ev.dimension, 32);
+      if (!segmentId || !sourceQuote || !observation || !['register','syntax_rhythm','lexicon','discourse','stance','humor_irony','disfluency','relationship','role_traits'].includes(dimension)) return [];
+      const evidenceConfidence = numericConfidence(ev.confidence);
+      const confidenceSource = evidenceConfidence !== null && ev.confidenceSource === 'model_self_report'
+        ? 'model_self_report' as const
+        : undefined;
+      return [{
+        segmentId, sourceQuote, observation, dimension,
+        confidence: confidenceSource ? evidenceConfidence : null,
+        ...(confidenceSource ? { confidenceSource } : {}),
+      }];
+    });
+    if (!canonicalSourceName || !characterId || (!evidence.length && !text(voice.register, 180) && !list(voice.syntaxRhythm, 6).length && !list(voice.lexicalPreferences, 6).length)) return [];
+    const profileStatus = item.status === 'rejected' ? 'rejected' : 'confirmed';
+    return [{
+      characterId, canonicalSourceName, targetName: text(item.targetName, 120), aliases: list(item.aliases, 12, 80),
+      ...(text(item.role, 360) ? { role: text(item.role, 360) } : {}),
+      ...(list(item.traits, 10, 160).length ? { traits: list(item.traits, 10, 160) } : {}),
+      status: profileStatus,
+      ...(profileStatus === 'confirmed' ? { confirmationSource: item.status === 'confirmed'
+        ? (item.confirmationSource ? confirmationSource(item.confirmationSource, true) : 'legacy-unknown') : 'model-default' } : {}),
+      useForTranslation: item.useForTranslation !== false && profileStatus !== 'rejected',
+      confidence: profileConfidenceSource ? profileConfidence : null,
+      ...(profileConfidenceSource ? { confidenceSource: profileConfidenceSource } : {}),
+      voiceCore: {
+        register: text(voice.register, 180), syntaxRhythm: list(voice.syntaxRhythm, 6), lexicalPreferences: list(voice.lexicalPreferences, 6),
+        discourseHabits: list(voice.discourseHabits, 6), stanceModality: list(voice.stanceModality, 6),
+        humorIrony: text(voice.humorIrony, 180), disfluency: text(voice.disfluency, 180), avoid: list(voice.avoid, 8),
+      },
+      contrastRules: Array.isArray(item.contrastRules) ? item.contrastRules.slice(0, 6).flatMap((rule: any) => {
+        const otherCharacterId = text(rule?.otherCharacterId, 100); const difference = text(rule?.difference, 240);
+        const evidenceSegmentIds = list(rule?.evidenceSegmentIds, 8, 160);
+        return otherCharacterId && difference && evidenceSegmentIds.length ? [{ otherCharacterId, difference, evidenceSegmentIds }] : [];
+      }) : [],
+      evidence,
+      evidencePolicyVersion: 'character-evidence-v2-complete',
+      evidenceTruncated,
+      openQuestions: list(item.openQuestions, 8),
+    }];
+  }) : [];
+  return characterVoices;
+}
+
+/**
+ * 中文单语文学编辑画像：当前生效画像 + 待采纳更新。
+ * 旧版本的待采纳更新在这里被自动提升为生效画像，并递增 profileVersion。
+ */
+function normalizeChineseEditorialProfile(raw: Record<string, any>): Record<string, any> | null {
+  const rawEditorial = raw.chineseEditorialProfile && typeof raw.chineseEditorialProfile === 'object' &&
+    !Array.isArray(raw.chineseEditorialProfile) ? raw.chineseEditorialProfile : null;
+  const editorialProfileInput = rawEditorial?.profile && typeof rawEditorial.profile === 'object' &&
+    !Array.isArray(rawEditorial.profile) ? rawEditorial.profile : {};
+  const editorialEvidence = Array.isArray(rawEditorial?.evidenceRefs)
+    ? rawEditorial.evidenceRefs.slice(0, 24).flatMap((item: any) => {
+        const segmentId = text(item?.segmentId, 160);
+        const targetExcerpt = text(item?.targetExcerpt, 240);
+        const observation = text(item?.observation, 240);
+        const aspect = ['narrativeVoice', 'register', 'rhythm', 'dialogue', 'diction', 'consistency'].includes(String(item?.aspect))
+          ? String(item.aspect) : '';
+        return segmentId && targetExcerpt.length >= 4 && observation && aspect
+          ? [{ segmentId, targetExcerpt, observation, aspect }] : [];
+      })
+    : [];
+  const normalizeEditorialCandidate = (candidate: any) => {
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return null;
+    const candidateProfile = candidate.profile && typeof candidate.profile === 'object' &&
+      !Array.isArray(candidate.profile) ? candidate.profile : {};
+    const candidateEvidence = Array.isArray(candidate.evidenceRefs)
+      ? candidate.evidenceRefs.slice(0, 24).flatMap((item: any) => {
+          const segmentId = text(item?.segmentId, 160);
+          const targetExcerpt = text(item?.targetExcerpt, 240);
+          const observation = text(item?.observation, 240);
+          const aspect = ['narrativeVoice', 'register', 'rhythm', 'dialogue', 'diction', 'consistency'].includes(String(item?.aspect))
+            ? String(item.aspect) : '';
+          return segmentId && targetExcerpt.length >= 4 && observation && aspect
+            ? [{ segmentId, targetExcerpt, observation, aspect }] : [];
+        })
+      : [];
+    return {
+      version: 1,
+      status: 'candidate',
+      sourceRevisionId: text(candidate.sourceRevisionId, 200),
+      analysisVersion: text(candidate.analysisVersion, 120),
+      sampleFingerprint: text(candidate.sampleFingerprint, 128),
+      sampleCount: Math.max(0, Math.min(1000, Number(candidate.sampleCount) || 0)),
+      chapterCount: Math.max(0, Math.min(500, Number(candidate.chapterCount) || 0)),
+      generatedAt: text(candidate.generatedAt, 64),
+      basedOnFingerprint: text(candidate.basedOnFingerprint, 128) || null,
+      generatedFromMemoryRevisionId: text(candidate.generatedFromMemoryRevisionId, 200) || null,
+      profile: {
+        narrativeVoice: text(candidateProfile.narrativeVoice, 1000),
+        register: text(candidateProfile.register, 1000),
+        rhythm: text(candidateProfile.rhythm, 1000),
+        dialogue: text(candidateProfile.dialogue, 1000),
+        diction: text(candidateProfile.diction, 1000),
+        rules: list(candidateProfile.rules, 16, 240),
+        avoid: list(candidateProfile.avoid, 12, 240),
+      },
+      evidenceRefs: candidateEvidence,
+    };
+  };
+  const editorialStatus = rawEditorial?.status === 'rejected' ? 'rejected' : 'confirmed';
+  const pendingEditorialUpdate = normalizeEditorialCandidate(rawEditorial?.pendingUpdate);
+  // Migrate legacy pending updates to the active profile automatically. New updates are already
+  // adopted by the generator; this path handles snapshots created by older versions.
+  const chineseEditorialProfile = rawEditorial ? {
+    version: 1,
+    profileVersion: Math.max(1, Math.min(1000, Number(rawEditorial.profileVersion) || 1)) + (pendingEditorialUpdate && editorialStatus !== 'rejected' ? 1 : 0),
+    status: editorialStatus,
+    ...(editorialStatus === 'confirmed' ? { confirmationSource: rawEditorial.status === 'confirmed'
+      ? rawEditorial.confirmationSource || 'legacy-unknown' : 'model-default' } : {}),
+    sourceRevisionId: pendingEditorialUpdate?.sourceRevisionId || text(rawEditorial.sourceRevisionId, 200),
+    analysisVersion: pendingEditorialUpdate?.analysisVersion || text(rawEditorial.analysisVersion, 120),
+    sampleFingerprint: pendingEditorialUpdate?.sampleFingerprint || text(rawEditorial.sampleFingerprint, 128),
+    sampleCount: pendingEditorialUpdate?.sampleCount ?? Math.max(0, Math.min(1000, Number(rawEditorial.sampleCount) || 0)),
+    chapterCount: pendingEditorialUpdate?.chapterCount ?? Math.max(0, Math.min(500, Number(rawEditorial.chapterCount) || 0)),
+    generatedAt: pendingEditorialUpdate?.generatedAt || text(rawEditorial.generatedAt, 64),
+    ...(pendingEditorialUpdate ? { previousFingerprint: text(rawEditorial.sampleFingerprint, 128), acceptedUpdateAt: new Date().toISOString() } : {}),
+    profile: pendingEditorialUpdate?.profile || {
+      narrativeVoice: text(editorialProfileInput.narrativeVoice, 1000),
+      register: text(editorialProfileInput.register, 1000),
+      rhythm: text(editorialProfileInput.rhythm, 1000),
+      dialogue: text(editorialProfileInput.dialogue, 1000),
+      diction: text(editorialProfileInput.diction, 1000),
+      rules: list(editorialProfileInput.rules, 16, 240),
+      avoid: list(editorialProfileInput.avoid, 12, 240),
+    },
+    evidenceRefs: pendingEditorialUpdate?.evidenceRefs || editorialEvidence,
+  } : null;
+  return chineseEditorialProfile;
+}
+
+/**
+ * 持久化体积上限：按「低价值历史 → 证据 → 规则 → 画像 → 实体」的顺序确定性裁剪，
+ * 而不是切序列化 JSON（那会破坏记忆 schema）。全部字段耗尽仍超限则报 413。
+ */
+function enforceMemoryByteLimit(memory: Record<string, any>): void {
+  // 中文：上限作用于最终持久化的规范 DTO，而非上面已丢弃的不可信输入字段。
+  // 确定性地裁剪低价值证据；绝不直接切片序列化 JSON（可能破坏记忆 schema）。
+  // The cap applies to the canonical DTO that will actually be persisted, not untrusted
+  // input fields that are discarded above. Prune lower-value evidence deterministically;
+  // never slice serialized JSON (which could corrupt the memory schema).
+  const serializedBytes = () => Buffer.byteLength(JSON.stringify(memory), 'utf8');
+  while (serializedBytes() > MAX_MEMORY_BYTES) {
+    // Trim low-value historical arrays in batches. Re-serializing a multi-megabyte memory
+    // once per entry made worst-case normalization quadratic and could stall document startup.
+    if (memory.recentExamples.length) {
+      memory.recentExamples.splice(0, Math.max(1, Math.ceil(memory.recentExamples.length / 2)));
+      continue;
+    }
+    if (memory.chapterSummaries.length) {
+      memory.chapterSummaries.splice(0, Math.max(1, Math.ceil(memory.chapterSummaries.length / 2)));
+      continue;
+    }
+    if (memory.voiceAnchors.length) {
+      memory.voiceAnchors.splice(0, Math.max(1, Math.ceil(memory.voiceAnchors.length / 2)));
+      continue;
+    }
+
+    // Keep profiles/names, but progressively reduce source excerpts. Preserve at least one
+    // recent evidence item per profile, and prune evidence in a round-robin pass so input order
+    // does not cause one early character to lose every quote before later profiles are touched.
+    const bytesToFree = serializedBytes() - MAX_MEMORY_BYTES + 16 * 1024;
+    let freedBytes = 0;
+    const profilesWithEvidence = memory.characterVoices.filter((profile: any) => profile.evidence.length > 1);
+    if (profilesWithEvidence.length) {
+      while (freedBytes < bytesToFree) {
+        let removedInRound = false;
+        for (const profile of profilesWithEvidence) {
+          if (profile.evidence.length <= 1 || freedBytes >= bytesToFree) continue;
+          const removed = profile.evidence.shift();
+          if (removed !== undefined) {
+            freedBytes += Buffer.byteLength(JSON.stringify(removed), 'utf8') + 8;
+            profile.evidenceTruncated = true;
+            removedInRound = true;
+          }
+        }
+        if (!removedInRound) break;
+      }
+      if (freedBytes > 0) continue;
+    }
+    if (memory.relationshipVoiceRules.length) {
+      memory.relationshipVoiceRules.pop();
+      continue;
+    }
+    if (memory.characterVoices.length) {
+      memory.characterVoices.pop();
+      continue;
+    }
+    if (memory.entities.length) {
+      memory.entities.pop();
+      continue;
+    }
+    if (memory.relationships.length) {
+      memory.relationships.pop();
+      continue;
+    }
+    if (memory.openQuestions.length) {
+      memory.openQuestions.pop();
+      continue;
+    }
+    // All collection fields are exhausted; bounded scalar/style fields should keep this
+    // unreachable, but fail with a precise error instead of storing over-cap data.
+    throw Object.assign(new Error('结构化文学记忆本身超过 5 MiB 上限，已达到可裁剪边界'), { status: 413 });
+  }
+}

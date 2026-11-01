@@ -1,613 +1,25 @@
 /**
- * 中文：文学声音记忆的服务端清洗器与有界检索器。
+ * 中文：文学声音记忆的有界检索器。
  *
  * 扩展负责编辑/合并 UX；本地 Agent 服务仍把传入记忆视为不可信数据，保持有界不可变修订，
  * 并为每批只选择相关的已确认规则。绝不会把该材料放入 contextPath 或当作可执行 prompt。
  * English:
- * Server-side sanitizer and bounded retrieval for literary voice memory.
+ * Bounded retrieval for literary voice memory.
  *
  * The extension owns editing/merge UX; the Local Agent service still treats incoming memory as
  * untrusted data, keeps a bounded immutable revision, and selects only relevant confirmed rules
  * for each batch. It never places this material in contextPath or treats it as executable prompt.
+ *
+ * 清洗器（literaryMemorySanitize）与基础件（literaryNormalizers）分别在同目录的模块里；
+ * 本文件只回答「这一批该注入什么」。
  */
-import { createHash } from 'node:crypto';
 import { logInfo } from '../log.ts';
-import { hasCompoundCanonicalSyntax, isWorthCanonicalEntityMapping, normalizeCanonicalEntityKind, validateCanonicalTarget } from './canonicalEntityPolicy.ts';
+import { containsEntityName, normalizeEntityName, text } from './literaryNormalizers.ts';
+import type { ProjectVoiceContextSegment } from './literaryNormalizers.ts';
+import { sanitizeProjectLiteraryMemory } from './literaryMemorySanitize.ts';
 
-// Persistence safety ceiling, not a prompt budget. Keep enough room for long-book memory.
-const MAX_MEMORY_BYTES = 5 * 1024 * 1024;
-const MAX_RELATION_RULES = 160;
-const MAX_ANCHORS = 240;
-
-/**
- * 中文：把任意值转为单行、去控制字符、截断到 max 长度的清洗文本；非字符串返回空串。
- */
-function text(value: unknown, max = 300): string {
-  return typeof value === 'string'
-    ? value.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max)
-    : '';
-}
-/**
- * 中文：将输入数组清洗为去重、截断后的字符串数组；非数组返回空数组。
- */
-function list(value: unknown, maxItems: number, maxLength = 180): string[] {
-  if (!Array.isArray(value)) return [];
-  return Array.from(new Set(value.map((item) => text(item, maxLength)).filter(Boolean))).slice(0, maxItems);
-}
-/**
- * 中文：若 value 属于 allowed 则返回 value，否则返回 fallback；用于状态字段白名单校验。
- */
-function status(value: unknown, allowed: string[], fallback = 'candidate'): string {
-  return typeof value === 'string' && allowed.includes(value) ? value : fallback;
-}
-
-type ConfirmationSource = 'model-default' | 'user-modified' | 'evidence-verified' | 'user-confirmed' | 'legacy-unknown';
-/**
- * 中文：仅当 active 为 true 时返回确认来源（白名单校验，未知回退 legacy-unknown）；否则 undefined。
- */
-function confirmationSource(value: unknown, active: boolean): ConfirmationSource | undefined {
-  if (!active) return undefined;
-  return value === 'model-default' || value === 'user-modified' || value === 'evidence-verified' || value === 'user-confirmed' || value === 'legacy-unknown'
-    ? value : 'legacy-unknown';
-}
-/**
- * 中文：将输入解析为 [0,1] 范围的有限数值；null/undefined/空串返回 null，非法返回 null。
- */
-function numericConfidence(value: unknown): number | null {
-  if (value === null || value === undefined || value === '') return null;
-  const score = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN;
-  return Number.isFinite(score) ? Math.max(0, Math.min(1, score)) : null;
-}
-/**
- * 中文：对字符串做 SHA-256 哈希，用于生成稳定 ID（如 anchorId）。
- */
-function safeHash(value: string): string {
-  return createHash('sha256').update(value, 'utf8').digest('hex');
-}
-
-/**
- * 中文：按确认来源的优先级（user-confirmed > model-default > evidence-verified > legacy-unknown）合并，
- * 仅在 incoming 优先级更高时采用 incoming，避免降级。
- */
-function mergeConfirmationSource(prior: unknown, incoming: unknown): unknown {
-  const rank = (value: unknown) => value === 'user-confirmed' ? 4 :
-    value === 'model-default' ? 3 : value === 'evidence-verified' ? 2 : value === 'legacy-unknown' ? 1 : 0;
-  return rank(incoming) > rank(prior) ? incoming : prior;
-}
-
-/**
- * 中文：对实体名做 NFKC 归一化、小写化与空白/标点折叠，用于匹配与去重。
- */
-function normalizeEntityName(value: string): string {
-  return value.normalize('NFKC').toLocaleLowerCase().replace(/[\s._'’\-]+/g, ' ').trim();
-}
-
-/**
- * 中文：名称匹配时避免短拉丁名被当作任意子串（如 "Ann" 不应匹配 "annual"）；
- * 非拉丁（CJK）名称仍用归一化子串匹配，以支持自然的中文名匹配。
- * English:
- * Match names without treating a short Latin name as an arbitrary substring
- * (for example, "Ann" must not match "annual"). Non-Latin names retain
- * normalized substring matching so CJK names still work naturally.
- */
-function containsEntityName(sourceText: string, candidateName: string): boolean {
-  const source = normalizeEntityName(sourceText);
-  const name = normalizeEntityName(candidateName);
-  if (!source || !name) return false;
-  if (/^[a-z0-9 ]+$/.test(name)) {
-    const latinSource = source.replace(/[^a-z0-9]+/g, ' ').trim();
-    const latinName = name.replace(/[^a-z0-9]+/g, ' ').trim();
-    // A one-letter alias such as "A." is too ambiguous to retrieve a profile:
-    // otherwise every article "a" could inject that character's voice rules.
-    if (latinName.length < 2) return false;
-    return (' ' + latinSource + ' ').includes(' ' + latinName + ' ');
-  }
-  return source.includes(name);
-}
-
-/**
- * 中文：仅当两个实体的来源/别名集合显式重叠时才合并；保留首个规范来源与译名，
- * 后续章节可补充别名/证据，但不得静默引入同一人物/对象的竞争译名。
- * English:
- * Merge entities only when their source/alias sets explicitly overlap.
- * Keep the first canonical source and translation; later chapters may add aliases/evidence,
- * but may not silently introduce a competing translation for the same person or object.
- */
-function mergeProjectEntityRecord(prior: Record<string, any>, candidate: Record<string, any>): Record<string, any> {
-  const canonicalName = normalizeEntityName(prior.source);
-  const aliases = new Map<string, string>();
-  for (const alias of [...(prior.aliases ?? []), prior.source, ...(candidate.aliases ?? []), candidate.source]) {
-    const key = normalizeEntityName(alias);
-    if (key && key !== canonicalName && !aliases.has(key)) aliases.set(key, alias);
-  }
-  const canMergeEvidenceRefs = prior.reviewStatus !== 'confirmed' ||
-    (Array.isArray(prior.evidenceRefs) && prior.evidenceRefs.length > 0);
-  const evidenceRefs = canMergeEvidenceRefs
-    ? [...(Array.isArray(prior.evidenceRefs) ? prior.evidenceRefs : []),
-        ...(Array.isArray(candidate.evidenceRefs) ? candidate.evidenceRefs : [])]
-        .filter((item, index, all) => all.findIndex((other) =>
-          other.segmentId === item.segmentId && normalizeEntityName(other.sourceQuote) === normalizeEntityName(item.sourceQuote)) === index)
-        .slice(0, 8)
-    : [];
-  const sameTarget = normalizeEntityName(String(prior.target || '')) === normalizeEntityName(String(candidate.target || ''));
-  const targetEvidenceRefs = sameTarget
-    ? [...(Array.isArray(prior.targetEvidenceRefs) ? prior.targetEvidenceRefs : []),
-        ...(Array.isArray(candidate.targetEvidenceRefs) ? candidate.targetEvidenceRefs : [])]
-        .filter((item, index, all) => all.findIndex((other) =>
-          other.segmentId === item.segmentId && normalizeEntityName(other.targetSurface) === normalizeEntityName(item.targetSurface)) === index)
-        .slice(-8)
-    : (Array.isArray(prior.targetEvidenceRefs) ? prior.targetEvidenceRefs : []);
-  const targetEvidenceCount = new Set(targetEvidenceRefs
-    .filter((item: any) => normalizeEntityName(String(item?.targetSurface || '')) === normalizeEntityName(String(prior.target || '')))
-    .map((item: any) => String(item?.segmentId || '')).filter(Boolean)).size;
-  return {
-    ...prior,
-    aliases: Array.from(aliases.values()).slice(0, 8),
-    targetEvidenceRefs,
-    targetConfidence: prior.reviewStatus === 'confirmed' ? 'confirmed' :
-      targetEvidenceCount >= 2 ? 'corroborated' : 'candidate',
-    ...(evidenceRefs.length ? { evidenceRefs } : {}),
-    ...(prior.reviewStatus !== 'confirmed' && candidate.reviewStatus === 'confirmed' &&
-        normalizeEntityName(prior.target) === normalizeEntityName(candidate.target)
-      ? { reviewStatus: 'confirmed' }
-      : {}),
-    ...(sameTarget && (prior.reviewStatus === 'confirmed' || candidate.reviewStatus === 'confirmed')
-      ? { confirmationSource: mergeConfirmationSource(prior.confirmationSource, candidate.confirmationSource) }
-      : {}),
-    description: prior.description || candidate.description,
-    evidence: prior.evidence || candidate.evidence,
-  };
-}
-
-/**
- * 中文：折叠所有显式别名组，包括新行桥接两个旧行的情况；按 kind/名称重叠合并。
- * English: Collapse every explicit alias group, including cases where a new row bridges two old rows.
- */
-function dedupeProjectEntities(entities: Array<Record<string, any>>): Array<Record<string, any>> {
-  const merged: Array<Record<string, any>> = [];
-  for (const entity of entities) {
-    const names = new Set([entity.source, ...(entity.aliases ?? [])].map(normalizeEntityName).filter(Boolean));
-    const matchingIndices: number[] = [];
-    merged.forEach((prior, index) => {
-      if (prior.kind !== entity.kind && prior.kind !== 'other' && entity.kind !== 'other') return;
-      const priorNames = new Set([prior.source, ...(prior.aliases ?? [])].map(normalizeEntityName).filter(Boolean));
-      if (Array.from(names).some((name) => priorNames.has(name))) matchingIndices.push(index);
-    });
-    if (!matchingIndices.length) {
-      merged.push(entity);
-      continue;
-    }
-    const canonicalIndex = matchingIndices[0]!;
-    let canonical = merged[canonicalIndex]!;
-    for (const index of matchingIndices.slice(1)) canonical = mergeProjectEntityRecord(canonical, merged[index]!);
-    canonical = mergeProjectEntityRecord(canonical, entity);
-    for (const index of matchingIndices.slice(1).reverse()) merged.splice(index, 1);
-    merged[canonicalIndex] = canonical;
-  }
-  return merged;
-}
-
-export interface ProjectVoiceContextSegment {
-  id: string;
-  text: string;
-  contextPath?: string;
-  kind?: string;
-}
-
-/**
- * 将保存的文学记忆归一化为有界、可序列化的内部结构。
- * 这里只负责结构/字段清洗；原文证据是否位于当前批次之前，仍由 TranslationBrief 的时间过滤负责，
- * 不能把“通过 sanitizer”当成“事实已验证”或“可在所有章节使用”。
- */
-export function sanitizeProjectLiteraryMemory(input: unknown): Record<string, any> {
-  if (!input || typeof input !== 'object' || Array.isArray(input)) {
-    return { version: 2, entities: [], relationships: [], styleGuide: {}, styleGuideStatus: 'candidate', chapterSummaries: [], recentExamples: [], characterVoices: [], relationshipVoiceRules: [], voiceAnchors: [] };
-  }
-  // Deliberately project known fields before measuring size. A caller may have extra
-  // properties such as a full source document or Context Graph payload; none belongs in
-  // LiteraryMemory and unknown fields must not make a valid structured memory fail to save.
-  const raw = input as Record<string, any>;
-  const entities = dedupeProjectEntities(Array.isArray(raw.entities) ? raw.entities.slice(0, 120).flatMap((item: any) => {
-    if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
-    const source = text(item.source, 120); const target = text(item.target, 120);
-    if (!source || !target) return [];
-    const evidenceRefs = Array.isArray(item.evidenceRefs) ? item.evidenceRefs.slice(0, 8).flatMap((ref: any) => {
-      if (!ref || typeof ref !== 'object' || Array.isArray(ref)) return [];
-      const segmentId = text(ref.segmentId, 160);
-      const sourceQuote = text(ref.sourceQuote, 240);
-      return segmentId && sourceQuote ? [{ segmentId, sourceQuote }] : [];
-    }) : [];
-    const aliases = list(item.aliases, 8, 80);
-    const kind = normalizeCanonicalEntityKind(item.kind);
-    const explicitlyRejected = item.reviewStatus === 'rejected';
-    const confirmation = explicitlyRejected ? undefined : item.reviewStatus === 'confirmed'
-      ? (item.confirmationSource ? confirmationSource(item.confirmationSource, true) : 'legacy-unknown') : 'model-default';
-    const userConfirmed = item.reviewStatus === 'confirmed' && confirmation === 'user-confirmed';
-    const targetEvidenceRefs = Array.isArray(item.targetEvidenceRefs) ? item.targetEvidenceRefs.slice(-8).flatMap((ref: any) => {
-      if (!ref || typeof ref !== 'object' || Array.isArray(ref)) return [];
-      const segmentId = text(ref.segmentId, 160);
-      const sourceQuote = text(ref.sourceQuote, 240);
-      const targetSurface = text(ref.targetSurface, 120);
-      return segmentId && sourceQuote && targetSurface ? [{ segmentId, sourceQuote, targetSurface }] : [];
-    }) : [];
-    const targetConfidence = item.targetConfidence === 'corroborated' &&
-      new Set(targetEvidenceRefs.map((ref: any) => ref.segmentId)).size >= 2 ? 'corroborated' : 'candidate';
-    const targetQuality = validateCanonicalTarget({ source, target, targetLang: 'zh', kind });
-    const bookSpecificMeaning = item.bookSpecificMeaning === true;
-    const canonicalMappingDisposition = hasCompoundCanonicalSyntax(source) ? 'compound-name'
-      : !targetQuality.valid ? 'invalid-target'
-      : !userConfirmed && !isWorthCanonicalEntityMapping({
-          source, kind, mentions: Math.max(evidenceRefs.length, targetEvidenceRefs.length),
-          chapterCount: targetConfidence === 'corroborated' ? 2 : 0,
-          significance: text(item.description || item.evidence, 200),
-          explicitBookSpecificMeaning: bookSpecificMeaning,
-        }) ? 'low-value' : 'eligible';
-    return [{
-      source, target, kind, aliases, bookSpecificMeaning,
-      description: text(item.description, 200), evidence: text(item.evidence, 180),
-      ...(evidenceRefs.length ? { evidenceRefs } : {}),
-      ...(targetEvidenceRefs.length ? { targetEvidenceRefs } : {}),
-      targetConfidence,
-      canonicalMappingDisposition,
-      reviewStatus: explicitlyRejected ? 'rejected' : 'confirmed',
-      ...(confirmation ? { confirmationSource: confirmation } : {}),
-    }];
-  }) : []);
-  // Explicit user deletions survive after the visible entity/relation projection is removed.
-  // These compact tombstones prevent later model deltas from silently recreating deleted memory.
-  const rejectedItems = Array.isArray(raw.rejectedItems) ? raw.rejectedItems.slice(-2000).flatMap((item: any): any[] => {
-    if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
-    if (item.type === 'entity') {
-      const source = text(item.source, 120);
-      if (!source) return [];
-      return [{
-        type: 'entity',
-        source,
-        kind: normalizeCanonicalEntityKind(item.kind),
-        aliases: list(item.aliases, 8, 80),
-      }];
-    }
-    if (item.type === 'relationship') {
-      const subject = text(item.subject, 120);
-      const predicate = text(item.predicate, 100);
-      const object = text(item.object, 120);
-      return subject && predicate && object ? [{ type: 'relationship', subject, predicate, object }] : [];
-    }
-    return [];
-  }) : [];
-  const relationships = Array.isArray(raw.relationships) ? raw.relationships.slice(0, 160).flatMap((item: any) => {
-    if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
-    const subject = text(item.subject, 120); const predicate = text(item.predicate, 100); const object = text(item.object, 120);
-    if (!subject || !predicate || !object) return [];
-    const evidenceRefs = Array.isArray(item.evidenceRefs) ? item.evidenceRefs.slice(0, 8).flatMap((ref: any) => {
-      if (!ref || typeof ref !== 'object' || Array.isArray(ref)) return [];
-      const segmentId = text(ref.segmentId, 160);
-      const sourceQuote = text(ref.sourceQuote, 240);
-      return segmentId && sourceQuote ? [{ segmentId, sourceQuote }] : [];
-    }) : [];
-    return [{
-      subject, predicate, object, evidence: text(item.evidence, 180),
-      ...(evidenceRefs.length ? { evidenceRefs } : {}),
-      reviewStatus: item.reviewStatus === 'rejected' ? 'rejected' : 'confirmed',
-      confirmationSource: item.reviewStatus === 'rejected' ? undefined : item.reviewStatus === 'confirmed'
-         ? (item.confirmationSource ? confirmationSource(item.confirmationSource, true) : 'legacy-unknown') : 'model-default',
-    }];
-  }) : [];
-  const style = raw.styleGuide && typeof raw.styleGuide === 'object' && !Array.isArray(raw.styleGuide) ? raw.styleGuide : {};
-  // 不把缺失维度固化成空串；允许值与 Context Graph 一致的 1000 字上限。
-  const styleGuide = {
-    ...(text(style.narrativeVoice, 1000) ? { narrativeVoice: text(style.narrativeVoice, 1000) } : {}),
-    ...(text(style.register, 1000) ? { register: text(style.register, 1000) } : {}),
-    ...(text(style.rhythm, 1000) ? { rhythm: text(style.rhythm, 1000) } : {}),
-    ...(text(style.dialogue, 1000) ? { dialogue: text(style.dialogue, 1000) } : {}),
-    ...(text(style.diction, 1000) ? { diction: text(style.diction, 1000) } : {}),
-    ...(list(style.rules, 24, 240).length ? { rules: list(style.rules, 24, 240) } : {}),
-    ...(list(style.avoid, 16, 240).length ? { avoid: list(style.avoid, 16, 240) } : {}),
-  };
-  const rawStyleGuideOrigin = raw.styleGuideOrigin;
-  const styleGuideStatus = raw.styleGuideAutoDisabled === true ? 'candidate'
-    : Object.keys(styleGuide).length && ['context-graph', 'user-edited', 'user-confirmed'].includes(String(rawStyleGuideOrigin))
-      ? 'confirmed' : 'candidate';
-  const styleGuideConfirmationSource = rawStyleGuideOrigin === 'user-edited' ? 'user-modified'
-    : rawStyleGuideOrigin === 'user-confirmed' ? 'user-confirmed'
-      : raw.styleGuideStatus === 'confirmed'
-        ? (raw.styleGuideConfirmationSource ? confirmationSource(raw.styleGuideConfirmationSource, true) : 'legacy-unknown')
-        : styleGuideStatus === 'confirmed' ? 'model-default' : undefined;
-  const styleGuideOrigin = ['context-graph', 'user-edited', 'user-confirmed', 'legacy-unknown'].includes(String(rawStyleGuideOrigin))
-    ? String(rawStyleGuideOrigin)
-    : styleGuideConfirmationSource === 'user-confirmed' ? 'user-confirmed' : 'legacy-unknown';
-  const styleGuideAnalysisVersion = text(raw.styleGuideAnalysisVersion, 120);
-  const styleGuideSourceRevisionId = text(raw.styleGuideSourceRevisionId, 200);
-  const styleGuideAutoDisabled = raw.styleGuideAutoDisabled === true;
-  const characterVoices = Array.isArray(raw.characterVoices) ? raw.characterVoices.flatMap((item: any) => {
-    if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
-    const canonicalSourceName = text(item.canonicalSourceName || item.source || item.name, 120);
-    const characterId = text(item.characterId, 100);
-    // Old numeric defaults (Context Graph 0.55 and literary fallback 0.4) have no provenance; do not treat them as scores.
-    const profileConfidence = numericConfidence(item.confidence);
-    const profileConfidenceSource = profileConfidence !== null && item.confidenceSource === 'model_self_report'
-      ? 'model_self_report' as const
-      : undefined;
-    const voice = item.voiceCore && typeof item.voiceCore === 'object' && !Array.isArray(item.voiceCore) ? item.voiceCore : {};
-    const rawEvidence = Array.isArray(item.evidence) ? item.evidence : [];
-    // Old persisted records capped evidence to eight rows without recording whether more existed.
-    // They are ambiguous: their voiceCore may summarize later dialogue no longer present in the
-    // stored evidence list. Mark those legacy profiles incomplete so temporal retrieval fails closed.
-    const evidenceTruncated = item.evidenceTruncated === true ||
-      (item.evidencePolicyVersion !== 'character-evidence-v2-complete' && rawEvidence.length >= 8);
-    const evidence = rawEvidence.slice(-12).flatMap((ev: any) => {
-      if (!ev || typeof ev !== 'object' || Array.isArray(ev)) return [];
-      const segmentId = text(ev.segmentId, 160); const sourceQuote = text(ev.sourceQuote, 240);
-      const observation = text(ev.observation, 240); const dimension = text(ev.dimension, 32);
-      if (!segmentId || !sourceQuote || !observation || !['register','syntax_rhythm','lexicon','discourse','stance','humor_irony','disfluency','relationship','role_traits'].includes(dimension)) return [];
-      const evidenceConfidence = numericConfidence(ev.confidence);
-      const confidenceSource = evidenceConfidence !== null && ev.confidenceSource === 'model_self_report'
-        ? 'model_self_report' as const
-        : undefined;
-      return [{
-        segmentId, sourceQuote, observation, dimension,
-        confidence: confidenceSource ? evidenceConfidence : null,
-        ...(confidenceSource ? { confidenceSource } : {}),
-      }];
-    });
-    if (!canonicalSourceName || !characterId || (!evidence.length && !text(voice.register, 180) && !list(voice.syntaxRhythm, 6).length && !list(voice.lexicalPreferences, 6).length)) return [];
-    const profileStatus = item.status === 'rejected' ? 'rejected' : 'confirmed';
-    return [{
-      characterId, canonicalSourceName, targetName: text(item.targetName, 120), aliases: list(item.aliases, 12, 80),
-      ...(text(item.role, 360) ? { role: text(item.role, 360) } : {}),
-      ...(list(item.traits, 10, 160).length ? { traits: list(item.traits, 10, 160) } : {}),
-      status: profileStatus,
-      ...(profileStatus === 'confirmed' ? { confirmationSource: item.status === 'confirmed'
-        ? (item.confirmationSource ? confirmationSource(item.confirmationSource, true) : 'legacy-unknown') : 'model-default' } : {}),
-      useForTranslation: item.useForTranslation !== false && profileStatus !== 'rejected',
-      confidence: profileConfidenceSource ? profileConfidence : null,
-      ...(profileConfidenceSource ? { confidenceSource: profileConfidenceSource } : {}),
-      voiceCore: {
-        register: text(voice.register, 180), syntaxRhythm: list(voice.syntaxRhythm, 6), lexicalPreferences: list(voice.lexicalPreferences, 6),
-        discourseHabits: list(voice.discourseHabits, 6), stanceModality: list(voice.stanceModality, 6),
-        humorIrony: text(voice.humorIrony, 180), disfluency: text(voice.disfluency, 180), avoid: list(voice.avoid, 8),
-      },
-      contrastRules: Array.isArray(item.contrastRules) ? item.contrastRules.slice(0, 6).flatMap((rule: any) => {
-        const otherCharacterId = text(rule?.otherCharacterId, 100); const difference = text(rule?.difference, 240);
-        const evidenceSegmentIds = list(rule?.evidenceSegmentIds, 8, 160);
-        return otherCharacterId && difference && evidenceSegmentIds.length ? [{ otherCharacterId, difference, evidenceSegmentIds }] : [];
-      }) : [],
-      evidence,
-      evidencePolicyVersion: 'character-evidence-v2-complete',
-      evidenceTruncated,
-      openQuestions: list(item.openQuestions, 8),
-    }];
-  }) : [];
-  const validCharacterIds = new Set(characterVoices.map((item: any) => item.characterId));
-  const relationshipVoiceRules = Array.isArray(raw.relationshipVoiceRules) ? raw.relationshipVoiceRules.slice(0, MAX_RELATION_RULES).flatMap((item: any) => {
-    if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
-    const speakerId = text(item.speakerId, 100); const addresseeId = text(item.addresseeId, 100);
-    const evidenceSegmentIds = list(item.evidenceSegmentIds, 8, 160);
-    if (!validCharacterIds.has(speakerId) || !validCharacterIds.has(addresseeId)) return [];
-    const ruleStatus = item.status === 'rejected' ? 'rejected' : 'confirmed';
-    return [{
-      speakerId, addresseeId, status: ruleStatus,
-      ...(ruleStatus === 'confirmed' ? { confirmationSource: item.status === 'confirmed'
-        ? (item.confirmationSource ? confirmationSource(item.confirmationSource, true) : 'legacy-unknown') : 'model-default' } : {}),
-      baselineRegister: text(item.baselineRegister, 180), addressTerms: list(item.addressTerms, 8, 100),
-      directness: text(item.directness, 180), emotionalDistance: text(item.emotionalDistance, 180),
-      sceneDependentShift: text(item.sceneDependentShift, 180), evidenceSegmentIds,
-    }];
-  }) : [];
-  const voiceAnchors = Array.isArray(raw.voiceAnchors) ? raw.voiceAnchors.slice(0, MAX_ANCHORS).flatMap((item: any) => {
-    if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
-    const speakerId = text(item.speakerId, 100); const segmentId = text(item.segmentId, 160);
-    const source = text(item.source, 400); const target = text(item.target, 500);
-    if (!validCharacterIds.has(speakerId) || !segmentId || !source || !target) return [];
-    const attributionEvidence = text(item.attributionEvidence, 240);
-    const attributionConfidence = Number(item.attributionConfidence);
-    const claimedStatus = item.status === 'rejected' ? 'rejected' : 'approved';
-    // 老版本或缺少归属证据的锚点只能回到候选，不会因为 SQLite 中保存了 approved 就自动成为强约束。
-    const groundedAttribution = !!attributionEvidence && Number.isFinite(attributionConfidence);
-    return [{
-      anchorId: text(item.anchorId, 120) || 'anchor_' + safeHash(segmentId + source).slice(0, 12),
-      speakerId, addresseeId: text(item.addresseeId, 100), source, target, chapter: text(item.chapter, 120), segmentId,
-      status: claimedStatus,
-      ...(claimedStatus === 'approved' ? { confirmationSource: item.status === 'approved'
-        ? (item.confirmationSource ? confirmationSource(item.confirmationSource, true) : 'legacy-unknown') : 'model-default' } : {}),
-      approvedBy: status(item.approvedBy, ['user','reviewer','manual-edit','model-default'], 'model-default'),
-      ...(attributionEvidence ? { attributionEvidence } : {}),
-      ...(Number.isFinite(attributionConfidence) ? { attributionConfidence: Math.max(0, Math.min(1, attributionConfidence)) } : {}),
-      tags: list(item.tags, 8, 80),
-    }];
-  }) : [];
-  const chapterSummaries = Array.isArray(raw.chapterSummaries) ? raw.chapterSummaries.flatMap((item: any) => {
-    const chapter = text(item?.chapter, 120); const summary = text(item?.summary, 5000);
-    return chapter && summary ? [{ chapter, summary }] : [];
-  }) : [];
-  const recentExamples = Array.isArray(raw.recentExamples) ? raw.recentExamples.flatMap((item: any) => {
-    const source = text(item?.source, 260);
-    const target = text(item?.target, 320);
-    const chapter = text(item?.chapter, 120);
-    const segmentId = text(item?.segmentId, 160);
-    const origin = status(item?.origin, ['manual', 'agent', 'imported'], 'imported');
-    return source && target ? [{
-      source, target,
-      ...(chapter ? { chapter } : {}),
-      ...(segmentId ? { segmentId } : {}),
-      origin,
-    }] : [];
-  }) : [];
-  const rawEditorial = raw.chineseEditorialProfile && typeof raw.chineseEditorialProfile === 'object' &&
-    !Array.isArray(raw.chineseEditorialProfile) ? raw.chineseEditorialProfile : null;
-  const editorialProfileInput = rawEditorial?.profile && typeof rawEditorial.profile === 'object' &&
-    !Array.isArray(rawEditorial.profile) ? rawEditorial.profile : {};
-  const editorialEvidence = Array.isArray(rawEditorial?.evidenceRefs)
-    ? rawEditorial.evidenceRefs.slice(0, 24).flatMap((item: any) => {
-        const segmentId = text(item?.segmentId, 160);
-        const targetExcerpt = text(item?.targetExcerpt, 240);
-        const observation = text(item?.observation, 240);
-        const aspect = ['narrativeVoice', 'register', 'rhythm', 'dialogue', 'diction', 'consistency'].includes(String(item?.aspect))
-          ? String(item.aspect) : '';
-        return segmentId && targetExcerpt.length >= 4 && observation && aspect
-          ? [{ segmentId, targetExcerpt, observation, aspect }] : [];
-      })
-    : [];
-  const normalizeEditorialCandidate = (candidate: any) => {
-    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return null;
-    const candidateProfile = candidate.profile && typeof candidate.profile === 'object' &&
-      !Array.isArray(candidate.profile) ? candidate.profile : {};
-    const candidateEvidence = Array.isArray(candidate.evidenceRefs)
-      ? candidate.evidenceRefs.slice(0, 24).flatMap((item: any) => {
-          const segmentId = text(item?.segmentId, 160);
-          const targetExcerpt = text(item?.targetExcerpt, 240);
-          const observation = text(item?.observation, 240);
-          const aspect = ['narrativeVoice', 'register', 'rhythm', 'dialogue', 'diction', 'consistency'].includes(String(item?.aspect))
-            ? String(item.aspect) : '';
-          return segmentId && targetExcerpt.length >= 4 && observation && aspect
-            ? [{ segmentId, targetExcerpt, observation, aspect }] : [];
-        })
-      : [];
-    return {
-      version: 1,
-      status: 'candidate',
-      sourceRevisionId: text(candidate.sourceRevisionId, 200),
-      analysisVersion: text(candidate.analysisVersion, 120),
-      sampleFingerprint: text(candidate.sampleFingerprint, 128),
-      sampleCount: Math.max(0, Math.min(1000, Number(candidate.sampleCount) || 0)),
-      chapterCount: Math.max(0, Math.min(500, Number(candidate.chapterCount) || 0)),
-      generatedAt: text(candidate.generatedAt, 64),
-      basedOnFingerprint: text(candidate.basedOnFingerprint, 128) || null,
-      generatedFromMemoryRevisionId: text(candidate.generatedFromMemoryRevisionId, 200) || null,
-      profile: {
-        narrativeVoice: text(candidateProfile.narrativeVoice, 1000),
-        register: text(candidateProfile.register, 1000),
-        rhythm: text(candidateProfile.rhythm, 1000),
-        dialogue: text(candidateProfile.dialogue, 1000),
-        diction: text(candidateProfile.diction, 1000),
-        rules: list(candidateProfile.rules, 16, 240),
-        avoid: list(candidateProfile.avoid, 12, 240),
-      },
-      evidenceRefs: candidateEvidence,
-    };
-  };
-  const editorialStatus = rawEditorial?.status === 'rejected' ? 'rejected' : 'confirmed';
-  const pendingEditorialUpdate = normalizeEditorialCandidate(rawEditorial?.pendingUpdate);
-  // Migrate legacy pending updates to the active profile automatically. New updates are already
-  // adopted by the generator; this path handles snapshots created by older versions.
-  const chineseEditorialProfile = rawEditorial ? {
-    version: 1,
-    profileVersion: Math.max(1, Math.min(1000, Number(rawEditorial.profileVersion) || 1)) + (pendingEditorialUpdate && editorialStatus !== 'rejected' ? 1 : 0),
-    status: editorialStatus,
-    ...(editorialStatus === 'confirmed' ? { confirmationSource: rawEditorial.status === 'confirmed'
-      ? rawEditorial.confirmationSource || 'legacy-unknown' : 'model-default' } : {}),
-    sourceRevisionId: pendingEditorialUpdate?.sourceRevisionId || text(rawEditorial.sourceRevisionId, 200),
-    analysisVersion: pendingEditorialUpdate?.analysisVersion || text(rawEditorial.analysisVersion, 120),
-    sampleFingerprint: pendingEditorialUpdate?.sampleFingerprint || text(rawEditorial.sampleFingerprint, 128),
-    sampleCount: pendingEditorialUpdate?.sampleCount ?? Math.max(0, Math.min(1000, Number(rawEditorial.sampleCount) || 0)),
-    chapterCount: pendingEditorialUpdate?.chapterCount ?? Math.max(0, Math.min(500, Number(rawEditorial.chapterCount) || 0)),
-    generatedAt: pendingEditorialUpdate?.generatedAt || text(rawEditorial.generatedAt, 64),
-    ...(pendingEditorialUpdate ? { previousFingerprint: text(rawEditorial.sampleFingerprint, 128), acceptedUpdateAt: new Date().toISOString() } : {}),
-    profile: pendingEditorialUpdate?.profile || {
-      narrativeVoice: text(editorialProfileInput.narrativeVoice, 1000),
-      register: text(editorialProfileInput.register, 1000),
-      rhythm: text(editorialProfileInput.rhythm, 1000),
-      dialogue: text(editorialProfileInput.dialogue, 1000),
-      diction: text(editorialProfileInput.diction, 1000),
-      rules: list(editorialProfileInput.rules, 16, 240),
-      avoid: list(editorialProfileInput.avoid, 12, 240),
-    },
-    evidenceRefs: pendingEditorialUpdate?.evidenceRefs || editorialEvidence,
-  } : null;
-  const memory: Record<string, any> = {
-    version: 2, entities, relationships, styleGuide, styleGuideStatus,
-    ...(styleGuideConfirmationSource ? { styleGuideConfirmationSource } : {}),
-    styleGuideOrigin,
-    ...(styleGuideAnalysisVersion ? { styleGuideAnalysisVersion } : {}),
-    ...(styleGuideSourceRevisionId ? { styleGuideSourceRevisionId } : {}),
-    styleGuideAutoDisabled,
-    ...(chineseEditorialProfile ? { chineseEditorialProfile } : {}),
-    chapterSummaries, recentExamples, characterVoices, relationshipVoiceRules, voiceAnchors,
-    openQuestions: list(raw.openQuestions, 40, 200),
-    rejectedItems,
-  };
-  const rejectedEntityNames = rejectedItems.filter((item: any) => item.type === 'entity');
-  memory.entities = memory.entities.filter((entity: any) => !rejectedEntityNames.some((rejected: any) => {
-    const kindMatches = rejected.kind === entity.kind || rejected.kind === 'other' || entity.kind === 'other';
-    const names = new Set([rejected.source, ...(Array.isArray(rejected.aliases) ? rejected.aliases : [])].map(normalizeEntityName));
-    return kindMatches && [entity.source, ...(Array.isArray(entity.aliases) ? entity.aliases : [])]
-      .some((name: unknown) => names.has(normalizeEntityName(String(name || ''))));
-  }));
-  const rejectedRelationshipKeys = new Set(rejectedItems.filter((item: any) => item.type === 'relationship')
-    .map((item: any) => [item.subject, item.predicate, item.object].map(normalizeEntityName).join('|')));
-  memory.relationships = memory.relationships.filter((relation: any) =>
-    !rejectedRelationshipKeys.has([relation.subject, relation.predicate, relation.object].map(normalizeEntityName).join('|')));
-
-  // 中文：上限作用于最终持久化的规范 DTO，而非上面已丢弃的不可信输入字段。
-  // 确定性地裁剪低价值证据；绝不直接切片序列化 JSON（可能破坏记忆 schema）。
-  // The cap applies to the canonical DTO that will actually be persisted, not untrusted
-  // input fields that are discarded above. Prune lower-value evidence deterministically;
-  // never slice serialized JSON (which could corrupt the memory schema).
-  const serializedBytes = () => Buffer.byteLength(JSON.stringify(memory), 'utf8');
-  while (serializedBytes() > MAX_MEMORY_BYTES) {
-    // Trim low-value historical arrays in batches. Re-serializing a multi-megabyte memory
-    // once per entry made worst-case normalization quadratic and could stall document startup.
-    if (memory.recentExamples.length) {
-      memory.recentExamples.splice(0, Math.max(1, Math.ceil(memory.recentExamples.length / 2)));
-      continue;
-    }
-    if (memory.chapterSummaries.length) {
-      memory.chapterSummaries.splice(0, Math.max(1, Math.ceil(memory.chapterSummaries.length / 2)));
-      continue;
-    }
-    if (memory.voiceAnchors.length) {
-      memory.voiceAnchors.splice(0, Math.max(1, Math.ceil(memory.voiceAnchors.length / 2)));
-      continue;
-    }
-
-    // Keep profiles/names, but progressively reduce source excerpts. Preserve at least one
-    // recent evidence item per profile, and prune evidence in a round-robin pass so input order
-    // does not cause one early character to lose every quote before later profiles are touched.
-    const bytesToFree = serializedBytes() - MAX_MEMORY_BYTES + 16 * 1024;
-    let freedBytes = 0;
-    const profilesWithEvidence = memory.characterVoices.filter((profile: any) => profile.evidence.length > 1);
-    if (profilesWithEvidence.length) {
-      while (freedBytes < bytesToFree) {
-        let removedInRound = false;
-        for (const profile of profilesWithEvidence) {
-          if (profile.evidence.length <= 1 || freedBytes >= bytesToFree) continue;
-          const removed = profile.evidence.shift();
-          if (removed !== undefined) {
-            freedBytes += Buffer.byteLength(JSON.stringify(removed), 'utf8') + 8;
-            profile.evidenceTruncated = true;
-            removedInRound = true;
-          }
-        }
-        if (!removedInRound) break;
-      }
-      if (freedBytes > 0) continue;
-    }
-    if (memory.relationshipVoiceRules.length) {
-      memory.relationshipVoiceRules.pop();
-      continue;
-    }
-    if (memory.characterVoices.length) {
-      memory.characterVoices.pop();
-      continue;
-    }
-    if (memory.entities.length) {
-      memory.entities.pop();
-      continue;
-    }
-    if (memory.relationships.length) {
-      memory.relationships.pop();
-      continue;
-    }
-    if (memory.openQuestions.length) {
-      memory.openQuestions.pop();
-      continue;
-    }
-    // All collection fields are exhausted; bounded scalar/style fields should keep this
-    // unreachable, but fail with a precise error instead of storing over-cap data.
-    throw Object.assign(new Error('结构化文学记忆本身超过 5 MiB 上限，已达到可裁剪边界'), { status: 413 });
-  }
-  return memory;
-}
+export type { ProjectVoiceContextSegment } from './literaryNormalizers.ts';
+export { sanitizeProjectLiteraryMemory } from './literaryMemorySanitize.ts';
 
 /**
  * 根据当前批次和有界前文，构造小而相关的只读文学上下文。
@@ -634,8 +46,38 @@ export function buildProjectVoiceContext(
     profile.status !== 'rejected' && profile.useForTranslation !== false &&
     (profile.status === 'confirmed' || profile.status === 'candidate'));
 
-  // Recover known participants from source-linked approved anchors and relationship rules.
-  // This is evidence-based scene continuity, not a best-guess speaker classifier.
+  const { dialogueParticipants, participantScore } = collectDialogueParticipants(
+    memory, profiles, precedingById, precedingIds, dialoguePrecedingIds,
+  );
+  const chosen = selectVisibleProfiles(profiles, source, participantScore);
+  const ids = new Set(chosen.map((profile: any) => profile.characterId));
+  const relationshipVoiceRules = selectRelationshipVoiceRules(memory, ids, precedingIds);
+  const voiceAnchors = selectVoiceAnchors(memory, ids, segments);
+  const entities = selectVisibleEntities(memory, source, segments, visiblePreceding);
+  const names = new Set(entities.flatMap((entity: any) =>
+    [entity.source, ...entity.aliases].map((name: string) => normalizeEntityName(name)).filter(Boolean)));
+  const relationships = selectVisibleRelationships(memory, names);
+  const chapterSummaries = selectChapterSummaries(memory, chapterTitle);
+
+  const result = buildVoiceContextPayload({
+    memory, segments, chapterTitle, chapterSummaries, entities, relationships,
+    chosen, ids, relationshipVoiceRules, voiceAnchors, dialogueParticipants,
+  });
+  logVoiceContextSizes(result);
+  return result;
+}
+
+/**
+ * Recover known participants from source-linked approved anchors and relationship rules.
+ * This is evidence-based scene continuity, not a best-guess speaker classifier.
+ */
+function collectDialogueParticipants(
+  memory: Record<string, any>,
+  profiles: any[],
+  precedingById: Map<string, ProjectVoiceContextSegment>,
+  precedingIds: Set<string>,
+  dialoguePrecedingIds: Set<string>,
+): { dialogueParticipants: Array<Record<string, unknown>>; participantScore: Map<string, number> } {
   const dialogueParticipants: Array<Record<string, unknown>> = [];
   const participantScore = new Map<string, number>();
   for (const anchor of memory.voiceAnchors) {
@@ -681,7 +123,14 @@ export function buildProjectVoiceContext(
       evidenceKind: 'relationship-voice-rule', confidence,
     });
   }
+  return { dialogueParticipants, participantScore };
+}
 
+/**
+ * 只注入有检索证据的画像：当前原文的名称命中，或由来源关联的对白锚点/关系规则推出的在场者。
+ * Confirmation/confidence rank an eligible profile; they are not retrieval evidence.
+ */
+function selectVisibleProfiles(profiles: any[], source: string, participantScore: Map<string, number>): any[] {
   const hasDirectNameMatch = (profile: any) =>
     [profile.canonicalSourceName, ...profile.aliases].filter(Boolean)
       .some((name: string) => containsEntityName(source, name));
@@ -692,15 +141,19 @@ export function buildProjectVoiceContext(
     const confidence = Number(profile.confidence) || 0;
     return direct + participant + confirmed + confidence;
   };
-  const matched = profiles
-    // Confirmation/confidence rank an eligible profile; they are not retrieval evidence.
+  return profiles
     // A profile needs a direct source-name hit or a source-linked participant attribution.
     .filter((profile: any) => hasDirectNameMatch(profile) || (participantScore.get(profile.characterId) || 0) > 0)
     .sort((a: any, b: any) => scoreProfile(b) - scoreProfile(a));
-  // Include every profile supported by the current source or source-linked dialogue evidence.
-  const chosen = matched;
-  const ids = new Set(chosen.map((profile: any) => profile.characterId));
-  const relationshipVoiceRules = memory.relationshipVoiceRules.filter((rule: any) =>
+}
+
+/** 关系规则：两端都必须在本次注入的人物里；近期出现过的排在前面。 */
+function selectRelationshipVoiceRules(
+  memory: Record<string, any>,
+  ids: Set<string>,
+  precedingIds: Set<string>,
+): any[] {
+  return memory.relationshipVoiceRules.filter((rule: any) =>
     rule.status !== 'rejected' &&
     ids.has(rule.speakerId) && ids.has(rule.addresseeId))
     .sort((a: any, b: any) => {
@@ -708,14 +161,31 @@ export function buildProjectVoiceContext(
       const bRecent = b.evidenceSegmentIds.some((id: string) => precedingIds.has(id)) ? 1 : 0;
       return bRecent - aRecent || (a.status === 'confirmed' ? -1 : 1);
     });
-  const voiceAnchors = memory.voiceAnchors.filter((anchor: any) =>
+}
+
+/** 声音锚点：只取已批准且说话人本次在场；同章节的排在前面。 */
+function selectVoiceAnchors(
+  memory: Record<string, any>,
+  ids: Set<string>,
+  segments: ProjectVoiceContextSegment[],
+): any[] {
+  return memory.voiceAnchors.filter((anchor: any) =>
     anchor.status === 'approved' && ids.has(anchor.speakerId))
     .sort((a: any, b: any) => {
       const aSameChapter = segments.some((segment) => segment.contextPath && segment.contextPath === a.chapter) ? 1 : 0;
       const bSameChapter = segments.some((segment) => segment.contextPath && segment.contextPath === b.chapter) ? 1 : 0;
       return bSameChapter - aSameChapter;
     });
-  const entities = memory.entities.filter((entity: any) =>
+}
+
+/** 实体：当前原文可命中的才注入；命中次数与确认状态只影响排序。 */
+function selectVisibleEntities(
+  memory: Record<string, any>,
+  source: string,
+  segments: ProjectVoiceContextSegment[],
+  visiblePreceding: ProjectVoiceContextSegment[],
+): any[] {
+  return memory.entities.filter((entity: any) =>
     entity.reviewStatus !== 'rejected' &&
     [entity.source, ...entity.aliases].some((name: string) => name && containsEntityName(source, name)))
     .sort((a: any, b: any) => {
@@ -726,9 +196,11 @@ export function buildProjectVoiceContext(
         (entity.reviewStatus === 'confirmed' ? 1 : 0);
       return score(b) - score(a);
     });
-  const names = new Set(entities.flatMap((entity: any) =>
-    [entity.source, ...entity.aliases].map((name: string) => normalizeEntityName(name)).filter(Boolean)));
-  const relationships = memory.relationships.filter((relation: any) =>
+}
+
+/** 关系：两端都必须落在本次注入的实体名集合里；模型默认的关系只标 candidate。 */
+function selectVisibleRelationships(memory: Record<string, any>, names: Set<string>): any[] {
+  return memory.relationships.filter((relation: any) =>
     relation.reviewStatus !== 'rejected' &&
     (names.has(normalizeEntityName(relation.subject)) && names.has(normalizeEntityName(relation.object))))
     .map((relation: any) => ({
@@ -737,21 +209,39 @@ export function buildProjectVoiceContext(
       confidence: ['user-confirmed', 'user-modified'].includes(String(relation.confirmationSource || ''))
         ? 'user-confirmed' : 'candidate',
     }));
+}
 
-  // Chapter summaries are durable book context, but should not grow into a full-book prompt
-  // or leak later chapters into the current one. Include summaries only when the current chapter
-  // can be identified reliably; otherwise the adjacent source segments are safer context.
+/**
+ * 章节摘要：只在能可靠识别当前章节时注入，且不越过当前章节。
+ *
+ * Chapter summaries are durable book context, but should not grow into a full-book prompt
+ * or leak later chapters into the current one.
+ */
+function selectChapterSummaries(memory: Record<string, any>, chapterTitle?: string): any[] {
   const summaries = memory.chapterSummaries as Array<{ chapter: string; summary: string }>;
   const normalizedChapter = normalizeEntityName(chapterTitle || '');
   const currentSummaryIndex = normalizedChapter
     ? summaries.findIndex((item) => normalizeEntityName(item.chapter) === normalizedChapter)
     : -1;
-  const summaryStart = 0;
-  const chapterSummaries = currentSummaryIndex >= 0
-    ? summaries.slice(summaryStart, currentSummaryIndex + 1)
-    : [];
+  return currentSummaryIndex >= 0 ? summaries.slice(0, currentSummaryIndex + 1) : [];
+}
 
-  const result = {
+/** 组装注入载荷：只做形状投影，不再引入新的检索证据。 */
+function buildVoiceContextPayload(input: {
+  memory: Record<string, any>;
+  segments: ProjectVoiceContextSegment[];
+  chapterTitle?: string;
+  chapterSummaries: any[];
+  entities: any[];
+  relationships: any[];
+  chosen: any[];
+  ids: Set<string>;
+  relationshipVoiceRules: any[];
+  voiceAnchors: any[];
+  dialogueParticipants: Array<Record<string, unknown>>;
+}): Record<string, any> {
+  const { memory, segments, chapterTitle, chapterSummaries, entities, relationships, chosen, ids, relationshipVoiceRules, voiceAnchors, dialogueParticipants } = input;
+  return {
     version: 1, policyVersion: 'character-voice-v5-default-adoption',
     styleGuide: memory.styleGuideAutoDisabled !== true && ['context-graph', 'user-edited', 'user-confirmed'].includes(String(memory.styleGuideOrigin || '')) ? memory.styleGuide : {},
     styleGuideStatus: memory.styleGuideStatus,
@@ -803,10 +293,15 @@ export function buildProjectVoiceContext(
       '不确定说话人或听话人时，不得猜测身份或强行套用人物画像；原意、叙事事实与当前场景优先，不添加无证据口头禅、方言、情绪或修辞。',
     ],
   };
-  // Keep all relevant, temporally eligible context. Prompt-size heuristics must not
-  // remove character profiles, evidence, anchors, relationships, or chapter summaries.
-  // Emit per-section sizes (never content) so unusually large context can be attributed
-  // without exporting book text, character names, or translated examples into service logs.
+}
+
+/**
+ * 记录各段体积（只记字符数，不记内容），便于把异常膨胀的上下文归因到具体段。
+ *
+ * Keep all relevant, temporally eligible context. Prompt-size heuristics must not
+ * remove character profiles, evidence, anchors, relationships, or chapter summaries.
+ */
+function logVoiceContextSizes(result: Record<string, any>): void {
   const sectionChars: Record<string, number> = {};
   for (const [key, value] of Object.entries(result)) {
     sectionChars[key] = JSON.stringify(value ?? null)?.length || 0;
@@ -833,5 +328,4 @@ export function buildProjectVoiceContext(
     ' · exampleOrigins=' + JSON.stringify(exampleOrigins) +
     ' · largestSections=' + largestSections +
     ' · chars=' + JSON.stringify(result).length);
-  return result;
 }
