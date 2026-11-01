@@ -196,6 +196,58 @@ test('candidate acceptance refuses a Run from a superseded source revision', asy
   });
 });
 
+test('failed scope excludes segments repaired and accepted by a later Run', async () => {
+  await withStore((store) => {
+    const project = store.createProject({ title: 'Failed scope repaired', format: 'epub', segments });
+    const failed = store.createRun(project.projectId, { scope: { type: 'ids', ids: ['ch1-p1'] } });
+    store.markRunSegments(project.projectId, failed.runId, ['ch1-p1'], 'running');
+    store.markRunSegments(project.projectId, failed.runId, ['ch1-p1'], 'failed', 'temporary provider error');
+    assert.equal(store.finishRun(project.projectId, failed.runId).status, 'failed');
+
+    const repaired = store.createRun(project.projectId, { scope: { type: 'ids', ids: ['ch1-p1'] } });
+    store.saveCandidate(project.projectId, repaired.runId, 'ch1-p1', '后来成功的译文。');
+    store.finishRun(project.projectId, repaired.runId);
+    store.acceptCandidates(project.projectId, repaired.runId);
+
+    const retry = store.createRun(project.projectId, { scope: { type: 'failed' } });
+    assert.equal(retry.counts.total, 0, 'a historical failure must not reselect a currently accepted result');
+    assert.equal(retry.status, 'completed');
+    assert.equal(store.getSegments(project.projectId, { limit: 10 }).find((item) => item.id === 'ch1-p1')?.acceptedTranslation,
+      '后来成功的译文。');
+  });
+});
+
+test('failed scope never selects a segment with a current manual edit', async () => {
+  await withStore((store) => {
+    const project = store.createProject({ title: 'Failed scope manual protection', format: 'epub', segments });
+    const failed = store.createRun(project.projectId, { scope: { type: 'ids', ids: ['ch1-p1'] } });
+    store.markRunSegments(project.projectId, failed.runId, ['ch1-p1'], 'running');
+    store.markRunSegments(project.projectId, failed.runId, ['ch1-p1'], 'failed', 'temporary provider error');
+    store.finishRun(project.projectId, failed.runId);
+    store.saveManualEdit(project.projectId, 'ch1-p1', '用户已经修订的译文。');
+
+    const retry = store.createRun(project.projectId, { scope: { type: 'failed' } });
+    assert.equal(retry.counts.total, 0, 'a current manual edit must not be overwritten by a failed-scope rerun');
+  });
+});
+
+test('failed scope ignores failures from superseded source revisions', async () => {
+  await withStore((store) => {
+    const project = store.createProject({ title: 'Failed scope source pinning', format: 'epub', segments });
+    const failed = store.createRun(project.projectId, { scope: { type: 'ids', ids: ['ch1-p1'] } });
+    store.markRunSegments(project.projectId, failed.runId, ['ch1-p1'], 'running');
+    store.markRunSegments(project.projectId, failed.runId, ['ch1-p1'], 'failed', 'old source failure');
+    store.finishRun(project.projectId, failed.runId);
+
+    store.createSourceRevision(project.projectId, {
+      title: project.title, format: 'epub',
+      segments: [{ ...segments[0], text: 'The old door was open.' }, segments[1]],
+    });
+    const retry = store.createRun(project.projectId, { scope: { type: 'failed' } });
+    assert.equal(retry.counts.total, 0, 'a failed segment from an older source revision must not leak into the current scope');
+  });
+});
+
 test('manual correction becomes an accepted version but remains traceable', async () => {
   await withStore((store) => {
     const project = store.createProject({ title: 'Manual Edit', format: 'epub', segments });
@@ -229,6 +281,39 @@ test('stores each original source file in its document revision directory', asyn
       store.storeSourceFile(project.projectId, 'original.epub', Buffer.from('different bytes')),
       /此来源版本已有不同的原始文件/,
     );
+  });
+});
+
+test('source revision upload commits the source file and revision together', async () => {
+  await withStore(async (store, root) => {
+    const project = store.createProject({ title: 'Atomic source revision', format: 'epub', sourceFileName: 'book.epub', segments });
+    const bytes = Buffer.from('new immutable EPUB bytes');
+    const result = await store.createSourceRevisionWithFile(project.projectId, {
+      title: project.title, format: 'epub', sourceFileName: 'book.epub',
+      segments: [{ ...segments[0], text: 'A revised source.' }, segments[1]],
+    }, 'book.epub', bytes);
+    assert.notEqual(result.project.currentSourceRevisionId, project.currentSourceRevisionId);
+    assert.equal(result.sourceFile.sourceRevisionId, result.project.currentSourceRevisionId);
+    assert.equal(store.getProject(project.projectId)?.sourceFileSaved, true);
+    const actual = await readFile(path.join(root, project.projectId, 'sources', result.project.currentSourceRevisionId + '.epub'));
+    assert.deepEqual(actual, bytes);
+  });
+});
+
+test('failed source revision transaction does not switch the current revision or leave a source file', async () => {
+  await withStore(async (store) => {
+    const project = store.createProject({ title: 'Source revision rollback', format: 'epub', sourceFileName: 'book.epub', segments });
+    const active = store.createRun(project.projectId, { scope: { type: 'all' } });
+    await assert.rejects(
+      store.createSourceRevisionWithFile(project.projectId, {
+        title: project.title, format: 'epub', sourceFileName: 'book.epub',
+        segments: [{ ...segments[0], text: 'A revised source.' }, segments[1]],
+      }, 'book.epub', Buffer.from('new source bytes')),
+      /仍处于 queued 状态/,
+    );
+    assert.equal(store.getProject(project.projectId)?.currentSourceRevisionId, project.currentSourceRevisionId);
+    assert.equal(store.getProject(project.projectId)?.sourceFileSaved, false);
+    assert.equal(store.getRun(project.projectId, active.runId).status, 'queued');
   });
 });
 
