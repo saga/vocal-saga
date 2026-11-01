@@ -251,14 +251,13 @@ export async function handleDocumentProjectRequest(req: Request, res: Response, 
       const bytes = await readRawSourceBody(req, MAX_DOCUMENT_SOURCE_BYTES);
       if (req.headers['x-source-action'] === 'update-revision') {
         const parsed = await parseDocumentFile(fileName, bytes);
-        const project = store.createSourceRevision(projectId, {
+        const result = await store.createSourceRevisionWithFile(projectId, {
           title: parsed.title || store.getProject(projectId)!.title,
           format: parsed.format,
           sourceFileName: fileName,
           segments: parsed.segments,
-        });
-        const sourceFile = await store.storeSourceFile(projectId, fileName, bytes);
-        sendJson(res, 201, { project: store.getProject(projectId), sourceFile });
+        }, fileName, bytes);
+        sendJson(res, 201, result);
         return true;
       }
       const saved = await store.storeSourceFile(projectId, fileName, bytes);
