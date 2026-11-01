@@ -421,6 +421,30 @@ function persistCharacterCandidates(ctx: GraphPersistContext): void {
   }
 }
 
+/** 实体落库期间跨候选共享的状态：已入库节点、译名索引与冲突集合。 */
+type EntityPersistState = {
+  db: any;
+  revisionId: string;
+  segments: Segment[];
+  targetLang: string;
+  persistedNodes: PersistedNode[];
+  entityPolicy: EntityPolicyCounters;
+  /** 源名规范化 → 已采纳的规范译名；同源两个译名即视为歧义。 */
+  canonicalTargetBySource: Map<string, string>;
+  conflictingCanonicalSources: Set<string>;
+};
+
+type EntityCandidateInput = {
+  entityName: string;
+  targetName: string;
+  rawKind: unknown;
+  significance: string;
+  aliasesInput: unknown;
+  evidence: Evidence[];
+  audit: CandidateAudit;
+  bookSpecificMeaning?: boolean;
+};
+
 /**
  * 实体候选：在人物之后入库，因此可以做「同名不同指」与复合名拆分这类跨候选校验。
  *
@@ -428,176 +452,202 @@ function persistCharacterCandidates(ctx: GraphPersistContext): void {
  * 降级为「无目标译名」，但绝不改动用户已确认的映射。
  */
 function persistEntityCandidates(ctx: GraphPersistContext): void {
-  const { db, revisionId, data, segments, targetLang, persistedNodes, entityAudits, evidenceFromModel, entityPolicy } = ctx;
-  const canonicalTargetBySource = new Map<string, string>();
-  const conflictingCanonicalSources = new Set<string>();
-  const saveEntityCandidate = (
-    entityName: string,
-    targetName: string,
-    rawKind: unknown,
-    significance: string,
-    aliasesInput: unknown,
-    evidence: Evidence[],
-    audit: CandidateAudit,
-    bookSpecificMeaning = false,
-  ) => {
-    if (persistedNodes.filter((node) => node.kind === 'entity').length >= 120) {
-      audit.disposition = 'dropped-valid-candidate-limit';
-      return false;
-    }
-    const entityKey = normalize(entityName);
-    if (conflictingCanonicalSources.has(entityKey)) {
-      audit.disposition = 'dropped-conflicting-canonical-target';
-      return false;
-    }
-    const normalizedKind = normalizeCanonicalEntityKind(rawKind);
-    const occurrences = segments.filter((segment) => sourceNameMatches(segment.text, entityName));
-    const chapterCount = new Set(occurrences.map((segment) => segment.contextPath).filter(Boolean)).size;
-    if (!isWorthCanonicalEntityMapping({
-      source: entityName, kind: normalizedKind,
-      mentions: occurrences.length, chapterCount, significance, explicitBookSpecificMeaning: bookSpecificMeaning,
-    })) {
-      entityPolicy.droppedLowValue++;
-      return false;
-    }
-    // A manually confirmed target is the canonical value; model re-analysis may refresh evidence
-    // but never silently replace the explicit user choice for the same target language.
-    let effectiveTargetName = targetName;
-    const existingId = nodeId(revisionId, 'entity', entityName);
-    const existingNode = db.prepare(
-      'SELECT status, attributes_json FROM context_graph_nodes WHERE source_revision_id = ? AND node_id = ?'
-    ).get(revisionId, existingId) as { status?: string; attributes_json?: string } | undefined;
-    if (existingNode?.status === 'confirmed') {
-      try {
-        const priorAttributes = JSON.parse(existingNode.attributes_json || '{}');
-        if (priorAttributes.targetLang === targetLang && typeof priorAttributes.suggestedTranslation === 'string' &&
-            priorAttributes.suggestedTranslation.trim()) {
-          effectiveTargetName = priorAttributes.suggestedTranslation;
-        }
-      } catch { /* invalid legacy attributes are revalidated below */ }
-    }
-    const targetCheck = validateCanonicalTarget({
-      source: entityName, target: effectiveTargetName, targetLang, kind: normalizedKind,
-    });
-    if (!targetCheck.valid) {
-      entityPolicy.invalidTarget++;
-      if (canonicalTargetBySource.has(entityKey)) {
-        // A malformed duplicate must not erase an already valid candidate for the same source.
-        audit.disposition = 'dropped-invalid-target-conflicts-with-valid-candidate';
-        return false;
-      }
-    }
-    if (targetCheck.valid) {
-      const priorTarget = canonicalTargetBySource.get(entityKey);
-      if (priorTarget && canonicalTargetsConflict(priorTarget, targetCheck.normalizedTarget)) {
-        conflictingCanonicalSources.add(entityKey);
-        entityPolicy.conflictingTarget++;
-        audit.disposition = 'dropped-conflicting-canonical-target';
-        // Same source with two plausible targets is ambiguous: do not let array order choose.
-        // Invalidate the earlier machine candidate, but never touch a confirmed user mapping.
-        if (existingNode?.status !== 'confirmed') {
-          const priorId = nodeId(revisionId, 'entity', entityName);
-          const priorRow = db.prepare(
-            'SELECT attributes_json FROM context_graph_nodes WHERE source_revision_id = ? AND node_id = ?'
-          ).get(revisionId, priorId) as { attributes_json?: string } | undefined;
-          if (priorRow) {
-            let priorAttributes: Record<string, unknown> = {};
-            try { priorAttributes = JSON.parse(priorRow.attributes_json || '{}'); } catch { priorAttributes = {}; }
-            priorAttributes.suggestedTranslation = '';
-            priorAttributes.suggestedTranslationQuality = 'conflicting-target-candidates';
-            db.prepare('UPDATE context_graph_nodes SET attributes_json = ?, updated_at = ? WHERE source_revision_id = ? AND node_id = ?')
-              .run(JSON.stringify(priorAttributes), new Date().toISOString(), revisionId, priorId);
-          }
-        }
-        return false;
-      }
-      if (!priorTarget) canonicalTargetBySource.set(entityKey, targetCheck.normalizedTarget);
-    }
-    const aliases = uniqueStrings(aliasesInput, 12, 100)
-      .filter((item) => normalize(item) !== normalize(entityName) && !splitCompoundCanonicalName(item));
-    const attributes = {
-      aliases,
-      entityKind: normalizedKind,
-      significance: safeText(significance, 360),
-      bookSpecificMeaning,
-      suggestedTranslation: targetCheck.valid ? targetCheck.normalizedTarget : '',
-      ...(targetCheck.valid ? {} : { suggestedTranslationQuality: targetCheck.reason || 'invalid-target' }),
-      targetLang,
-      evidenceCount: evidence.length,
-    };
-    const id = saveNode(db, revisionId, 'entity', entityName, attributes, evidence);
-    audit.disposition = targetCheck.valid ? 'persisted' : 'persisted-target-quality-rejected';
-    audit.nodeId ||= id;
-    persistedNodes.push({ id, name: entityName, aliases, kind: 'entity' });
-    return true;
+  const state: EntityPersistState = {
+    db: ctx.db, revisionId: ctx.revisionId, segments: ctx.segments, targetLang: ctx.targetLang,
+    persistedNodes: ctx.persistedNodes, entityPolicy: ctx.entityPolicy,
+    canonicalTargetBySource: new Map(), conflictingCanonicalSources: new Set(),
   };
-
-  for (const raw of (Array.isArray(data.entities) ? data.entities : []).slice(0, 400)) {
-    const name = safeText(raw?.name, 120);
-    const target = safeText(raw?.suggestedTranslation, 120);
-    const aliases = uniqueStrings(raw?.aliases, 12, 100);
-    const significance = safeText(raw?.significance, 240);
-    const audit: CandidateAudit = {
-      category: 'entity', name, aliases, suggestedTranslation: target,
-      role: significance,
-      rawEvidenceCount: Array.isArray(raw?.evidence) ? raw.evidence.length : 0,
-      acceptedEvidenceCount: 0, invalidEvidenceReasons: {}, disposition: 'not-evaluated',
-    };
-    entityAudits.push(audit);
-    if (!name) {
-      audit.disposition = 'dropped-empty-name';
-      continue;
-    }
-    const evidence = evidenceFromModel(raw.evidence, 'entity', audit);
-    audit.acceptedEvidenceCount = evidence.length;
-    const entityDecision = contextGraphCandidateDisposition(
-      evidence.length, persistedNodes.filter((node) => node.kind === 'entity').length, 120,
-    );
-    if (entityDecision !== 'persist') {
-      audit.disposition = entityDecision === 'no-evidence'
-        ? 'dropped-no-valid-evidence' : 'dropped-valid-candidate-limit';
-      continue;
-    }
-
-    const sourceParts = splitCompoundCanonicalName(name);
-    const targetParts = splitCompoundCanonicalName(target);
-    if (sourceParts) {
-      if (!targetParts || sourceParts.parts.length !== targetParts.parts.length) {
-        entityPolicy.droppedCompound++;
-        audit.disposition = 'dropped-compound-name-unpaired';
-        continue;
-      }
-      const pairs = sourceParts.parts.map((sourcePart, index) => ({
-        source: sourcePart, target: targetParts.parts[index] || '',
-        evidence: evidence.filter((item) => sourceNameMatches(item.quote, sourcePart)),
-      }));
-      if (pairs.some((pair) => !pair.target || !pair.evidence.length)) {
-        entityPolicy.droppedCompound++;
-        audit.disposition = 'dropped-compound-name-unverified-part';
-        continue;
-      }
-      entityPolicy.splitCompound += pairs.length;
-      let saved = 0;
-      for (const pair of pairs) {
-        if (saveEntityCandidate(
-          pair.source, pair.target, raw.kind, significance, [], pair.evidence, audit,
-          raw.bookSpecificMeaning === true || raw.book_specific_meaning === true,
-        )) saved++;
-      }
-      if (!saved && audit.disposition === 'not-evaluated') audit.disposition = 'dropped-low-value-compound-parts';
-      else if (saved) audit.disposition = 'split-compound-persisted-' + saved;
-      continue;
-    }
-    if (splitCompoundCanonicalName(target)) {
-      entityPolicy.invalidTarget++;
-      audit.disposition = 'persisted-target-quality-rejected';
-      // Preserve the source evidence for diagnostics, but never store a compound target as a mapping.
-      saveEntityCandidate(name, '', raw.kind, significance, aliases, evidence, audit);
-      continue;
-    }
-    saveEntityCandidate(name, target, raw.kind, significance, aliases, evidence, audit,
-      raw.bookSpecificMeaning === true || raw.book_specific_meaning === true);
+  for (const raw of (Array.isArray(ctx.data.entities) ? ctx.data.entities : []).slice(0, 400)) {
+    persistEntityCandidateRecord(raw, ctx, state);
   }
+}
+
+/** 单条实体候选：先建审计记录，再按证据、复合名、目标质量依次判定。 */
+function persistEntityCandidateRecord(raw: any, ctx: GraphPersistContext, state: EntityPersistState): void {
+  const { persistedNodes, entityPolicy } = state;
+  const name = safeText(raw?.name, 120);
+  const target = safeText(raw?.suggestedTranslation, 120);
+  const aliases = uniqueStrings(raw?.aliases, 12, 100);
+  const significance = safeText(raw?.significance, 240);
+  const audit: CandidateAudit = {
+    category: 'entity', name, aliases, suggestedTranslation: target,
+    role: significance,
+    rawEvidenceCount: Array.isArray(raw?.evidence) ? raw.evidence.length : 0,
+    acceptedEvidenceCount: 0, invalidEvidenceReasons: {}, disposition: 'not-evaluated',
+  };
+  ctx.entityAudits.push(audit);
+  if (!name) {
+    audit.disposition = 'dropped-empty-name';
+    return;
+  }
+  const evidence = ctx.evidenceFromModel(raw.evidence, 'entity', audit);
+  audit.acceptedEvidenceCount = evidence.length;
+  const entityDecision = contextGraphCandidateDisposition(
+    evidence.length, persistedNodes.filter((node) => node.kind === 'entity').length, 120,
+  );
+  if (entityDecision !== 'persist') {
+    audit.disposition = entityDecision === 'no-evidence'
+      ? 'dropped-no-valid-evidence' : 'dropped-valid-candidate-limit';
+    return;
+  }
+
+  const sourceParts = splitCompoundCanonicalName(name);
+  const targetParts = splitCompoundCanonicalName(target);
+  if (sourceParts) {
+    // 复合名必须与等长的译名列表逐项配对，每个拆出的成员都要有自己的证据。
+    if (!targetParts || sourceParts.parts.length !== targetParts.parts.length) {
+      entityPolicy.droppedCompound++;
+      audit.disposition = 'dropped-compound-name-unpaired';
+      return;
+    }
+    const pairs = sourceParts.parts.map((sourcePart, index) => ({
+      source: sourcePart, target: targetParts.parts[index] || '',
+      evidence: evidence.filter((item) => sourceNameMatches(item.quote, sourcePart)),
+    }));
+    if (pairs.some((pair) => !pair.target || !pair.evidence.length)) {
+      entityPolicy.droppedCompound++;
+      audit.disposition = 'dropped-compound-name-unverified-part';
+      return;
+    }
+    entityPolicy.splitCompound += pairs.length;
+    const bookSpecificMeaning = raw.bookSpecificMeaning === true || raw.book_specific_meaning === true;
+    let saved = 0;
+    for (const pair of pairs) {
+      if (saveEntityCandidate(state, {
+        entityName: pair.source, targetName: pair.target, rawKind: raw.kind, significance,
+        aliasesInput: [], evidence: pair.evidence, audit, bookSpecificMeaning,
+      })) saved++;
+    }
+    if (!saved && audit.disposition === 'not-evaluated') audit.disposition = 'dropped-low-value-compound-parts';
+    else if (saved) audit.disposition = 'split-compound-persisted-' + saved;
+    return;
+  }
+  if (splitCompoundCanonicalName(target)) {
+    entityPolicy.invalidTarget++;
+    audit.disposition = 'persisted-target-quality-rejected';
+    // Preserve the source evidence for diagnostics, but never store a compound target as a mapping.
+    saveEntityCandidate(state, {
+      entityName: name, targetName: '', rawKind: raw.kind, significance,
+      aliasesInput: aliases, evidence, audit,
+    });
+    return;
+  }
+  saveEntityCandidate(state, {
+    entityName: name, targetName: target, rawKind: raw.kind, significance,
+    aliasesInput: aliases, evidence, audit,
+    bookSpecificMeaning: raw.bookSpecificMeaning === true || raw.book_specific_meaning === true,
+  });
+}
+
+/**
+ * 写入一个实体候选。四道闸门依次是：数量上限、已判定歧义的源名、是否值得建映射、译名质量。
+ * 译名冲突时回退先前机器候选，但用户确认过的映射永不改动。
+ */
+function saveEntityCandidate(state: EntityPersistState, candidate: EntityCandidateInput): boolean {
+  const { db, revisionId, segments, targetLang, persistedNodes, entityPolicy } = state;
+  const { entityName, targetName, rawKind, significance, aliasesInput, evidence, audit } = candidate;
+  if (persistedNodes.filter((node) => node.kind === 'entity').length >= 120) {
+    audit.disposition = 'dropped-valid-candidate-limit';
+    return false;
+  }
+  const entityKey = normalize(entityName);
+  if (state.conflictingCanonicalSources.has(entityKey)) {
+    audit.disposition = 'dropped-conflicting-canonical-target';
+    return false;
+  }
+  const normalizedKind = normalizeCanonicalEntityKind(rawKind);
+  const occurrences = segments.filter((segment) => sourceNameMatches(segment.text, entityName));
+  const chapterCount = new Set(occurrences.map((segment) => segment.contextPath).filter(Boolean)).size;
+  if (!isWorthCanonicalEntityMapping({
+    source: entityName, kind: normalizedKind,
+    mentions: occurrences.length, chapterCount, significance,
+    explicitBookSpecificMeaning: candidate.bookSpecificMeaning === true,
+  })) {
+    entityPolicy.droppedLowValue++;
+    return false;
+  }
+  // A manually confirmed target is the canonical value; model re-analysis may refresh evidence
+  // but never silently replace the explicit user choice for the same target language.
+  const existingId = nodeId(revisionId, 'entity', entityName);
+  const existingNode = db.prepare(
+    'SELECT status, attributes_json FROM context_graph_nodes WHERE source_revision_id = ? AND node_id = ?'
+  ).get(revisionId, existingId) as { status?: string; attributes_json?: string } | undefined;
+  const effectiveTargetName = resolveConfirmedTarget(existingNode, targetLang) ?? targetName;
+
+  const targetCheck = validateCanonicalTarget({
+    source: entityName, target: effectiveTargetName, targetLang, kind: normalizedKind,
+  });
+  if (!targetCheck.valid) {
+    entityPolicy.invalidTarget++;
+    if (state.canonicalTargetBySource.has(entityKey)) {
+      // A malformed duplicate must not erase an already valid candidate for the same source.
+      audit.disposition = 'dropped-invalid-target-conflicts-with-valid-candidate';
+      return false;
+    }
+  }
+  if (targetCheck.valid) {
+    const priorTarget = state.canonicalTargetBySource.get(entityKey);
+    if (priorTarget && canonicalTargetsConflict(priorTarget, targetCheck.normalizedTarget)) {
+      state.conflictingCanonicalSources.add(entityKey);
+      entityPolicy.conflictingTarget++;
+      audit.disposition = 'dropped-conflicting-canonical-target';
+      // Same source with two plausible targets is ambiguous: do not let array order choose.
+      // Invalidate the earlier machine candidate, but never touch a confirmed user mapping.
+      if (existingNode?.status !== 'confirmed') {
+        clearPriorSuggestedTranslation(db, revisionId, entityName);
+      }
+      return false;
+    }
+    if (!priorTarget) state.canonicalTargetBySource.set(entityKey, targetCheck.normalizedTarget);
+  }
+  const aliases = uniqueStrings(aliasesInput, 12, 100)
+    .filter((item) => normalize(item) !== normalize(entityName) && !splitCompoundCanonicalName(item));
+  const attributes = {
+    aliases,
+    entityKind: normalizedKind,
+    significance: safeText(significance, 360),
+    bookSpecificMeaning: candidate.bookSpecificMeaning === true,
+    suggestedTranslation: targetCheck.valid ? targetCheck.normalizedTarget : '',
+    ...(targetCheck.valid ? {} : { suggestedTranslationQuality: targetCheck.reason || 'invalid-target' }),
+    targetLang,
+    evidenceCount: evidence.length,
+  };
+  const id = saveNode(db, revisionId, 'entity', entityName, attributes, evidence);
+  audit.disposition = targetCheck.valid ? 'persisted' : 'persisted-target-quality-rejected';
+  audit.nodeId ||= id;
+  persistedNodes.push({ id, name: entityName, aliases, kind: 'entity' });
+  return true;
+}
+
+/** 用户已确认的译名优先于模型本次的建议；语言不一致时不吃旧值。 */
+function resolveConfirmedTarget(
+  existingNode: { status?: string; attributes_json?: string } | undefined,
+  targetLang: string,
+): string | null {
+  if (existingNode?.status !== 'confirmed') return null;
+  try {
+    const priorAttributes = JSON.parse(existingNode.attributes_json || '{}');
+    if (priorAttributes.targetLang === targetLang && typeof priorAttributes.suggestedTranslation === 'string' &&
+        priorAttributes.suggestedTranslation.trim()) {
+      return priorAttributes.suggestedTranslation;
+    }
+  } catch { /* invalid legacy attributes are revalidated below */ }
+  return null;
+}
+
+/** 把先前机器候选的译名清空并标注冲突来源，避免旧值继续被当成规范译名。 */
+function clearPriorSuggestedTranslation(db: any, revisionId: string, entityName: string): void {
+  const priorId = nodeId(revisionId, 'entity', entityName);
+  const priorRow = db.prepare(
+    'SELECT attributes_json FROM context_graph_nodes WHERE source_revision_id = ? AND node_id = ?'
+  ).get(revisionId, priorId) as { attributes_json?: string } | undefined;
+  if (!priorRow) return;
+  let priorAttributes: Record<string, unknown> = {};
+  try { priorAttributes = JSON.parse(priorRow.attributes_json || '{}'); } catch { priorAttributes = {}; }
+  priorAttributes.suggestedTranslation = '';
+  priorAttributes.suggestedTranslationQuality = 'conflicting-target-candidates';
+  db.prepare('UPDATE context_graph_nodes SET attributes_json = ?, updated_at = ? WHERE source_revision_id = ? AND node_id = ?')
+    .run(JSON.stringify(priorAttributes), new Date().toISOString(), revisionId, priorId);
 }
 
 /** 关系边：两端必须落在本次已入库的节点上，且至少有一条有效证据。 */
@@ -928,6 +978,33 @@ async function prepareAnalysisInputs(store: ReturnType<typeof getDocumentProject
   };
 }
 
+/** 分阶段工作流的一个阶段：id、展示名、phase 字段名与必需的结构化字段。 */
+type WorkflowStage = { id: ContextGraphWorkflowStageId; label: string; phase: string; fields: readonly string[] };
+
+/**
+ * 波次执行期间的状态。每波内的阶段共享同一份 aggregate 与会话槽位，
+ * 且 style 阶段会更新 run 级 session，因此统一挂在可变容器里传递。
+ */
+type StagedWorkflowState = {
+  store: ReturnType<typeof getDocumentProjectStore>;
+  db: DatabaseSync;
+  revisionId: string;
+  projectId: string;
+  runId: string;
+  prompt: string;
+  agent: ReturnType<typeof parseAgentModel>;
+  taskProfile: ReturnType<typeof getCodeBuddyTaskProfile>;
+  sampleIds: Set<string>;
+  samples: Segment[];
+  stageTimeoutMs: number;
+  stageSessionIds: Map<ContextGraphWorkflowStageId, string>;
+  completedBefore: Set<string>;
+  checkpointSourceRunId: string;
+  aggregate: Record<string, any>;
+  /** style 阶段沿用 run 级 session key，恢复时一并回传调用方。 */
+  workflowSessionId: string;
+};
+
 /**
  * B 方案：按波次执行分阶段工作流。命中检查点的阶段直接恢复，同波次阶段并发执行，
  * 任一阶段失败即整体失败，已落库的检查点留给下次恢复。
@@ -947,136 +1024,25 @@ async function runStagedWorkflow(input: {
   modelAnalysisStartedAt: number;
   workflowSessionId: string;
 }): Promise<{ data: Record<string, any>; workflowSessionId: string }> {
-  const { store, db, revisionId, projectId, runId, prompt, initialProgress, agent, taskProfile, sampleIds, samples, modelAnalysisStartedAt } = input;
-  let workflowSessionId = input.workflowSessionId;
-  const stageSessionIds = new Map<ContextGraphWorkflowStageId, string>();
-  if (workflowSessionId) stageSessionIds.set('style', workflowSessionId);
-  const resumeFromRunId = typeof initialProgress.resumedFromRunId === 'string' ? initialProgress.resumedFromRunId : '';
-  const checkpointSourceRunId = resumeFromRunId || runId;
-  const completedBefore = new Set<string>(Array.isArray(initialProgress.completedStages) ? initialProgress.completedStages : []);
-  const aggregate: Record<string, any> = {};
+  const { db, runId, initialProgress, modelAnalysisStartedAt } = input;
   const stageTimeoutConfigured = Number(process.env.LOCAL_AGENT_CONTEXT_GRAPH_STAGE_TIMEOUT_MS);
-  const stageTimeoutMs = Number.isFinite(stageTimeoutConfigured) && stageTimeoutConfigured > 0
-    ? Math.min(ANALYSIS_TIMEOUT_MS, stageTimeoutConfigured)
-    : Math.min(ANALYSIS_TIMEOUT_MS, 5 * 60 * 1000);
-
-  type WorkflowStage = { id: ContextGraphWorkflowStageId; label: string; phase: string; fields: readonly string[] };
-
-  /** 阶段 Session key：style 沿用 run 级 key，其余阶段按阶段隔离，避免并行分支互相覆盖。 */
-  const stageSessionKey = (stageId: ContextGraphWorkflowStageId, forRunId: string) =>
-    stageId === 'style' ? workflowSessionKey(forRunId) : workflowSessionKey(forRunId, stageId);
-
-  /**
-   * 执行单个阶段：命中检查点直接恢复，否则发起一次结构化调用并落库。
-   * 同波次内多个阶段会并发调用本函数，因此每次读写 progress_json 之间不能插入 await。
-   */
-  const runStage = async (stage: WorkflowStage, waveIndex: number): Promise<void> => {
-    const checkpoint = completedBefore.has(stage.id)
-      ? getMeta(db, revisionId, workflowCheckpointKey(checkpointSourceRunId, stage.id))
-      : null;
-    const validCheckpoint = checkpoint && typeof checkpoint === 'object' && !Array.isArray(checkpoint) &&
-      stage.fields.every((field) => Object.prototype.hasOwnProperty.call(checkpoint, field));
-    if (validCheckpoint) {
-      Object.assign(aggregate, checkpoint);
-      if (checkpointSourceRunId !== runId) saveMeta(db, revisionId, workflowCheckpointKey(runId, stage.id), checkpoint);
-      const restoredProgress = readRunProgress(db, runId);
-      store.appendEvent(projectId, runId, 'context-graph.stage.restored', {
-        strategy: 'B', stage: stage.id, stageLabel: stage.label,
-        sourceRunId: checkpointSourceRunId,
-        completedStageCount: Array.isArray(restoredProgress.completedStages) ? restoredProgress.completedStages.length : 0,
-        stageCount: CONTEXT_GRAPH_WORKFLOW_STAGES.length,
-      });
-      logInfo('context-graph', '恢复已保存阶段 · ' + stage.id + ' · run=' + runId.slice(0, 8));
-      return;
-    }
-
-    const prior = readRunProgress(db, runId);
-    const completedStages = Array.isArray(prior.completedStages) ? prior.completedStages : [];
-    patchRunProgress(db, runId, {
-      strategy: 'B', workflowVersion: CONTEXT_GRAPH_WORKFLOW_VERSION,
-      currentStage: stage.id, completedStages,
-    });
-    store.appendEvent(projectId, runId, 'context-graph.phase', {
-      phase: stage.phase, strategy: 'B', stage: stage.id, stageLabel: stage.label,
-      stageIndex: CONTEXT_GRAPH_WORKFLOW_STAGES.findIndex((item) => item.id === stage.id) + 1,
-      stageCount: CONTEXT_GRAPH_WORKFLOW_STAGES.length, completedStageCount: completedStages.length,
-      waveIndex: waveIndex + 1, waveSize: (CONTEXT_GRAPH_STAGE_WAVES[waveIndex] || []).length,
-    });
-
-    // 并行分支不能共用同一个 Session；能续聊时复用父阶段 Session，避免重发整份样本。
-    const parentStageId = CONTEXT_GRAPH_STAGE_SESSION_PARENT[stage.id];
-    const sessionId = stageSessionIds.get(stage.id)
-      || safeText(getMeta(db, revisionId, stageSessionKey(stage.id, checkpointSourceRunId)), 500)
-      || (parentStageId
-        ? stageSessionIds.get(parentStageId)
-          || safeText(getMeta(db, revisionId, stageSessionKey(parentStageId, checkpointSourceRunId)), 500)
-        : '');
-    const stagePrompt = buildContextGraphWorkflowPrompt(
-      stage.id, prompt, aggregate,
-      agent.provider === 'workbuddy' && !!sessionId,
-    );
-    const stageSchema = buildContextGraphWorkflowSchema(ANALYSIS_SCHEMA, stage.id);
-    const stageStartedAt = Date.now();
-    const stageRun = await runAgentStructured(
-      { provider: agent.provider, model: agent.model },
-      stagePrompt,
-      DEFAULT_CONTEXT_GRAPH_SYSTEM_PROMPT,
-      stageSchema,
-      runId + ':' + stage.id,
-      'context-graph:' + projectId + ':' + revisionId + ':' + runId,
-      taskProfile,
-      {
-        timeoutMs: stageTimeoutMs,
-        ...(agent.provider === 'workbuddy' ? {
-          persistSession: true,
-          ...(sessionId ? { sessionId } : {}),
-          onSessionId: (newSessionId: string) => {
-            stageSessionIds.set(stage.id, newSessionId);
-            saveMeta(db, revisionId, stageSessionKey(stage.id, runId), newSessionId);
-            if (stage.id === 'style') workflowSessionId = newSessionId;
-          },
-        } : {}),
-      },
-    );
-    if (stageRun.usage) logInfo('context-graph', 'B 阶段 ' + stage.id + ' · ' + formatTurnUsageLog(stageRun.usage));
-    if (!stageRun.result || Array.isArray(stageRun.result)) {
-      throw new Error('Context Graph 工作流阶段 ' + stage.id + ' 返回了非对象结果。');
-    }
-    const stageOutput = stageRun.result as Record<string, any>;
-    const missingFields = stage.fields.filter((field) => !Object.prototype.hasOwnProperty.call(stageOutput, field));
-    if (missingFields.length) {
-      throw new Error('Context Graph 工作流阶段 ' + stage.id + ' 缺少结构化字段：' + missingFields.join(', '));
-    }
-    if (stageRun.sessionId && agent.provider === 'workbuddy') {
-      stageSessionIds.set(stage.id, stageRun.sessionId);
-      saveMeta(db, revisionId, stageSessionKey(stage.id, runId), stageRun.sessionId);
-      if (stage.id === 'style') workflowSessionId = stageRun.sessionId;
-    }
-    const stageElapsedMs = Date.now() - stageStartedAt;
-    persistWorkflowStageCheckpoint(
-      db, revisionId, runId, stage.id, stageOutput, stageElapsedMs,
-      sampleIds, samples,
-    );
-    const stageProgress = readRunProgress(db, runId);
-    const stageSummary = Array.isArray(stageProgress.stageResults)
-      ? stageProgress.stageResults.find((item: any) => item.stage === stage.id)
-      : null;
-    store.appendEvent(projectId, runId, 'context-graph.stage.completed', {
-      strategy: 'B', stage: stage.id, stageLabel: stage.label,
-      stageIndex: CONTEXT_GRAPH_WORKFLOW_STAGES.findIndex((item) => item.id === stage.id) + 1,
-      stageCount: CONTEXT_GRAPH_WORKFLOW_STAGES.length,
-      completedStageCount: Array.isArray(stageProgress.completedStages) ? stageProgress.completedStages.length : 0,
-      elapsedMs: stageElapsedMs, outputCounts: stageSummary?.outputCounts || {},
-      waveIndex: waveIndex + 1,
-    });
-    Object.assign(aggregate, stageOutput);
+  const state: StagedWorkflowState = {
+    store: input.store, db, revisionId: input.revisionId, projectId: input.projectId, runId,
+    prompt: input.prompt, agent: input.agent, taskProfile: input.taskProfile,
+    sampleIds: input.sampleIds, samples: input.samples,
+    stageTimeoutMs: Number.isFinite(stageTimeoutConfigured) && stageTimeoutConfigured > 0
+      ? Math.min(ANALYSIS_TIMEOUT_MS, stageTimeoutConfigured)
+      : Math.min(ANALYSIS_TIMEOUT_MS, 5 * 60 * 1000),
+    stageSessionIds: new Map(),
+    completedBefore: new Set<string>(Array.isArray(initialProgress.completedStages) ? initialProgress.completedStages : []),
+    checkpointSourceRunId: (typeof initialProgress.resumedFromRunId === 'string' ? initialProgress.resumedFromRunId : '') || runId,
+    aggregate: {},
+    workflowSessionId: input.workflowSessionId,
   };
+  if (state.workflowSessionId) state.stageSessionIds.set('style', state.workflowSessionId);
 
   for (let waveIndex = 0; waveIndex < CONTEXT_GRAPH_STAGE_WAVES.length; waveIndex++) {
-    const wave = CONTEXT_GRAPH_STAGE_WAVES[waveIndex]!;
-    const stages = wave
-      .map((stageId) => CONTEXT_GRAPH_WORKFLOW_STAGES.find((item) => item.id === stageId) as WorkflowStage | undefined)
-      .filter((stage): stage is WorkflowStage => !!stage);
+    const stages = resolveWaveStages(waveIndex);
     if (!stages.length) continue;
     // 同波次只写一次 phase：并发阶段各自写会让 UI 的阶段读数来回跳动。
     db.prepare('UPDATE context_graph_runs SET phase = ? WHERE run_id = ?').run(stages[0]!.phase, runId);
@@ -1085,16 +1051,180 @@ async function runStagedWorkflow(input: {
         ' · ' + stages.map((stage) => stage.id).join('+'));
     }
     // 同波次阶段互不依赖；任一失败即整体失败，已落库的检查点留给下次恢复。
-    await Promise.all(stages.map((stage) => runStage(stage, waveIndex)));
+    await Promise.all(stages.map((stage) => runWorkflowStage(stage, waveIndex, state)));
   }
 
-  const data: Record<string, any> = aggregate;
   patchRunProgress(db, runId, {
     strategy: 'B', workflowVersion: CONTEXT_GRAPH_WORKFLOW_VERSION,
     currentStage: null, workflowElapsedMs: Date.now() - modelAnalysisStartedAt,
     completedStages: CONTEXT_GRAPH_WORKFLOW_STAGES.map((stage) => stage.id),
   });
-  return { data, workflowSessionId };
+  return { data: state.aggregate, workflowSessionId: state.workflowSessionId };
+}
+
+/** 波次里登记的阶段 id 解析成阶段定义；未知 id 直接跳过。 */
+function resolveWaveStages(waveIndex: number): WorkflowStage[] {
+  const wave = CONTEXT_GRAPH_STAGE_WAVES[waveIndex]!;
+  return wave
+    .map((stageId) => CONTEXT_GRAPH_WORKFLOW_STAGES.find((item) => item.id === stageId) as WorkflowStage | undefined)
+    .filter((stage): stage is WorkflowStage => !!stage);
+}
+
+/** 阶段 Session key：style 沿用 run 级 key，其余阶段按阶段隔离，避免并行分支互相覆盖。 */
+function stageSessionKey(stageId: ContextGraphWorkflowStageId, forRunId: string): string {
+  return stageId === 'style' ? workflowSessionKey(forRunId) : workflowSessionKey(forRunId, stageId);
+}
+
+/**
+ * 执行单个阶段：命中检查点直接恢复，否则发起一次结构化调用并落库。
+ * 同波次内多个阶段会并发调用本函数，因此每次读写 progress_json 之间不能插入 await。
+ */
+async function runWorkflowStage(
+  stage: WorkflowStage,
+  waveIndex: number,
+  state: StagedWorkflowState,
+): Promise<void> {
+  if (restoreStageCheckpoint(stage, state)) return;
+  const { store, db, projectId, runId } = state;
+
+  const prior = readRunProgress(db, runId);
+  const completedStages = Array.isArray(prior.completedStages) ? prior.completedStages : [];
+  patchRunProgress(db, runId, {
+    strategy: 'B', workflowVersion: CONTEXT_GRAPH_WORKFLOW_VERSION,
+    currentStage: stage.id, completedStages,
+  });
+  store.appendEvent(projectId, runId, 'context-graph.phase', {
+    phase: stage.phase, strategy: 'B', stage: stage.id, stageLabel: stage.label,
+    stageIndex: CONTEXT_GRAPH_WORKFLOW_STAGES.findIndex((item) => item.id === stage.id) + 1,
+    stageCount: CONTEXT_GRAPH_WORKFLOW_STAGES.length, completedStageCount: completedStages.length,
+    waveIndex: waveIndex + 1, waveSize: (CONTEXT_GRAPH_STAGE_WAVES[waveIndex] || []).length,
+  });
+
+  const { stageOutput, elapsedMs } = await executeStageCall(stage, state);
+  persistWorkflowStageCheckpoint(
+    db, state.revisionId, runId, stage.id, stageOutput, elapsedMs,
+    state.sampleIds, state.samples,
+  );
+  recordStageCompletion(stage, waveIndex, state, elapsedMs);
+  Object.assign(state.aggregate, stageOutput);
+}
+
+/**
+ * 检查点恢复：只有「本次恢复来源 Run 已完成该阶段」且字段齐全时才复用，
+ * 复用时把检查点原样写入本 Run，后续阶段仍能读到同一份数据。
+ */
+function restoreStageCheckpoint(stage: WorkflowStage, state: StagedWorkflowState): boolean {
+  const { store, db, revisionId, projectId, runId, checkpointSourceRunId } = state;
+  const checkpoint = state.completedBefore.has(stage.id)
+    ? getMeta(db, revisionId, workflowCheckpointKey(checkpointSourceRunId, stage.id))
+    : null;
+  const validCheckpoint = checkpoint && typeof checkpoint === 'object' && !Array.isArray(checkpoint) &&
+    stage.fields.every((field) => Object.prototype.hasOwnProperty.call(checkpoint, field));
+  if (!validCheckpoint) return false;
+  Object.assign(state.aggregate, checkpoint);
+  if (checkpointSourceRunId !== runId) saveMeta(db, revisionId, workflowCheckpointKey(runId, stage.id), checkpoint);
+  const restoredProgress = readRunProgress(db, runId);
+  store.appendEvent(projectId, runId, 'context-graph.stage.restored', {
+    strategy: 'B', stage: stage.id, stageLabel: stage.label,
+    sourceRunId: checkpointSourceRunId,
+    completedStageCount: Array.isArray(restoredProgress.completedStages) ? restoredProgress.completedStages.length : 0,
+    stageCount: CONTEXT_GRAPH_WORKFLOW_STAGES.length,
+  });
+  logInfo('context-graph', '恢复已保存阶段 · ' + stage.id + ' · run=' + runId.slice(0, 8));
+  return true;
+}
+
+/**
+ * 阶段 Session 的查找顺序：本 Run 已开的槽位 → 恢复来源 Run 的槽位 → 父阶段的槽位。
+ * 能续聊时复用父阶段 Session，避免重发整份样本。
+ */
+function resolveStageSessionId(stage: WorkflowStage, state: StagedWorkflowState): string {
+  const { db, revisionId, checkpointSourceRunId, stageSessionIds } = state;
+  const parentStageId = CONTEXT_GRAPH_STAGE_SESSION_PARENT[stage.id];
+  return stageSessionIds.get(stage.id)
+    || safeText(getMeta(db, revisionId, stageSessionKey(stage.id, checkpointSourceRunId)), 500)
+    || (parentStageId
+      ? stageSessionIds.get(parentStageId)
+        || safeText(getMeta(db, revisionId, stageSessionKey(parentStageId, checkpointSourceRunId)), 500)
+      : '');
+}
+
+/** 记住一个阶段 Session：内存、meta 与 run 级返回值三处同步，缺一处下次就无法续聊。 */
+function rememberStageSession(
+  stageId: ContextGraphWorkflowStageId,
+  sessionId: string,
+  state: StagedWorkflowState,
+): void {
+  state.stageSessionIds.set(stageId, sessionId);
+  saveMeta(state.db, state.revisionId, stageSessionKey(stageId, state.runId), sessionId);
+  if (stageId === 'style') state.workflowSessionId = sessionId;
+}
+
+/** 一次阶段模型调用：装 Prompt、发请求、校验返回字段。失败一律抛出，由波次整体失败。 */
+async function executeStageCall(
+  stage: WorkflowStage,
+  state: StagedWorkflowState,
+): Promise<{ stageOutput: Record<string, any>; elapsedMs: number }> {
+  const { db, revisionId, projectId, runId, prompt, agent, taskProfile, stageTimeoutMs } = state;
+  const sessionId = resolveStageSessionId(stage, state);
+  const stagePrompt = buildContextGraphWorkflowPrompt(
+    stage.id, prompt, state.aggregate,
+    agent.provider === 'workbuddy' && !!sessionId,
+  );
+  const stageSchema = buildContextGraphWorkflowSchema(ANALYSIS_SCHEMA, stage.id);
+  const stageStartedAt = Date.now();
+  const stageRun = await runAgentStructured(
+    { provider: agent.provider, model: agent.model },
+    stagePrompt,
+    DEFAULT_CONTEXT_GRAPH_SYSTEM_PROMPT,
+    stageSchema,
+    runId + ':' + stage.id,
+    'context-graph:' + projectId + ':' + revisionId + ':' + runId,
+    taskProfile,
+    {
+      timeoutMs: stageTimeoutMs,
+      ...(agent.provider === 'workbuddy' ? {
+        persistSession: true,
+        ...(sessionId ? { sessionId } : {}),
+        onSessionId: (newSessionId: string) => rememberStageSession(stage.id, newSessionId, state),
+      } : {}),
+    },
+  );
+  if (stageRun.usage) logInfo('context-graph', 'B 阶段 ' + stage.id + ' · ' + formatTurnUsageLog(stageRun.usage));
+  if (!stageRun.result || Array.isArray(stageRun.result)) {
+    throw new Error('Context Graph 工作流阶段 ' + stage.id + ' 返回了非对象结果。');
+  }
+  const stageOutput = stageRun.result as Record<string, any>;
+  const missingFields = stage.fields.filter((field) => !Object.prototype.hasOwnProperty.call(stageOutput, field));
+  if (missingFields.length) {
+    throw new Error('Context Graph 工作流阶段 ' + stage.id + ' 缺少结构化字段：' + missingFields.join(', '));
+  }
+  if (stageRun.sessionId && agent.provider === 'workbuddy') {
+    rememberStageSession(stage.id, stageRun.sessionId, state);
+  }
+  return { stageOutput, elapsedMs: Date.now() - stageStartedAt };
+}
+
+/** 阶段完成事件：带上本阶段输出计数与波次位置，便于在终端对齐 UI 的阶段读数。 */
+function recordStageCompletion(
+  stage: WorkflowStage,
+  waveIndex: number,
+  state: StagedWorkflowState,
+  elapsedMs: number,
+): void {
+  const { store, db, projectId, runId } = state;
+  const stageProgress = readRunProgress(db, runId);
+  const stageSummary = Array.isArray(stageProgress.stageResults)
+    ? stageProgress.stageResults.find((item: any) => item.stage === stage.id)
+    : null;
+  store.appendEvent(projectId, runId, 'context-graph.stage.completed', {
+    strategy: 'B', stage: stage.id, stageLabel: stage.label,
+    stageIndex: CONTEXT_GRAPH_WORKFLOW_STAGES.findIndex((item) => item.id === stage.id) + 1,
+    stageCount: CONTEXT_GRAPH_WORKFLOW_STAGES.length,
+    completedStageCount: Array.isArray(stageProgress.completedStages) ? stageProgress.completedStages.length : 0,
+    elapsedMs, outputCounts: stageSummary?.outputCounts || {},
+    waveIndex: waveIndex + 1,
+  });
 }
 
 /** A 方案：一次结构化调用产出整本图谱；失败即整体失败，不做部分采纳。 */
