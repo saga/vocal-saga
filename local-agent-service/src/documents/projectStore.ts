@@ -1042,8 +1042,10 @@ export class DocumentProjectStore {
       });
       return { project, sourceFile };
     } catch (error) {
-      const currentRevisionId = this.getProject(projectId)?.currentSourceRevisionId;
-      if (currentRevisionId !== revisionId) {
+      const currentRevision = this.openProjectDb(projectId).prepare(
+        "SELECT value FROM project_meta WHERE key = 'current_source_revision_id'",
+      ).get() as { value?: string } | undefined;
+      if (currentRevision?.value !== revisionId) {
         await unlink(tempPath).catch(() => undefined);
         if (targetCreated) await unlink(targetPath).catch(() => undefined);
       }
