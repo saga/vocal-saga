@@ -108,6 +108,9 @@ sequenceDiagram
 - **Run 创建先于后台执行**：持久化 Run 和选中片段后才调用 `startProjectTranslationRun`。后台工作不是 HTTP 请求生命周期的一部分。
 - **候选译文与已采纳译文分离**：`saveCandidates` 写入本次 Run 的候选；Run 最终化时自动采纳来源/结构校验通过且未被更新人工编辑覆盖的候选。用户不需要逐段点击确认，可以事后修改或拒绝；审校失败保留有效初译，不绕过来源与版本校验。
 - **状态转换以 SQLite 为准**：内存中的 `activeRuns` 只用于本进程去重，不是持久化状态来源。服务重启后应从 Store 恢复状态或重试失败范围。
+- **Failed scope 绑定来源**：失败记录必须同时匹配失败 Run 的 `source_revision_id` 和当前 segment 的 `source_hash`；已由当前 fingerprint 修复采纳的译文及人工编辑不应再次进入失败重试范围。
+- **原始文件与 revision 一致提交**：更新原文时先写入 revision 专属临时文件并 rename，再在 SQLite 事务中登记文件元数据和切换当前 revision。数据库提交失败清理新文件；进程中断最多留下无引用文件，不允许 current revision 指向缺失文件。
+- **模型调用预算是总调用次数**：`maxModelAttempts` 包含首次调用；定向补齐不能通过按小组拆分缺失片段突破预算。
 - **停止边界是写入边界**：模型调用前、调用返回后、候选写入前都需要再次检查 Run 状态；数据库事务还会拒绝在取消/暂停后提交迟到结果。
 - **审校不是翻译成功的前置条件**：审校失败会写入 warning，并保留有效初译候选。审校修订和 supporting findings 应一起原子提交。
 - **上下文快照可追溯**：同一批次的初译和 Reviewer 使用同一份 TranslationBrief；保存的 revision IDs、hash 和字符数用于审计，不代表完整模型请求的全部长度。TranslationBrief 同时记录不含正文的组件大小统计（glossary、preceding segments、Context Graph、voice context 及各自子项），人物声音检索还记录 accepted-example 候选数、筛选数和最终注入数。历史译例最多 8 条、最高 4,000 字符，实际字符预算按 `contextBudgetChars` 的 25% 缩放；已作为 preceding segment 注入的片段不会再次作为译例注入。该预算只裁剪可选历史译例，不截断当前原文、前文、术语、当前可见名称映射或有证据的人物声音信息。诊断包只导出这些计数、字符数和条目长度分布，不导出原文、译文或记忆正文。
