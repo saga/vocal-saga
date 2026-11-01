@@ -103,8 +103,8 @@ export function saveLiteraryMemory(store: DocumentProjectStore, projectId: strin
     literaryEntities,
     characterProfiles,
   };
-  // Emit even when the fingerprint already exists: this event records that the UI's graph-to-memory
-  // synchronization path was reached, not merely that a new revision was inserted.
+  // 即使指纹已存在也要发这条事件：它记录的是「界面确实走到了图谱→记忆的同步路径」，
+  // 而不只是「插入了新版本」。
   store.appendEvent(projectId, null, 'literary-memory.saved', payload);
   return { memoryRevisionId, fingerprint, version: existing?.version || 2, createdAt };
 }
@@ -157,9 +157,6 @@ export function listLiteraryMemoryRevisions(store: DocumentProjectStore, project
 /**
  * 文学预处理就绪性显式校验辅助函数，供调用方要求项目已预处理时使用。
  * 不应在 Run 创建时调用：queued 文学 Run 必须进入服务端 executeRun 门禁，由其启动预处理并持久化等待/失败事件。
- * English note: Explicit validation helper for callers that require an already-prepared project.
- * Do not call this during Run creation: queued literary Runs must reach the server-owned
- * executeRun gate, which can start preprocessing and persist wait/failure events.
  */
 export function assertLiteraryPreprocessingReady(store: DocumentProjectStore, projectId: string, sourceRevisionId: string, sourceLang: string, targetLang: string): void {
   const db = store.openProjectDb(projectId);
@@ -178,7 +175,7 @@ export function assertLiteraryPreprocessingReady(store: DocumentProjectStore, pr
   let preprocessing = db.prepare(
     'SELECT run_id, status, progress_json, error FROM context_graph_runs WHERE source_revision_id = ? ORDER BY started_at DESC, rowid DESC LIMIT 1'
   ).get(sourceRevisionId) as { run_id?: string; status?: string; progress_json?: string; error?: string } | undefined;
-  // Recover a terminal-state write that was lost after the completion event was durably recorded.
+  // 补一次终态写入：完成事件已经落盘，但之后的状态更新丢了。
   if (preprocessing && (preprocessing.status === 'queued' || preprocessing.status === 'running') && preprocessing.run_id) {
     const completion = db.prepare(
       "SELECT payload_json FROM project_events WHERE run_id = ? AND event_type = 'context-graph.completed' ORDER BY created_at DESC LIMIT 1"
@@ -262,9 +259,9 @@ export function validateLiteraryMemoryAgainstProject(store: DocumentProjectStore
     const evidenceDimensionCount = new Set(evidence.map((item: any) => item.dimension)).size;
     const hasSubstantiveVoiceCore = Object.values(profile.voiceCore || {})
       .some((value: any) => typeof value === 'string' ? !!value.trim() : Array.isArray(value) && value.length > 0);
-    // A candidate voice profile can become evidence-verified without a user click only
-    // when several independently located source excerpts support multiple voice dimensions.
-    // Model-reported confidence is deliberately not part of this decision.
+    // 只有当若干段位置相互独立的源文摘录同时支撑多个声音维度时，
+    // 候选声音档案才能不经用户点击就变成「证据已核实」。
+    // 模型自报的置信度刻意不参与这个判定。
     const evidenceVerified = (profile.status === 'candidate' ||
         (profile.status === 'confirmed' && profile.confirmationSource === 'evidence-verified')) &&
       profile.evidenceTruncated !== true &&
@@ -282,8 +279,8 @@ export function validateLiteraryMemoryAgainstProject(store: DocumentProjectStore
       : evidenceVerified || userConfirmed || legacyConfirmed || modelDefault
         ? 'confirmed'
         : 'candidate';
-    // Invalid/missing excerpts lower evidence quality, not adoption. A model-default profile
-    // remains usable with its surviving observations and can be corrected by the reader later.
+    // 摘录缺失或不合法只会降低证据质量，不影响是否采纳。模型默认档案
+    // 仍可带着幸存的观察继续使用，读者之后可以再纠正。
     const questions = Array.isArray(profile.openQuestions) ? [...profile.openQuestions] : [];
     return {
       ...profile, evidence, status,
@@ -352,8 +349,8 @@ export function validateLiteraryMemoryAgainstProject(store: DocumentProjectStore
       profile.characterId === anchor.speakerId && profile.status === 'confirmed');
     const accepted = latestAccepted.get(anchor.segmentId);
     const currentSource = sources.get(anchor.segmentId);
-    // A translation from an older source revision is not a valid target for a new anchor,
-    // even if a substring happens to match after the original text was edited.
+    // 来自旧源文版本的译文，不能作为新锚点的目标，
+    // 哪怕原文被改过之后某个子串恰好还能对上。
     const targetValid = !!accepted && !!currentSource &&
       accepted.sourceHash === currentSource.source_hash &&
       !!accepted.translation.trim() &&
@@ -394,9 +391,6 @@ export function validateLiteraryMemoryAgainstProject(store: DocumentProjectStore
 /**
  * 计算 Context Graph 的 fingerprint，用于文学检索版本追踪。
  * 图谱更新必须像 Prompt/记忆修订一样使已采纳输出失效；旧版数据库可能没有图谱表，此时返回 null 而不报错。
- * English note: Hash the exact graph state used by literary retrieval. A graph update must invalidate
- * accepted output just like a Prompt or voice-memory revision. Older project DBs may not
- * have Context Graph tables yet; those remain valid projects without an artificial failure.
  */
 export function contextGraphFingerprint(store: DocumentProjectStore, projectId: string, sourceRevisionId: string): string | null {
   const db = store.openProjectDb(projectId);

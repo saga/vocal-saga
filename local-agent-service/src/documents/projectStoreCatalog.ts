@@ -143,8 +143,8 @@ export function insertSourceRevision(store: DocumentProjectStore, db: DatabaseSy
  * 重复来源解析由 resolveProjectForSource 负责，不能依赖客户端会话缓存去重。
  */
 export function createProject(store: DocumentProjectStore, input: CreateProjectInput): ProjectSummary {
-  // Initialize the catalog before creating the project directory; otherwise startup repair
-  // could discover this new directory and insert the catalog row before createProject does.
+  // 先初始化 catalog，再创建项目目录；否则启动修复可能先发现这个新目录，
+  // 抢在 createProject 之前把 catalog 行插进去。
   store.catalogDb();
   const segments = validateSegments(input.segments);
   const title = (input.title || input.sourceFileName || '未命名文档').trim().slice(0, 500) || '未命名文档';
@@ -173,8 +173,8 @@ export function createProject(store: DocumentProjectStore, input: CreateProjectI
   store.catalogDb().prepare(
     'INSERT INTO document_projects(project_id, title, format, source_file_name, source_fingerprint, db_path, created_at, updated_at, archived) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)'
   ).run(projectId, title, format, fileName, revision.fingerprint, filePath, now, now);
-  // Initial project creation may migrate the reader's legacy Voice Bible once; later memory
-  // writes must use the explicit /literary-memory endpoint, never Prompt/Run payloads.
+  // 初次建项目时可以把读者旧版的 Voice Bible 迁移一次；之后的记忆写入
+  // 必须走显式的 /literary-memory 接口，绝不能再塞进 Prompt/Run 的请求体。
   if (prompt.literaryMemory !== undefined) store.saveLiteraryMemory(projectId, prompt.literaryMemory);
   // 导入一本书是最高频、最需要事后追溯的操作。此前这里一行都不打，
   // 文件日志里完全看不出「这本书是什么时候、以多少片段导进来的」。
@@ -204,7 +204,7 @@ export function createSourceRevision(store: DocumentProjectStore, projectId: str
   db.exec('BEGIN IMMEDIATE');
   let revision: any;
   try {
-    // These checks belong inside the same SQLite write transaction as the revision switch.
+    // 这几个检查必须和版本切换处在同一个 SQLite 写事务里。
     const activeRun = db.prepare(
       "SELECT run_id, status FROM translation_runs WHERE status IN ('queued','running','paused','awaiting_acceptance','partial') LIMIT 1"
     ).get() as { run_id?: string; status?: string } | undefined;
@@ -297,9 +297,9 @@ export async function createSourceRevisionWithFile(store: DocumentProjectStore, 
 }
 
 /**
- * Keep the original source outside SQLite but inside the document project's own directory.
- * The content itself is not stored as a giant blob in either SQLite database. A revision gets
- * an immutable file name based on its revision UUID; re-importing never overwrites an older file.
+ * 原始源文不存进 SQLite，而是放在文档项目自己的目录里。
+ * 内容本身不以大 blob 的形式存进任何一个 SQLite 库。每个版本按
+ * 版本 UUID 生成不可变文件名；重复导入永远不会覆盖旧文件。
  */
 export async function storeSourceFile(store: DocumentProjectStore, projectId: string, fileName: string, bytes: Uint8Array): Promise<{ saved: true; size: number; sha256: string; sourceRevisionId: string }> {
   if (!(bytes instanceof Uint8Array) || bytes.byteLength < 1) {
@@ -324,8 +324,8 @@ export async function storeSourceFile(store: DocumentProjectStore, projectId: st
   const copied = Buffer.from(bytes);
   const sourceHash = createHash('sha256').update(copied).digest('hex');
   await writeFile(targetPath, copied, { flag: 'wx' }).catch(async (error: any) => {
-    // A retry after network timeout may find the immutable file already written. Reuse it only
-    // when its bytes are exactly the same; never replace an existing source revision silently.
+    // 网络超时后重试，可能发现那个不可变文件其实已经写好了。
+    // 只有字节完全一致时才复用它；绝不悄悄替换已有的源文版本。
     if (error?.code !== 'EEXIST') throw error;
     const { readFile } = await import('node:fs/promises');
     const existing = await readFile(targetPath);
@@ -396,9 +396,6 @@ export function getProject(store: DocumentProjectStore, projectId: string): Proj
 /**
  * 将解析后的文档解析到已有持久化项目，不信任扩展本地项目映射。
  * 精确 source fingerprint 可安全水合；同名/标题匹配仅作为变更候选，不得继承新文档的旧译文。
- * English note: Resolve a parsed document to an existing durable project without trusting the extension's
- * local project map. An exact source fingerprint is safe to hydrate; a same-name/title match
- * is only a change candidate and must not receive the new document's old translations.
  */
 export function resolveProjectForSource(store: DocumentProjectStore, input: CreateProjectInput): {
     exactProject: ProjectSummary | null;
@@ -429,9 +426,6 @@ export function resolveProjectForSource(store: DocumentProjectStore, input: Crea
 /**
  * 检查导入文件是否与当前来源版本已附带的原始文件字节完全一致。
  * 用于区分解析器版本变化与真正的文档变化，不信任文件名或浏览器生成的片段指纹。
- * English note: Check whether an imported file is byte-for-byte the original already attached to the
- * current source revision. This distinguishes a parser-version change from a genuinely
- * changed document without trusting a filename or a browser-generated segment fingerprint.
  */
 export function matchesStoredSourceFile(store: DocumentProjectStore, projectId: string, bytes: Uint8Array): boolean {
   const { db, currentSourceRevisionId } = store.getProjectContext(projectId);

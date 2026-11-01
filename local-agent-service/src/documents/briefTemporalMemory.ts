@@ -84,13 +84,13 @@ export function buildTemporallyVisibleMemory(
   applyVoiceRuleVisibility(rawMemory, boundary, sourceById);
   applyStyleGuideGate(rawMemory);
 
-  // Whole-book summaries/examples remain excluded to protect temporal plot boundaries. Style-only
-  // guides are default-adopted; a user can explicitly disable the generated guide.
+  // 全书级摘要与示例仍然排除在外，以守住时间上的情节边界。纯文风指南
+  // 默认采纳；用户可以显式关掉生成出来的指南。
   rawMemory.chapterSummaries = [];
   rawMemory.recentExamples = acceptedExamples.retrievedExamples;
   rawMemory.openQuestions = [];
-  // The voice-context sanitizer intentionally ignores these counters; TranslationBrief copies
-  // them into its durable diagnostic summary so zero-injection and boundary exclusions are visible.
+  // 声音上下文清洗器刻意不看这几个计数器；TranslationBrief 把它们抄进
+  // 持久化诊断摘要，好让「零注入」和「边界排除」看得见。
   rawMemory.__translationBriefDiagnostics = buildBriefDiagnostics({
     exclusionDiagnostics, initialMemoryCounts, rawMemory, acceptedExamples, exampleBudgetChars,
   });
@@ -147,8 +147,8 @@ function prepareRunMemory(context: any, revisionId: string): Record<string, any>
     rawMemory.chineseEditorialProfile = null;
     return rawMemory;
   }
-  // Machine-generated editorial profiles are default-adopted. Evidence remains metadata;
-  // it does not create a human approval gate. This profile is style-only, not plot memory.
+  // 机器生成的编辑档案默认采纳。证据只是元数据，不构成人工审批关卡。
+  // 这类档案只用于文风，不是情节记忆。
   editorialProfile.status = 'confirmed';
   editorialProfile.confirmationSource = editorialProfile.confirmationSource || 'model-default';
   return rawMemory;
@@ -330,7 +330,7 @@ function applyVoiceRuleVisibility(
       evidenceSegmentIds: (Array.isArray(rule.evidenceSegmentIds) ? rule.evidenceSegmentIds : []).filter(isPrior),
       addressTerms: (Array.isArray(rule.addressTerms) ? rule.addressTerms : [])
         .filter((term: unknown) => appearedBefore(term)),
-      // Scene-dependent register changes often summarize a later arc without segment-level quotes.
+      // 随场景而变的语域变化，常常在没有片段级引文的情况下概括了后面某段弧线。
       sceneDependentShift: '',
     }));
   rawMemory.voiceAnchors = (Array.isArray(rawMemory.voiceAnchors) ? rawMemory.voiceAnchors : []).filter((voiceAnchor: any) => {
@@ -346,8 +346,8 @@ function applyVoiceRuleVisibility(
  * 但只含风格规范且来自图谱/用户时默认生效——用户可以显式关闭。
  */
 function applyStyleGuideGate(rawMemory: Record<string, any>): void {
-  // These book-level strings lack source-positioned citations. Do not let whole-book analysis
-  // leak a future plot fact through a field labelled "style", "example", or "summary".
+  // 这些全书级字符串没有定位到源文位置的引文。不要让全书分析
+  // 借「style」「example」「summary」这类字段名，把未来的情节事实漏进来。
   const styleGuideEnabled = rawMemory.styleGuideAutoDisabled !== true &&
     ['context-graph', 'user-edited', 'user-confirmed'].includes(String(rawMemory.styleGuideOrigin || ''));
   rawMemory.styleGuide = styleGuideEnabled ? rawMemory.styleGuide : {};
@@ -476,8 +476,8 @@ function retrieveAcceptedExamples(
 /** 当前批次的检索基准：词面、章节、体裁与「边界前出现过」的可见人名。 */
 function buildExampleRetrievalBase(boundary: TemporalBoundary, rawMemory: Record<string, any>): ExampleRetrievalBase {
   const { firstOrdinal, items, precedingSegments, appearedBefore } = boundary;
-  // Never trust book-level recentExamples: retrieve examples from the accepted translation
-  // ledger, pinned to this source revision and strictly before the current batch.
+  // 绝不要相信全书级的 recentExamples：示例要从已采纳译文台账里取，
+  // 且钉死在本源文版本、严格早于当前批次。
   const currentExampleSource = [...precedingSegments, ...items].map((item) => String(item.text || '')).join(' ');
   const currentTokens = sourceTokens(currentExampleSource);
   const currentKinds = new Set(items.map((item) => String(item.kind || '')).filter(Boolean));
@@ -506,10 +506,9 @@ function buildExampleRetrievalBase(boundary: TemporalBoundary, rawMemory: Record
 /**
  * 候选译例的取数：只取同一来源版本、最新一条已采纳、且 ordinal 早于边界的记录。
  * 命中共四类——近期窗口、当前章节、人工采纳、与当前原文有区分度词面重合。
- * Keep retrieval bounded without relying on a fixed "last N examples" window alone:
- * include recent accepted work, the current chapter, manually accepted examples, and rows
- * matching a small set of distinctive current-source tokens. Scoring/ranking below remains
- * authoritative. Query results are pinned to the immutable source revision and accepted row.
+ * 让检索保持有界，但不只依赖固定的「最近 N 条示例」窗口：要纳入近期已采纳的工作、
+ * 当前章节、人工采纳过的示例，以及命中少量当前源文特征词的记录。
+ * 下面的打分排序仍然是权威。查询结果钉死在不可变源文版本与对应的已采纳行上。
  */
 function loadAcceptedExampleRows(boundary: TemporalBoundary, base: ExampleRetrievalBase): RawAcceptedExampleRow[] {
   const { db, revisionId, firstOrdinal } = boundary;
@@ -586,8 +585,8 @@ function selectRetrievedExamples(
   excludedAsPreceding: number;
   trimmedByBudget: number;
 } {
-  // Select a compact, diverse set rather than injecting every historical match. Highly
-  // overlapping examples usually repeat the same evidence and displace useful style variety.
+  // 选一组紧凑而多样的示例，而不是把每一条历史命中都注入。高度重叠的示例
+  // 往往只是在重复同一份证据，还挤掉了真正有用的文风多样性。
   const retrievedExamples: AcceptedExample[] = [];
   const selectedExampleTokens: Set<string>[] = [];
   const selectedPrecedingIds = new Set(precedingSegments.map((segment) => segment.id));
@@ -639,16 +638,16 @@ function filterVisibleEntities(
 ): any[] {
   const { isPrior, appearedBefore, appearsAsEarlierEvidence, items, sourceById, latestAcceptedTranslationBySegment, firstOrdinal } = boundary;
   return (Array.isArray(entities) ? entities : []).flatMap((entity: any) => {
-    // A durable user rejection must remove the entity from every downstream TranslationBrief
-    // projection, not merely from the visible voiceContext field.
+    // 用户明确拒绝过的实体，必须从 TranslationBrief 的每一个下游投影里移除，
+    // 而不只是从可见的 voiceContext 字段里去掉。
     if (!entity || entity.reviewStatus === 'rejected') return [];
     const aliases = Array.isArray(entity?.aliases) ? entity.aliases : [];
     const evidenceRefs = Array.isArray(entity.evidenceRefs) ? entity.evidenceRefs : [];
     const userConfirmedMapping = entity?.reviewStatus === 'confirmed' && ['user-confirmed', 'user-modified'].includes(String(entity?.confirmationSource || ''));
     const confirmedPersonMapping = entity?.kind === 'person' && userConfirmedMapping;
-    // Inferred identities still fail closed when a later-only alias appears. A confirmed person
-    // translation, however, is the canonical entry in 人物管理: keep it when its source name is
-    // already visible, and omit only aliases first revealed in later chapters.
+    // 推断出来的身份仍然失败关闭：只要出现仅在后面才露出的别名就不注入。
+    // 但用户确认过的人物译名是「人物管理」里的权威条目：只要其源名已经可见就保留，
+    // 只摘掉后面章节才首次揭示的别名。
     if (!confirmedPersonMapping && aliases.some((alias: unknown) =>
       !appearedBefore(alias) && !items.some((item) => sourceNameMatches(item.text, alias)))) {
       exclusionDiagnostics.memoryEntityExcludedFutureAlias++;
@@ -677,9 +676,9 @@ function filterVisibleEntities(
       if (!source || !sourceQuoteMatches(source.text, ref.sourceQuote) ||
           ![entity.source, ...aliases].some((name: unknown) => sourceNameMatches(ref.sourceQuote, name))) return false;
       const latestAcceptedTranslation = latestAcceptedTranslationBySegment.get(String(ref.segmentId));
-      // If this source segment has since been accepted/edited, an older candidate surface must
-      // not keep a corrected target promoted. When no accepted result exists yet, retain the
-      // validated in-run surface as provisional rather than treating it as human-reviewed.
+      // 如果这个源文片段此后已被采纳或编辑过，旧的候选面就不能继续把更正后的译名顶上去。
+      // 还没有已采纳结果时，保留本轮校验过的候选面作为暂定值，
+      // 而不是把它当成已人工审校的结果。
       if (latestAcceptedTranslation !== undefined &&
           !normalizedSourceText(latestAcceptedTranslation).includes(normalizedSourceText(ref.targetSurface))) {
         exclusionDiagnostics.targetEvidenceExcludedAfterAcceptedCorrection++;
@@ -689,8 +688,8 @@ function filterVisibleEntities(
     });
     const independentTargetEvidenceCount = new Set(visibleTargetEvidence.map((ref: any) => ref.segmentId)).size;
     const targetConfidence = independentTargetEvidenceCount >= 2 ? 'corroborated' : 'candidate';
-    // Dynamic candidates retain exact source and target evidence segments; source-name
-    // recognition alone is not enough to make the proposed target a forced canonical mapping.
+    // 动态候选会保留精确的源文与译文证据片段；单凭源名识别，
+    // 还不足以让提议的译名变成强制的规范映射。
     const evidenceVisible = explicitCanonicalMapping || (evidenceRefs.length
       ? priorEvidenceRefs.length > 0
       : sourceNameMatches(entity.evidence, entity.source) && appearsAsEarlierEvidence(entity.evidence));
@@ -735,8 +734,8 @@ function filterVisibleRelationships(
       return !!source && sourceQuoteMatches(source.text, ref.sourceQuote) &&
         sourceNameMatches(ref.sourceQuote, relation.subject) && sourceNameMatches(ref.sourceQuote, relation.object);
     });
-    // Relationship analysis is default-adopted. Keep only names already visible before this
-    // batch; evidence quality is retained as metadata and never asks the reader to approve it.
+    // 关系分析默认采纳。只保留本批次之前已经可见的名字；
+    // 证据质量作为元数据保留，绝不要求读者去批准它。
     return [{
       ...relation,
       reviewStatus: relation.reviewStatus === 'rejected' ? 'rejected' : 'confirmed',
@@ -757,8 +756,8 @@ function filterVisibleCharacterVoices(
   const { isPrior, appearedBefore, sourceById, firstOrdinal } = boundary;
   return (Array.isArray(profiles) ? profiles : []).flatMap((profile: any) => {
     const rawEvidence = Array.isArray(profile.evidence) ? profile.evidence : [];
-    // Legacy capped profiles may have lost the future-dated rows that contributed to voiceCore.
-    // A truncated aggregate is therefore not safe to partially reuse in an earlier chapter.
+    // 旧版的截断档案可能已经丢掉了那些贡献到 voiceCore 的未来日期行。
+    // 因此一个被截断的聚合结果，不能安全地在更早的章节里部分复用。
     const evidenceTruncated = profile.evidenceTruncated === true ||
       (profile.evidencePolicyVersion !== 'character-evidence-v2-complete' && rawEvidence.length >= 8);
     if (evidenceTruncated) {
@@ -770,12 +769,12 @@ function filterVisibleCharacterVoices(
       return !!source && Number(source.ordinal) >= firstOrdinal;
     });
     if (hasFutureEvidence) {
-      // Aggregate voiceCore may include later dialogue; never leak it into an earlier batch.
+      // 聚合出来的 voiceCore 可能包含后文对白；绝不把它漏进更早的批次。
       exclusionDiagnostics.characterVoiceExcludedFutureEvidence++;
       return [];
     }
-    // Partial or imperfect evidence lowers traceability, not adoption. Retain valid prior
-    // examples and use the model's current best profile instead of waiting for a click.
+    // 证据不完整或不完美只降低可追溯性，不影响是否采纳。保留有效的前文示例，
+    // 直接用模型当前的最佳档案，而不是等某个人点确认。
     const usableEvidence = rawEvidence.filter((item: any) => {
       if (!item || !isPrior(item.segmentId)) return false;
       const source = sourceById.get(item.segmentId);

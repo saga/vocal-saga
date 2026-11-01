@@ -20,7 +20,7 @@ export interface ProjectSegment {
   page?: number | null;
   level?: number;
   marker?: string;
-  /** EPUB spine href / original document part used to reconstruct the source layout. */
+  /** EPUB spine 的 href / 原始文档部件路径，用于重建源文版式。 */
   path?: string;
   start?: string;
   end?: string;
@@ -38,13 +38,13 @@ export function normalizeDocumentReviewStrength(input: unknown): DocumentReviewS
 }
 
 export interface DocumentTranslationStrategy {
-  /** Maximum source segments in one model request. */
+  /** 单个模型请求允许的最大源文片段数。 */
   maxBatchSegments: number;
-  /** Maximum source characters in one batch, excluding prompt/context overhead. */
+  /** 单个批次的源文字符上限，不含提示词与上下文开销。 */
   maxBatchSourceChars: number;
-  /** Requested concurrent initial-translation batches; capped by the actual provider pool. */
+  /** 期望的初译批并发数；实际上限由提供方会话池决定。 */
   translationConcurrency: number;
-  /** Requested concurrent reviewer jobs; capped by the actual provider pool. */
+  /** 期望的审校并发数；实际上限由提供方会话池决定。 */
   reviewConcurrency: number;
   /**
    * 审校强度。只有 strong 会真的占用 reviewConcurrency 个槽位。
@@ -54,11 +54,11 @@ export interface DocumentTranslationStrategy {
    * - off：不审校
    */
   reviewStrength: DocumentReviewStrength;
-  /** Number of earlier source segments offered for disambiguation, never translated again. */
+  /** 用于消歧的前文片段条数，这些片段不会被重新翻译。 */
   precedingContextSegments: number;
-  /** Soft character budget for optional historical accepted-translation examples in TranslationBrief. */
+  /** TranslationBrief 中可选历史已采纳示例的软字符预算。 */
   contextBudgetChars: number;
-  /** Total attempts for a batch, including the initial model request. */
+  /** 批次的总尝试次数，包含首次模型请求。 */
   maxModelAttempts: number;
 }
 
@@ -73,7 +73,7 @@ export const DEFAULT_DOCUMENT_TRANSLATION_STRATEGY: DocumentTranslationStrategy 
   maxModelAttempts: 2,
 };
 
-/** Validate UI/API values and preserve hard upper bounds even for hand-crafted API requests. */
+/** 校验界面/接口传入的值，对手工构造的请求也保住硬上限。 */
 export function normalizeDocumentTranslationStrategy(input: unknown): DocumentTranslationStrategy {
   const raw = input && typeof input === 'object' && !Array.isArray(input)
     ? input as Record<string, unknown>
@@ -118,8 +118,8 @@ export interface ProjectPrompt {
   literaryReview?: boolean;
   glossary?: unknown;
   translationStrategy?: Partial<DocumentTranslationStrategy>;
-  /** Immutable per-task CodeBuddy reasoning and supplemental prompt settings. */
+  /** 每个任务不可变的 CodeBuddy 推理与补充提示词设置。 */
   taskProfiles?: unknown;
-  /** Confirmed book entities/style memory included as read-only Agent context. */
+  /** 已确认的书籍实体与文风记忆，作为只读 Agent 上下文传入。 */
   literaryMemory?: unknown;
 }

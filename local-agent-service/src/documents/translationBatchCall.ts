@@ -78,12 +78,12 @@ function prepareBatchRequest(
 ): BatchRequest {
   const agent = parseAgentModel(context.run.model || 'auto', context.run.provider || 'workbuddy');
   const contextGraph = translationBrief?.contextGraph ?? null;
-  // Read the run-pinned memory for audit counts only. Canonical masking remains bound to the
-  // TranslationBrief snapshot used by buildUserPrompt and marker validation.
+  // 只为了审计计数才去读 Run 锁定的记忆。规范名掩码仍然绑定到
+  // buildUserPrompt 和标记校验所用的那份 TranslationBrief 快照。
   const memory = context.memory && typeof context.memory === 'object' ? context.memory as Record<string, any> : {};
-  // TranslationBrief is the single mapping snapshot for the model prompt, marker validation,
-  // and both Reviewers. Do not append unfiltered memory mappings here: that made the validator
-  // require markers that buildUserPrompt had never sent, turning otherwise valid segments into failures.
+  // TranslationBrief 是模型提示词、标记校验和两个 Reviewer 共用的唯一映射快照。
+  // 不要在这里追加未过滤的记忆映射：那会让校验器要求一些
+  // buildUserPrompt 从未发出去的标记，把本来合法的片段判成失败。
   const termProtections = context.run.translationMode === 'literary'
     ? buildCanonicalTermProtections(items, contextGraph, String(context.run.targetLang || 'zh'))
     : [];
@@ -174,8 +174,8 @@ function appendPromptAudit(
     contextGraphEntities: count((contextGraph as any)?.entities),
     contextGraphNameMappingCount: count((contextGraph as any)?.nameMappings),
     protectedCanonicalTermCount: termProtections.length,
-    // Compact names-only preview verifies that the glossary reached this batch without storing
-    // the full source text or full prompt in the event stream.
+    // 只留名字的紧凑预览，用来确认术语表确实到达了这个批次，
+    // 又不把完整源文或完整提示词写进事件流。
     contextGraphNameMappingPreview: (Array.isArray((contextGraph as any)?.nameMappings)
       ? (contextGraph as any).nameMappings : []).slice(0, 12).map((item: any) => ({
         source: typeof item?.source === 'string' ? item.source.slice(0, 120) : '',
@@ -252,10 +252,10 @@ async function requestTranslation(
 /**
  * 强规范译名标记校验：把丢失受保护标记的片段判为缺失，交给有界重试重取。
  *
- * A mapped source name was present, but the model dropped its protected token. Do not
- * persist a potentially inconsistent translation; leave this ID missing so the existing
- * bounded retry asks for this segment again. If the retry still drops the token, the
- * segment is explicitly failed instead of silently saving a wrong canonical name.
+ * 源文里确实出现了某个被映射的名字，但模型把它的受保护标记丢了。
+ * 不要落盘一份可能不一致的译文；把这个 ID 留空，让现有的有界重试
+ * 再来要这个片段。重试仍然丢标记，就把该片段显式标失败，
+ * 而不是悄悄存下一个错的规范名。
  */
 function acceptCanonicalTranslations(
   store: DocumentProjectStore,

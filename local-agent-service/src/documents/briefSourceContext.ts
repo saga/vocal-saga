@@ -14,7 +14,7 @@ export function normalizedSourceText(value: unknown): string {
 }
 
 /**
- * 中文：判断 quote 是否为 source 中的连续子串（归一化后），且引文长度至少 8 个字符。
+ * 判断 quote 是否为 source 中的连续子串（归一化后），且引文长度至少 8 个字符。
  * 用于证据引文的可验证性校验，防止短片段/伪造引用通过。
  */
 export function sourceQuoteMatches(source: unknown, quote: unknown): boolean {
@@ -33,7 +33,7 @@ const CANONICAL_ALIAS_STOPWORDS = new Set([
 ]);
 
 /**
- * 中文：对规范实体源名做进一步归一化：去掉冠词、所有格后缀与尾部标点，便于别名兼容性比较。
+ * 对规范实体源名做进一步归一化：去掉冠词、所有格后缀与尾部标点，便于别名兼容性比较。
  */
 function normalizedCanonicalSourceName(value: unknown): string {
   return normalizedSourceText(value).replace(/^(?:the|a|an)\s+/, '')
@@ -41,14 +41,14 @@ function normalizedCanonicalSourceName(value: unknown): string {
 }
 
 /**
- * 中文：判断源名是否为通用称谓（如 lord/general/captain），这类名称不应直接作为规范映射注入。
+ * 判断源名是否为通用称谓（如 lord/general/captain），这类名称不应直接作为规范映射注入。
  */
 export function isGenericCanonicalSourceName(value: unknown): boolean {
   return GENERIC_CANONICAL_SOURCE_FORMS.has(normalizedCanonicalSourceName(value));
 }
 
 /**
- * 中文：提取规范源名的身份 token（去除停用词），用于别名兼容性判断。
+ * 提取规范源名的身份 token（去除停用词），用于别名兼容性判断。
  */
 function canonicalSourceIdentityTokens(value: string): string[] {
   return normalizedCanonicalSourceName(value).replace(/['’]s\b/g, '')
@@ -56,7 +56,7 @@ function canonicalSourceIdentityTokens(value: string): string[] {
 }
 
 /**
- * 中文：判断 alias 是否与 source 在身份上兼容（token 有重叠/前缀关系）；非拉丁文本默认兼容。
+ * 判断 alias 是否与 source 在身份上兼容（token 有重叠/前缀关系）；非拉丁文本默认兼容。
  * 防止把属于他人的别名挂到当前实体上。
  */
 function isCompatibleCanonicalSourceAlias(source: string, alias: string): boolean {
@@ -70,7 +70,7 @@ function isCompatibleCanonicalSourceAlias(source: string, alias: string): boolea
 }
 
 /**
- * 中文：从别名输入中过滤掉通用称谓、与源名相同项及不兼容别名，按归一化文本去重。
+ * 从别名输入中过滤掉通用称谓、与源名相同项及不兼容别名，按归一化文本去重。
  */
 export function safeCanonicalSourceAliases(source: string, aliasesInput: unknown): string[] {
   const aliases = (Array.isArray(aliasesInput) ? aliasesInput : [])
@@ -86,7 +86,7 @@ const firstSourceOccurrenceCache = new Map<string, number>();
 const sourceRowsByRevision = new Map<string, Array<{ ordinal: number; text: string }>>();
 
 /**
- * 中文：按来源版本读取全部 source_segments（ordinal/text），带两版本 LRU 缓存。
+ * 按来源版本读取全部 source_segments（ordinal/text），带两版本 LRU 缓存。
  * 来源版本不可变，缓存可避免每个别名都重新扫描 SQLite。
  */
 function sourceRowsForRevision(db: any, revisionId: string): Array<{ ordinal: number; text: string }> {
@@ -111,7 +111,7 @@ function sourceRowsForRevision(db: any, revisionId: string): Array<{ ordinal: nu
 }
 
 /**
- * 中文：在指定来源版本中查找 term 首次出现的 ordinal（name 或 quote 匹配）。
+ * 在指定来源版本中查找 term 首次出现的 ordinal（name 或 quote 匹配）。
  * 结果缓存；用于时间边界判定（某名称/引文是否在当前批次之前已出现）。
  */
 export function firstMatchingSourceOrdinal(
@@ -142,7 +142,7 @@ export function firstMatchingSourceOrdinal(
 }
 
 /**
- * 中文：判断 name 是否作为完整词/子串出现在 source 中（拉丁名按词边界，非拉丁按子串）。
+ * 判断 name 是否作为完整词/子串出现在 source 中（拉丁名按词边界，非拉丁按子串）。
  */
 export function sourceNameMatches(source: unknown, nameInput: unknown): boolean {
   const sourceText = normalizedSourceText(source);

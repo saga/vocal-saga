@@ -91,9 +91,9 @@ export function buildProjectContextGraphBundle(
       '对人物身份、说话人、性别、关系或称谓存在不确定性时，采用当前最佳判断并保留来源，不等待人工确认；不得泄漏未来章节信息。',
     ],
   };
-  // Do not prune graph evidence to an arbitrary serialized-character ceiling. Preserve all
-  // temporally eligible, relevant mappings/entities/relationships/summaries; the request runtime
-  // should handle genuine provider context-window failures rather than silently changing evidence.
+  // 不要为了某个序列化字符上限去裁剪图谱证据。所有时间上合法、
+  // 且相关的映射/实体/关系/摘要都要保住；上下文窗口真的超了，
+  // 由请求运行时去处理，而不是在这里悄悄改证据。
   logBundleBuild(ctx, result, nameMappings, nameMappingDiagnostics, selectedNodes.length);
   const hasContent = selectedNodes.length || nameMappings.length || chapterSummaries.length ||
     graphNameMappingCount || normalize(result.styleGuide.narrativeStyle);
@@ -103,8 +103,8 @@ export function buildProjectContextGraphBundle(
 /**
  * 算出本批的知识边界并准备好所有判定函数。
  *
- * Fail closed at the start of the batch: a graph fact is eligible only when every stored
- * evidence segment precedes the first segment of this batch. The current source always wins.
+ * 批次开始时就失败关闭：一条图谱事实，只有它每条存储证据都早于本批次首段时才可用。
+ * 当前源文永远优先。
  */
 function createBundleContext(
   projectId: string,
@@ -165,7 +165,7 @@ function createBundleContext(
 /**
  * 已删除记忆的墓碑：显式删除必须在重新分析后继续生效。
  *
- * These compact tombstones prevent later model deltas from silently recreating deleted memory.
+ * 这些紧凑的墓碑记录，用来防止后续模型增量悄悄把已删除的记忆又造回来。
  */
 function readMemoryRejections(db: any): any[] {
   const currentMemoryRevision = db.prepare(
@@ -272,9 +272,9 @@ function selectVisibleNodes(ctx: BundleContext): {
 /**
  * 节点投影：只保留能自证「本批之前已出现」的字段。
  *
- * Only aliases whose canonical spelling has appeared before this batch are safe.
- * Do not inject free-text role/traits/significance/suggested translations from book-wide
- * analysis: those fields may encode a later identity reveal despite an earlier citation.
+ * 只有规范拼写在本批次之前已经出现过的别名才是安全的。
+ * 不要把全书分析里的自由文本字段（角色、特质、重要性、建议译名）注入进来：
+ * 这些字段即使挂着更早的引文，也可能写着后面才揭示的身份。
  */
 function toSelectedAttributes(ctx: BundleContext, item: { row: any; attributes: any }): Record<string, unknown> {
   return {
@@ -299,8 +299,8 @@ function toSelectedAttributes(ctx: BundleContext, item: { row: any; attributes: 
 /**
  * 两端都在本批可见节点内的关系；且必须有一条证据同时提到两端。
  *
- * A coarse association marker carries less semantic information than full-book relation
- * descriptions/voice rules; those free-text fields have no per-claim temporal citations.
+ * 粗粒度的关联标记所携带的语义信息，少于全书级的关系描述与声音规则；
+ * 后者那些自由文本字段并没有逐条主张的时间出处。
  */
 function selectVisibleRelationships(ctx: BundleContext, selectedNodes: MatchedNode[]): any[] {
   const { db, revisionId, knowledgeBoundary } = ctx;
@@ -349,8 +349,8 @@ function selectVisibleRelationships(ctx: BundleContext, selectedNodes: MatchedNo
 /**
  * 章节摘要：前几章只给完整摘要，当前章节只给「本批之前」的前缀摘要。
  *
- * Only complete summaries for previous chapters are eligible. A full summary of the current
- * chapter can include its final paragraph, which is future context when translating early batches.
+ * 只有此前各章的完整摘要才可用。当前章的完整摘要可能把它最后一段也包含进来，
+ * 而翻译早批次时那一段属于未来上下文。
  */
 function selectChapterSummaries(ctx: BundleContext): { currentChapter: string; chapterSummaries: any[] } {
   const { db, revisionId, items, firstOrdinal } = ctx;
@@ -389,11 +389,10 @@ function selectChapterSummaries(ctx: BundleContext): { currentChapter: string; c
 /**
  * 规范人名映射：整本书的译名只有在「本批或前文已出现该源名」时才可作为术语表暴露。
  *
- * Canonical proper-name mappings are a special, non-narrative part of the graph. A name
- * and its target translation may be reused as a glossary even when the supporting quote is
- * later in the book; only mappings whose canonical source name is already visible in the
- * current/preceding source are exposed. No future aliases, role descriptions, relationships,
- * or plot facts are included here.
+ * 规范专名映射是图谱里特殊的一部分，不属于叙事内容。一个名字和它的目标译名
+ * 即使支撑引文位于全书靠后位置，也可以当作术语表复用；但只暴露那些规范源名
+ * 已经在当前或前文源文中出现的映射。这里不包含任何未来别名、角色描述、
+ * 关系或情节事实。
  */
 function buildNameMappings(ctx: BundleContext): {
   nameMappings: any[];
@@ -404,11 +403,11 @@ function buildNameMappings(ctx: BundleContext): {
   const namesInContext = sourceText;
   const appearsInContext = (value: unknown): boolean =>
     nameAppearsIn(value, namesInContext);
-  // Only earlier accepted translations can corroborate a character's proposed target.
-  // This gate prevents a book-wide target from revealing an identity disclosed in later chapters.
-  // Character targets can reveal identities disclosed later in the book. This is a temporal
-  // knowledge boundary, not a human approval gate: use the model-default target once an earlier
-  // accepted translation has established it, but do not leak later identity reveals backwards.
+  // 只有更早的已采纳译文才能佐证某个人物提议的译名。
+  // 这道闸门防止全书级的目标译名泄露后文才揭示的身份。
+  // 人物译名可能泄露书后段才公开的身份。这是时间知识边界，不是人工审批关卡：
+  // 一旦更早的已采纳译文确立了某个译法，就直接采用模型默认值，
+  // 但绝不允许把后面的身份揭示倒灌回来。
   const priorAcceptedTranslations = db.prepare(
     'SELECT s.segment_id AS segmentId, s.text AS source, s.ordinal, tr.translation_text AS target ' +
     'FROM translation_results tr JOIN source_segments s ' +
@@ -439,9 +438,8 @@ function buildNameMappings(ctx: BundleContext): {
     ? ' OR s.segment_id IN (' + currentBatchSegmentIds.map(() => '?').join(',') + ')'
     : '';
   const nameMappings = graphNameRows.flatMap((row) => {
-    // A model-generated alias alone cannot reveal a canonical identity whose formal name first
-    // appears later. Only expose generated graph mappings when the canonical source name itself
-    // is visible in the current or preceding source.
+    // 光有模型生成的别名，不能揭示一个正式名到后面才出现的规范身份。
+    // 只有当规范源名本身在当前或前文源文中可见时，才暴露生成的图谱映射。
     if (!appearsInContext(row.name)) {
       nameMappingDiagnostics.graphNameMappingExcludedNameNotVisible++;
       return [];
@@ -476,9 +474,9 @@ function buildNameMappings(ctx: BundleContext): {
       nameMappingDiagnostics.graphNameMappingExcludedTargetLanguage++;
       return [];
     }
-    // The first-use target for a character remains provisional until an earlier accepted
-    // translation establishes that rendering. This prevents full-book analysis from revealing a
-    // later identity twist in an earlier chapter; it never asks the reader to click approval.
+    // 人物的首次出现译名，在更早的已采纳译文确立该译法之前都只是暂定的。
+    // 这防止全书分析把后文的身份反转提前泄露到前面的章节；
+    // 它从不要求读者去点确认。
     const entityKind = String(attributes.entityKind || '').toLocaleLowerCase();
     const characterLike = row.kind === 'character' ||
       ['person', 'character', 'character_epithet', 'nickname'].includes(entityKind);
@@ -490,7 +488,7 @@ function buildNameMappings(ctx: BundleContext): {
         return [];
       }
     }
-    // Do not read evidence from later batches, and never import future aliases or plot facts.
+    // 不读后续批次的证据，也绝不引入未来的别名或情节事实。
     const visibleEvidence = db.prepare(
       'SELECT e.quote, e.segment_id AS segmentId, s.ordinal FROM context_graph_evidence e ' +
       'JOIN source_segments s ON s.source_revision_id = e.source_revision_id AND s.segment_id = e.segment_id ' +
@@ -502,8 +500,8 @@ function buildNameMappings(ctx: BundleContext): {
     }
     const allAliases = uniqueStrings(attributes.aliases, 12, 100)
       .filter((alias) => normalize(alias) !== normalize(row.name));
-    // Do not leak aliases that appear only in later chapters. An alias visible in the current
-    // batch is already part of the source being translated and must not suppress the mapping.
+    // 不要泄露只在后面章节才出现的别名。别名若在本批次里可见，
+    // 它已经是正在翻译的源文的一部分，不能因此把整条映射压掉。
     if (allAliases.some((alias) => !ctx.appearedBefore(alias) && !appearsInContext(alias))) {
       nameMappingDiagnostics.graphNameMappingExcludedAliasBoundary++;
       return [];
@@ -517,7 +515,7 @@ function buildNameMappings(ctx: BundleContext): {
       aliases,
       evidenceBacked: true,
       explicitBookSpecificMeaning: attributes.bookSpecificMeaning === true,
-      // This preflight choice is deterministic within this Run but is not persisted as user-confirmed.
+      // 这个预选在本 Run 内是确定性的，但不会落库为用户确认。
       sourceStatus: explicitUserConfirmation ? 'confirmed' : 'run-canonical',
       confirmationSource: explicitUserConfirmation ? 'user-confirmed' : 'model-default',
     }];

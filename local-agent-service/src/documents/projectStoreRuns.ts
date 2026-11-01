@@ -57,7 +57,7 @@ export function createRun(store: DocumentProjectStore, projectId: string, input:
   const manuallyAcceptedIds = new Set(acceptedRows
     .filter((row) => row.origin === 'manual' && row.source_hash === currentHashById.get(row.segment_id))
     .map((row) => row.segment_id));
-  // Failed rows are valid only for the source revision and exact source hash that failed.
+  // 失败行只对「失败的那个源文版本 + 那个确切的源文哈希」有效。
   const failedRows = db.prepare(
     "SELECT rs.segment_id FROM run_segments rs " +
     "JOIN translation_runs r ON r.run_id = rs.run_id " +
@@ -82,16 +82,16 @@ export function createRun(store: DocumentProjectStore, projectId: string, input:
     const accepted = latestAccepted.get(segment.segment_id);
     return !accepted || accepted.source_hash !== segment.source_hash || (accepted.origin !== 'manual' && accepted.run_fingerprint !== runFingerprint);
   });
-  // Do not gate literary Runs at creation time. Persist the queued Run first so executeRun
-  // can start/await Context Graph preprocessing and record its durable status/events.
-  // The worker is the single authority for source revision, analysis version and language checks.
+  // 不要在创建 Run 时就拦截文学 Run。先把排队的 Run 落盘，这样 executeRun
+  // 才能启动或等待 Context Graph 预处理，并记录它的持久状态与事件。
+  // 源文版本、分析版本和语言检查，只有 worker 说了算。
   const runId = randomUUID();
   const createdAt = isoNow();
   db.exec('BEGIN IMMEDIATE');
   try {
-    // The immutable Run snapshot was assembled before acquiring the write lock. Revalidate
-    // its source/memory (and the implicit latest Prompt) under the lock so a concurrent edit
-    // cannot make a newly-created Run silently pin stale project state.
+    // 不可变的 Run 快照是在拿写锁之前组装的。拿到锁后要重新校验它的
+    // 源文与记忆（以及隐含的最新 Prompt），否则一次并发编辑会让刚建好的 Run
+    // 悄悄钉住过期的项目状态。
     const lockedSource = db.prepare("SELECT value FROM project_meta WHERE key = 'current_source_revision_id'").get() as { value?: string } | undefined;
     const lockedMemory = db.prepare("SELECT value FROM project_meta WHERE key = 'current_literary_memory_revision_id'").get() as { value?: string } | undefined;
     if (lockedSource?.value !== sourceRevisionId || (lockedMemory?.value || null) !== literaryMemoryRevisionId) {
@@ -126,8 +126,8 @@ export function createRun(store: DocumentProjectStore, projectId: string, input:
     parentRunId: input.parentRunId || null,
     plannedSegments: selected.length,
     sourceRevisionId,
-    // Persist the mode actually used by the server. This makes accidental frontend
-    // downgrades to "technical" visible in the Agent trajectory.
+    // 落盘实际生效的模式。这样前端万一被「降级」成 technical，
+    // 在 Agent 轨迹里能看出来。
     translationMode: config.translationMode || 'technical',
     literaryReview: Boolean(config.literaryReview),
     literaryMemoryCounts: {
@@ -229,8 +229,8 @@ export function setRunStatus(store: DocumentProjectStore, projectId: string, run
       db.exec('ROLLBACK');
       return true;
     }
-    // Cancellation and completion are immutable terminal states. A delayed worker, resume
-    // request or stale route snapshot must never move them back to running/queued.
+    // 取消与完成都是不可变的终态。迟到的 worker、恢复请求或过期的路由快照，
+    // 绝不能把它们改回 running/queued。
     if (['cancelled', 'completed'].includes(String(current.status))) {
       db.exec('ROLLBACK');
       return false;
@@ -391,7 +391,7 @@ export function runSummary(store: DocumentProjectStore, db: DatabaseSync, row: a
 }
 
 /**
- * 返回 Run 的不可变片段成员列表，不加载原文/译文正文。 / Return the immutable segment membership of a Run without loading source/translation bodies.
+   * 返回 Run 的不可变片段成员列表，不加载原文或译文正文。
  */
 export function getRunSegmentIds(store: DocumentProjectStore, projectId: string, runId: string): string[] {
   const { db } = store.getProjectContext(projectId);
@@ -416,9 +416,9 @@ export function getRunSegmentsForExecution(store: DocumentProjectStore, projectI
 }
 
 /**
- * Fetch a few preceding source segments for dialogue/reference resolution.
- * The rows always belong to the same immutable source revision as this run.
- * They are context only: callers must never create run_segments or output ids for them.
+ * 取若干前置源文片段，用于解析对白与指代。
+ * 这些行永远属于本次 Run 锁定的同一个不可变源文版本。
+ * 它们只是上下文：调用方绝不能为它们创建 run_segments 或输出 id。
  */
 export function getPrecedingSegments(store: DocumentProjectStore, projectId: string, runId: string, firstSegmentId: string, limit = 4): any[] {
   const { db } = store.getProjectContext(projectId);
@@ -480,7 +480,7 @@ export function getEvents(store: DocumentProjectStore, projectId: string, runId?
   const db = store.openProjectDb(projectId);
   const maxLimit = latest && after <= 0 ? 5000 : 1000;
   const boundedLimit = Math.max(1, Math.min(maxLimit, Math.floor(limit)));
-  // Show recent activity on an old project first. Follow-up polling uses after=eventId.
+  // 老项目优先显示最近活动。后续轮询用 after=eventId。
   const rows = latest && after <= 0
     ? runId
       ? db.prepare('SELECT * FROM (SELECT * FROM project_events WHERE run_id = ? ORDER BY event_id DESC LIMIT ?) ORDER BY event_id').all(runId, boundedLimit)

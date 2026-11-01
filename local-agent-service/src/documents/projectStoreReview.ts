@@ -13,9 +13,6 @@ import { type DocumentProjectStore } from './projectStore.ts';
 /**
  * 原子提交一个模型批次的候选译文与审校发现，仅在 Run 活动时允许。
  * 状态检查与所有写入共享 BEGIN IMMEDIATE，防止取消/暂停请求在检查与迟到写入之间交错。
- * English note: Atomically commit one model batch only while the Run is active.
- * The status check and all candidate writes share BEGIN IMMEDIATE so a cancel/pause
- * request cannot interleave between the caller's check and a late candidate insert.
  */
 export function saveCandidates(store: DocumentProjectStore, projectId: string, runId: string, items: Array<{ segmentId: string; text: string }>, reviewFindings: Array<{ segmentId: string; finding: any }> = []): boolean {
   if (!Array.isArray(items) || items.length > 1000 ||
@@ -132,9 +129,6 @@ export function saveFinding(store: DocumentProjectStore, projectId: string, runI
 /**
  * 仅在对应双语准确性审校返回完整结果后，标记中文单语编辑提案。
  * 最终经验证的候选替换预审提案，避免用户应用过期的中间编辑。
- * English note: Mark source-blind Chinese editing proposals only after the corresponding bilingual
- * accuracy review has returned a complete result. The final verified candidate replaces
- * the pre-review proposal so the user never applies a stale intermediate edit.
  */
 export function markChineseEditorialFindingsReviewed(store: DocumentProjectStore, projectId: string, runId: string, results: Array<{ segmentId: string; status: 'verified' | 'corrected' | 'reverted'; proposedTranslation: string }>): boolean {
   if (!Array.isArray(results) || results.length > 1000) {
@@ -181,9 +175,9 @@ export function markChineseEditorialFindingsReviewed(store: DocumentProjectStore
       for (const row of rows) {
         const finding = parseJson<any>(row.finding_json, {});
         if (finding.editorialMode !== 'chinese-monolingual' || !row.candidate_result_id) continue;
-        // The bilingual reviewer has verified this exact target-language edit against the source.
-        // Update only this Run's unaccepted candidate; the final acceptance transaction still
-        // protects newer manual edits and source revisions.
+        // 双语审校对这条目标语改动本身做了核对。
+        // 这里只更新本次 Run 中尚未采纳的候选；最终的采纳事务仍然会
+        // 保护更新的手工编辑和源文版本。
         const candidate = updateCandidate.run(
           item.proposedTranslation, row.candidate_result_id, runId, row.source_hash,
         );
@@ -224,8 +218,6 @@ export function markChineseEditorialFindingsReviewed(store: DocumentProjectStore
 
 /**
  * 采纳或驳回可选文风建议。采纳是显式用户决策，仅当建议仍针对当前原文时才记录新的已采纳人工译文。
- * English note: Apply or dismiss an optional style proposal. Applying is an explicit user decision and
- * records a new accepted manual translation only when the finding still targets the current source.
  */
 export function setReviewFindingDisposition(store: DocumentProjectStore, projectId: string, runId: string, findingId: number, action: 'apply' | 'dismiss'): any {
   const db = store.openProjectDb(projectId);
@@ -233,8 +225,8 @@ export function setReviewFindingDisposition(store: DocumentProjectStore, project
   let result: any;
   let statusEvent: { status: RunStatus; error: string | null } | null = null;
 
-  // Source revision, finding state, latest accepted text and disposition must be decided under
-  // one write lock. Checking any of these before BEGIN IMMEDIATE leaves a cross-tab overwrite race.
+  // 源文版本、发现状态、最新已采纳文本和处理决定，必须在同一把写锁下判定。
+  // 在 BEGIN IMMEDIATE 之前检查其中任何一项，都会留下跨标签页覆盖的竞态。
   db.exec('BEGIN IMMEDIATE');
   try {
     const { currentSourceRevisionId } = store.getProjectContext(projectId);
@@ -291,8 +283,8 @@ export function setReviewFindingDisposition(store: DocumentProjectStore, project
         throw Object.assign(new Error('原文片段已变化，拒绝应用基于旧文本生成的文风建议'), { status: 409 });
       }
 
-      // Reject any translation accepted after this finding was created, not just a manual edit.
-      // This catches a later Agent run accepted in another tab as well as later user corrections.
+      // 这条发现创建之后被采纳的任何译文都要拒绝，不只是手工编辑。
+      // 这样能同时拦住另一个标签页里之后跑完的 Agent 结果，以及用户后来的修正。
       const latestAccepted = db.prepare(
         'SELECT origin, COALESCE(accepted_at, created_at) AS accepted_at FROM translation_results ' +
         'WHERE source_revision_id = ? AND segment_id = ? AND source_hash = ? AND accepted = 1 ' +
@@ -387,7 +379,7 @@ export function acceptCandidates(store: DocumentProjectStore, projectId: string,
   let finalStatus: RunStatus = 'completed';
   let terminalError: string | null = null;
 
-  // The Run-state guard, candidate selection and acceptance writes share one write lock.
+  // Run 状态校验、候选选取与采纳写入共用同一把写锁。
   db.exec('BEGIN IMMEDIATE');
   try {
     const run = db.prepare('SELECT status, error, source_revision_id FROM translation_runs WHERE run_id = ?').get(runId) as { status?: string; error?: string | null; source_revision_id?: string } | undefined;
@@ -448,8 +440,8 @@ export function acceptCandidates(store: DocumentProjectStore, projectId: string,
       if (run.status !== 'paused') {
         throw Object.assign(new Error('运行仍包含待处理或执行中的片段，拒绝结束采纳事务。'), { status: 409 });
       }
-      // A user may accept already-completed candidates while a Run is paused, but this must
-      // never convert that partially finished Run to completed or awaiting_acceptance.
+      // 用户可以在 Run 暂停期间采纳已完成的候选，但这绝不能
+      // 把这个只做了一半的 Run 变成 completed 或 awaiting_acceptance。
       finalStatus = 'paused';
       terminalError = run.error ?? null;
     } else if (candidates > 0) {
@@ -499,9 +491,9 @@ export function importAcceptedTranslations(store: DocumentProjectStore, projectI
   const config = parseJson<any>(promptRow.config_json, {});
   const currentMemory = store.getCurrentLiteraryMemory(projectId);
   const currentRunFingerprint = store.makeRunFingerprint(projectId, currentSourceRevisionId, promptRow, config, currentMemory.fingerprint || null);
-  // Legacy Reader/IndexedDB text carries no pipeline-version provenance. In literary mode it
-  // cannot be treated as if it had passed the current glossary enforcement and Reviewer path.
-  // Keep it visible for recovery, but mark it stale so a Project Run can regenerate it safely.
+  // 旧版 Reader/IndexedDB 文本不带流水线版本出处。在文学模式下，
+  // 不能把它当成已经过当前术语强制与 Reviewer 流程的产物。
+  // 保留可见以便恢复，但标记为过期，让 Project Run 能安全重生成。
   const runFingerprint = config.translationMode === 'literary'
     ? 'legacy-literary-import:' + currentRunFingerprint
     : currentRunFingerprint;

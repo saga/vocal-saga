@@ -1,14 +1,8 @@
 /**
- * 中文：文学声音记忆的有界检索器。
+ * 文学声音记忆的有界检索器。
  *
  * 扩展负责编辑/合并 UX；本地 Agent 服务仍把传入记忆视为不可信数据，保持有界不可变修订，
  * 并为每批只选择相关的已确认规则。绝不会把该材料放入 contextPath 或当作可执行 prompt。
- * English:
- * Bounded retrieval for literary voice memory.
- *
- * The extension owns editing/merge UX; the Local Agent service still treats incoming memory as
- * untrusted data, keeps a bounded immutable revision, and selects only relevant confirmed rules
- * for each batch. It never places this material in contextPath or treats it as executable prompt.
  *
  * 清洗器（literaryMemorySanitize）与基础件（literaryNormalizers）分别在同目录的模块里；
  * 本文件只回答「这一批该注入什么」。
@@ -33,8 +27,8 @@ export function buildProjectVoiceContext(
   precedingSegments: ProjectVoiceContextSegment[] = [],
 ): Record<string, unknown> {
   const memory = sanitizeProjectLiteraryMemory(memoryInput);
-  // The caller applies the configured temporal boundary. Do not impose a second, smaller
-  // fixed window here: every supplied preceding segment may resolve a voice or relationship.
+  // 时间边界由调用方决定。不要在这里再套一个更小的固定窗口：
+  // 每个传进来的前文片段都可能解开某条声音规则或人物关系。
   const visiblePreceding = precedingSegments;
   const source = [...visiblePreceding, ...segments].map((item) => item.text).join('\n').toLocaleLowerCase();
   const precedingById = new Map(visiblePreceding.map((item) => [item.id, item]));
@@ -68,8 +62,8 @@ export function buildProjectVoiceContext(
 }
 
 /**
- * Recover known participants from source-linked approved anchors and relationship rules.
- * This is evidence-based scene continuity, not a best-guess speaker classifier.
+ * 从与源文挂钩的已认可锚点和关系规则里，还原已知的在场人物。
+ * 这是基于证据的场景连续性，不是靠猜的说话人分类器。
  */
 function collectDialogueParticipants(
   memory: Record<string, any>,
@@ -128,7 +122,7 @@ function collectDialogueParticipants(
 
 /**
  * 只注入有检索证据的画像：当前原文的名称命中，或由来源关联的对白锚点/关系规则推出的在场者。
- * Confirmation/confidence rank an eligible profile; they are not retrieval evidence.
+ * 确认来源与置信度只用来给合格档案排序；它们本身不是检索证据。
  */
 function selectVisibleProfiles(profiles: any[], source: string, participantScore: Map<string, number>): any[] {
   const hasDirectNameMatch = (profile: any) =>
@@ -142,7 +136,7 @@ function selectVisibleProfiles(profiles: any[], source: string, participantScore
     return direct + participant + confirmed + confidence;
   };
   return profiles
-    // A profile needs a direct source-name hit or a source-linked participant attribution.
+    // 一个档案要么直接命中了源文里的名字，要么有与源文挂钩的参与者归属。
     .filter((profile: any) => hasDirectNameMatch(profile) || (participantScore.get(profile.characterId) || 0) > 0)
     .sort((a: any, b: any) => scoreProfile(b) - scoreProfile(a));
 }
@@ -205,7 +199,7 @@ function selectVisibleRelationships(memory: Record<string, any>, names: Set<stri
     (names.has(normalizeEntityName(relation.subject)) && names.has(normalizeEntityName(relation.object))))
     .map((relation: any) => ({
       ...relation,
-      // Model-default relationships are active continuity hints, not user-verified plot facts.
+      // 模型默认的关系是活动中的连续性提示，不是用户核实过的情节事实。
       confidence: ['user-confirmed', 'user-modified'].includes(String(relation.confirmationSource || ''))
         ? 'user-confirmed' : 'candidate',
     }));
@@ -214,8 +208,8 @@ function selectVisibleRelationships(memory: Record<string, any>, names: Set<stri
 /**
  * 章节摘要：只在能可靠识别当前章节时注入，且不越过当前章节。
  *
- * Chapter summaries are durable book context, but should not grow into a full-book prompt
- * or leak later chapters into the current one.
+ * 章节摘要是持久的书籍上下文，但不该膨胀成整本书的提示词，
+ * 也不能把后续章节漏进当前章。
  */
 function selectChapterSummaries(memory: Record<string, any>, chapterTitle?: string): any[] {
   const summaries = memory.chapterSummaries as Array<{ chapter: string; summary: string }>;
@@ -298,8 +292,8 @@ function buildVoiceContextPayload(input: {
 /**
  * 记录各段体积（只记字符数，不记内容），便于把异常膨胀的上下文归因到具体段。
  *
- * Keep all relevant, temporally eligible context. Prompt-size heuristics must not
- * remove character profiles, evidence, anchors, relationships, or chapter summaries.
+ * 保留所有相关、且时间上合法的上下文。提示词体积启发式不得
+ * 删掉人物档案、证据、锚点、关系或章节摘要。
  */
 function logVoiceContextSizes(result: Record<string, any>): void {
   const sectionChars: Record<string, number> = {};

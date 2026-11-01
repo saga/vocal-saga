@@ -1,11 +1,11 @@
 /**
- * Declarative Context Graph workflow used by strategy B.
+ * B 方案使用的声明式 Context Graph 工作流。
  *
- * A is the existing single structured-output call (control group).
- * B runs independently checkpointed turns; stages in the same dependency wave run in parallel,
- * each branch keeps its own persistent CodeBuddy session (a branch may continue its parent
- * stage's session when it depends on it, so the sample payload is not resent).
- * SQLite checkpoints, not the model session, are the source of truth for completed work.
+ * A 是现有的单次结构化输出调用（对照组）。
+ * B 跑的是各自独立打检查点的轮次；同一依赖波次里的阶段并行执行，
+ * 每个分支保留自己持久的 CodeBuddy 会话（分支依赖父阶段时可以继续父阶段的会话，
+ * 所以样本文本不必重发）。
+ * 已完成工作的权威来源是 SQLite 检查点，不是模型会话。
  */
 export const CONTEXT_GRAPH_WORKFLOW_VERSION = 'context-graph-workflow-v2-canonical-entity-quality';
 
@@ -112,7 +112,6 @@ function compactPriorOutputs(stageId: ContextGraphWorkflowStageId, prior: Record
   return compact;
 }
 
-/** Build a stage-scoped prompt. Persistent sessions reuse the initial source/sample payload instead of resending it. */
 /**
  * 构造阶段限定的 Prompt：持久化 session 时复用已有样本 payload，仅发送增量指令与前序压缩结果。
  */
@@ -138,7 +137,6 @@ export function buildContextGraphWorkflowPrompt(
   return parts.filter(Boolean).join('\n\n');
 }
 
-/** Return a schema containing only this stage's fields, all of which are required by structured output. */
 /**
  * 从完整分析 schema 中裁剪出当前阶段所需的字段子 schema，所有字段 required。
  */
@@ -158,14 +156,6 @@ export function buildContextGraphWorkflowSchema(
   };
 }
 
-/**
- * Strategy selection.
- *
- * B is the default: its stages are checkpointed and now run in dependency waves, so it finishes
- * roughly twice as fast as A and shows per-stage progress. A is a single monolithic call that
- * produces ~42K output tokens in one turn with no intermediate progress, so it is kept only as
- * an explicit control/fallback via `LOCAL_AGENT_CONTEXT_GRAPH_STRATEGY=a`.
- */
 /**
  * 策略选择：mode 显式为 'a' 时用单体 A，否则默认 B（分阶段并行+checkpoint）。
  */

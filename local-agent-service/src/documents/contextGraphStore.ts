@@ -42,8 +42,8 @@ export function allSourceSegments(db: any, revisionId: string): Array<{ ordinal:
     sourceSegmentsByRevision.set(revisionId, cached);
     return cached;
   }
-  // Revisions are immutable. Cache at most two full source indexes so temporal name checks
-  // never rely on SQLite's punctuation-sensitive instr() prefilter for every candidate name.
+  // 版本是不可变的。最多缓存两份完整源文索引，这样做时间性名字检查时，
+  // 不必对每个候选名都依赖 SQLite 那个对分词敏感的 instr() 预过滤。
   const rows = db.prepare(
     'SELECT ordinal, text FROM source_segments WHERE source_revision_id = ? ORDER BY ordinal'
   ).all(revisionId) as Array<{ ordinal: number; text: string }>;
@@ -115,8 +115,8 @@ function hasQuote(source: string, quote: string): boolean {
  * 防止翻译过程中图谱版本发生未记录的漂移。
  */
 export function assertNoActiveTranslation(projectId: string, db: DatabaseSync, ignoreQueuedRunId?: string): void {
-  // The worker may prepare Context Graph before moving its own Run from queued to running.
-  // Ignore only that exact queued Run; all other active translations still block graph mutation.
+  // worker 可能先准备好 Context Graph，再把自己的 Run 从 queued 挪到 running。
+  // 只忽略这一个确切的 queued Run；其它活动中的翻译仍然挡住图谱改写。
   const active = ignoreQueuedRunId
     ? db.prepare(
         "SELECT run_id FROM translation_runs WHERE status IN ('queued','running','paused','awaiting_acceptance','partial') " +
@@ -274,7 +274,7 @@ export function readRunProgress(db: DatabaseSync, runId: string): ContextGraphRu
   } catch { return {}; }
 }
 
-/** Merge a durable checkpoint into progress_json without deleting strategy or earlier stage results. */
+/** 把一份持久检查点合并进 progress_json，但不删除 strategy 或更早阶段的既有结果。 */
 export function patchRunProgress(db: DatabaseSync, runId: string, patch: Record<string, unknown>): ContextGraphRunProgress {
   const next = { ...readRunProgress(db, runId), ...patch };
   db.prepare('UPDATE context_graph_runs SET progress_json = ? WHERE run_id = ?').run(JSON.stringify(next), runId);
@@ -424,10 +424,10 @@ export function nodeId(revisionId: string, kind: string, name: string): string {
 }
 
 /**
- * Remove replaceable model-generated graph records before a fresh analysis.
- * Explicitly rejected and user-confirmed records survive. A model-default node referenced by a
- * surviving user edge is retained as well; otherwise reanalysis would leave a dangling decision.
- * The caller owns the surrounding SQLite transaction.
+ * 新一轮分析之前，先移掉可替换的模型生成图谱记录。
+ * 显式被拒绝的、以及用户确认过的记录会留下。被现存用户边引用的
+ * 模型默认节点也保留；否则重新分析会留下悬空的决策。
+ * 外层 SQLite 事务由调用方负责。
  */
 export function clearReplaceableModelGeneratedContextGraphItems(db: DatabaseSync, revisionId: string): void {
   const replaceableEdge = "(status = 'candidate' OR (status = 'confirmed' AND COALESCE(json_extract(attributes_json, '$.adoptionSource'), '') = 'model-default'))";
@@ -542,8 +542,8 @@ export function contextGraphCandidateDisposition(
   persistedCount: number,
   limit: number,
 ): ContextGraphCandidateDisposition {
-  // Evidence must be valid before a candidate consumes the quota. This prevents invalid
-  // early model outputs from crowding out later source-grounded characters and entities.
+  // 证据必须先有效，候选才能占用配额。这样能防止靠前的无效模型输出
+  // 挤掉后面真正有源文支撑的人物与实体。
   if (!Number.isFinite(evidenceCount) || evidenceCount <= 0) return 'no-evidence';
   if (persistedCount >= Math.max(0, Math.floor(limit))) return 'valid-limit';
   return 'persist';
@@ -558,9 +558,9 @@ export function selectRecentPriorChapterSummaries(
   currentIndex: number,
 ): Array<{ chapter: string; summary: string; summaryKind: string }> {
   if (!Number.isInteger(currentIndex) || currentIndex < 0) return [];
-  // Complete summaries are useful continuity context, but older chapters dilute the active
-  // scene and grow every downstream translator/reviewer prompt. The current chapter is handled
-  // separately by an extractive prefix summary bounded to the current batch ordinal.
+  // 完整摘要对连续性有用，但更早的章节会冲淡当前场景，
+  // 还让下游每个译者、审校的提示词越滚越大。当前章由另一条路径处理：
+  // 以当前批次 ordinal 为界做抽取式前缀摘要。
   return chapterRows.slice(Math.max(0, currentIndex - 2), currentIndex).map((chapter) => ({
     chapter: chapter.chapter_title,
     summary: String(chapter.summary),

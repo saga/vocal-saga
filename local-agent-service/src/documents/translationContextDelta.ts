@@ -114,8 +114,8 @@ function sourceEvidence(raw: unknown, sourceById: Map<string, string>, minimumLe
 function hasName(source: string, name: string): boolean {
   const value = normalized(name);
   if (!value) return false;
-  // Name candidates require explicit evidence. Avoid treating short Latin names as substrings
-  // inside ordinary words while retaining natural CJK matching.
+  // 人名候选必须有明确证据。既要避免把短拉丁名当成普通单词里的子串，
+  // 又要保留 CJK 的自然匹配方式。
   if (/^[a-z0-9 .'-]+$/i.test(value)) {
     const paddedSource = ' ' + normalized(source).replace(/[^a-z0-9]+/g, ' ').trim() + ' ';
     const paddedName = ' ' + value.replace(/[^a-z0-9]+/g, ' ').trim() + ' ';
@@ -216,17 +216,17 @@ function validateEntityCandidates(
       diagnostics.rejectedEntityCandidates++;
       continue;
     }
-    // A compound source name expands into one candidate per part; the parts must pair up with
-    // a same-length target list. Anything else is a malformed mapping rather than a name list.
+    // 复合源名会按各组成部分展开成候选；拆出的部分必须与等长的目标列表一一配对。
+    // 长度对不上属于畸形映射，而不是一组名字。
     const expansion = expandEntityCandidate(parsed, idPrefix);
     if (!expansion) {
       diagnostics.rejectedEntityCandidates++;
       diagnostics.rejectedCompoundEntityCandidates++;
       continue;
     }
-    // The original local ID refers to the whole list and is ambiguous after splitting.
-    // Do not silently bind its entity mentions to the first element; mentions must identify
-    // one split source by canonical name or be rejected by the normal evidence checks.
+    // 原来的本地 ID 指向整条列表，拆开之后就有歧义了。
+    // 不要悄悄把它的实体提及绑到第一个元素上；提及要么用规范名指明拆出的某个源，
+    // 要么被常规证据检查拒掉。
     if (expansion.wholeLocalId) localIds.set(parsed.originalLocalId, expansion.wholeLocalId);
     seenLocalIds.add(parsed.originalLocalId);
 
@@ -260,7 +260,7 @@ function validateEntityCandidates(
       )))).slice(0, 8);
       const localId = item.localId;
       if (seenLocalIds.has(localId) && localId !== parsed.originalLocalId) {
-        // Split candidates get stable unique suffixes; protect against malicious duplicated output IDs.
+        // 拆出来的候选会拿到稳定且唯一的后缀；同时防住模型恶意输出重复 ID。
         diagnostics.rejectedEntityCandidates++;
         continue;
       }
@@ -315,7 +315,7 @@ function expandEntityCandidate(
   const sourceCompound = splitCompoundCanonicalName(parsed.canonicalSource);
   const targetCompound = splitCompoundCanonicalName(parsed.targetProposal);
   if (!sourceCompound) {
-    // A single source name must never carry a multi-target list.
+    // 单个源名绝不能带一串目标名。
     if (targetCompound) return null;
     const localId = (idPrefix + parsed.originalLocalId).slice(0, 64);
     return {
@@ -480,8 +480,8 @@ export function combineTranslationContextDeltas(
   const combined = emptyTranslationContextDelta();
   const entityKeyIndex = new Map<string, number>();
   for (const delta of deltas) {
-    // Retry-local entity IDs are not stable across model attempts. Normalize mentions to the
-    // canonical source name before combining so verified target surfaces can corroborate one entity.
+    // 重试时的实体 ID 在不同模型尝试之间并不稳定。合并之前先把提及归一成
+    // 规范源名，这样校验过的目标译文面才能真正佐证到同一个实体。
     const sourceNameByRef = new Map<string, string>();
     for (const candidate of delta.entityCandidates) {
       for (const name of [candidate.localId, candidate.canonicalSource, ...candidate.aliases]) {
@@ -527,10 +527,10 @@ export function combineTranslationContextDeltas(
  */
 function normalizedEntityKind(value: unknown): string {
   const kind = text(value, 40).toLocaleLowerCase();
-  // The model may label a person's textual reference as an epithet, nickname or title,
-  // while the Context Graph and project memory classify the same entity as "person".
-  // Normalize these presentation-level forms before alias matching so they cannot bypass
-  // conflict protection and create a second, competing mapping.
+  // 模型可能把对某人的文字指称标成绰号、别称或头衔，
+  // 而 Context Graph 和项目记忆把同一个实体归为 person。
+  // 别名匹配之前先归一这些「呈现形式」，
+  // 否则它们能绕过冲突保护，再生成一条互相竞争的第二映射。
   if (['character', 'person', 'character_epithet', 'nickname', 'role', 'title'].includes(kind)) return 'person';
   if (['place', 'object', 'organization', 'group'].includes(kind)) return kind;
   return 'other';
@@ -666,7 +666,7 @@ function applyEntityCandidate(
   delta: ValidatedTranslationContextDelta,
 ): void {
   const { memory, summary } = context;
-  // A user deletion is durable even though the visible LiteraryMemory row was removed.
+  // 用户删除是持久的，即使可见的 LiteraryMemory 行已经被移除。
   if (isRejectedEntity(context, candidate)) return;
   const names = new Set([candidate.canonicalSource, ...candidate.aliases].map(mergeName).filter(Boolean));
   const newTargetEvidence = targetEvidenceFor(candidate, delta);
@@ -695,7 +695,7 @@ function applyEntityCandidate(
     return;
   }
   const prior = matching[0]!.entity;
-  // A persisted user rejection is a durable decision; a later model observation must not revive it.
+  // 已落盘的用户拒绝是持久决定；后续模型观察不能把它复活。
   if (prior.reviewStatus === 'rejected') return;
   if (mergeName(prior.target) !== mergeName(candidate.targetProposal)) {
     summary.entityTargetConflicts++;
@@ -735,8 +735,8 @@ function mergeEntityEvidence(
     prior.confirmationSource = 'model-default';
   }
   if (!prior.evidence && candidate.evidence[0]?.sourceQuote) prior.evidence = candidate.evidence[0].sourceQuote;
-  // Preserve source-positioned evidence for suggested entities, but don't let a later model
-  // observation replace the provenance of a user-confirmed legacy mapping.
+  // 为建议实体保留定位到源文位置的证据，但不要让后续模型观察
+  // 覆盖用户确认过的旧映射的出处。
   if (prior.reviewStatus !== 'confirmed' || (Array.isArray(prior.evidenceRefs) && prior.evidenceRefs.length > 0)) {
     const evidenceRefs = mergeEvidenceRefs(prior.evidenceRefs, candidate.evidence);
     if (evidenceRefs.length) prior.evidenceRefs = evidenceRefs.slice(0, 8);
@@ -746,7 +746,7 @@ function mergeEntityEvidence(
 /** 关系候选合并：同一「主体-谓词-客体」只累加证据，不重复建条目。 */
 function applyRelationshipCandidate(context: MergeContext, relation: ContextRelationshipCandidate): void {
   const { memory, summary } = context;
-  // A deleted relation may have had no graph edge to reject; retain its memory tombstone.
+  // 被删的关系可能压根没有图谱边可拒；保留它的记忆墓碑。
   if (isRejectedRelationship(context, relation)) return;
   const key = [relation.subjectSource, relation.predicate, relation.objectSource].map(mergeName).join('\u0000');
   const prior = memory.relationships.find((item: any) =>

@@ -198,9 +198,9 @@ export class DocumentProjectStore {
   }
 
   /**
-   * Keep the original source outside SQLite but inside the document project's own directory.
-   * The content itself is not stored as a giant blob in either SQLite database. A revision gets
-   * an immutable file name based on its revision UUID; re-importing never overwrites an older file.
+   * 原始源文不存进 SQLite，而是放在文档项目自己的目录里。
+   * 内容本身不以大 blob 的形式存进任何一个 SQLite 库。每个版本按
+   * 版本 UUID 生成不可变文件名；重复导入永远不会覆盖旧文件。
    */
   async storeSourceFile(projectId: string, fileName: string, bytes: Uint8Array): Promise<{ saved: true; size: number; sha256: string; sourceRevisionId: string }> {
     return storeSourceFile(this, projectId, fileName, bytes);
@@ -267,9 +267,6 @@ export class DocumentProjectStore {
   /**
    * 计算 Context Graph 的 fingerprint，用于文学检索版本追踪。
    * 图谱更新必须像 Prompt/记忆修订一样使已采纳输出失效；旧版数据库可能没有图谱表，此时返回 null 而不报错。
-   * English note: Hash the exact graph state used by literary retrieval. A graph update must invalidate
-   * accepted output just like a Prompt or voice-memory revision. Older project DBs may not
-   * have Context Graph tables yet; those remain valid projects without an artificial failure.
    * 内部使用：实现位于 projectStoreMemory.ts。
    */
   contextGraphFingerprint(projectId: string, sourceRevisionId: string): string | null {
@@ -291,9 +288,6 @@ export class DocumentProjectStore {
   /**
    * 文学预处理就绪性显式校验辅助函数，供调用方要求项目已预处理时使用。
    * 不应在 Run 创建时调用：queued 文学 Run 必须进入服务端 executeRun 门禁，由其启动预处理并持久化等待/失败事件。
-   * English note: Explicit validation helper for callers that require an already-prepared project.
-   * Do not call this during Run creation: queued literary Runs must reach the server-owned
-   * executeRun gate, which can start preprocessing and persist wait/failure events.
    */
   assertLiteraryPreprocessingReady(
     projectId: string,
@@ -420,9 +414,6 @@ export class DocumentProjectStore {
   /**
    * 将解析后的文档解析到已有持久化项目，不信任扩展本地项目映射。
    * 精确 source fingerprint 可安全水合；同名/标题匹配仅作为变更候选，不得继承新文档的旧译文。
-   * English note: Resolve a parsed document to an existing durable project without trusting the extension's
-   * local project map. An exact source fingerprint is safe to hydrate; a same-name/title match
-   * is only a change candidate and must not receive the new document's old translations.
    */
   resolveProjectForSource(input: CreateProjectInput): {
     exactProject: ProjectSummary | null;
@@ -434,9 +425,6 @@ export class DocumentProjectStore {
   /**
    * 检查导入文件是否与当前来源版本已附带的原始文件字节完全一致。
    * 用于区分解析器版本变化与真正的文档变化，不信任文件名或浏览器生成的片段指纹。
-   * English note: Check whether an imported file is byte-for-byte the original already attached to the
-   * current source revision. This distinguishes a parser-version change from a genuinely
-   * changed document without trusting a filename or a browser-generated segment fingerprint.
    */
   matchesStoredSourceFile(projectId: string, bytes: Uint8Array): boolean {
     return matchesStoredSourceFile(this, projectId, bytes);
@@ -472,7 +460,7 @@ export class DocumentProjectStore {
   }
 
   /**
-   * 返回 Run 的不可变片段成员列表，不加载原文/译文正文。 / Return the immutable segment membership of a Run without loading source/translation bodies.
+   * 返回 Run 的不可变片段成员列表，不加载原文或译文正文。
    */
   getRunSegmentIds(projectId: string, runId: string): string[] {
     return getRunSegmentIds(this, projectId, runId);
@@ -486,9 +474,9 @@ export class DocumentProjectStore {
   }
 
   /**
-   * Fetch a few preceding source segments for dialogue/reference resolution.
-   * The rows always belong to the same immutable source revision as this run.
-   * They are context only: callers must never create run_segments or output ids for them.
+   * 取若干前置源文片段，用于解析对白与指代。
+   * 这些行永远属于本次 Run 锁定的同一个不可变源文版本。
+   * 它们只是上下文：调用方绝不能为它们创建 run_segments 或输出 id。
    */
   getPrecedingSegments(projectId: string, runId: string, firstSegmentId: string, limit = 4): any[] {
     return getPrecedingSegments(this, projectId, runId, firstSegmentId, limit);
@@ -551,9 +539,6 @@ export class DocumentProjectStore {
   /**
    * 原子提交一个模型批次的候选译文与审校发现，仅在 Run 活动时允许。
    * 状态检查与所有写入共享 BEGIN IMMEDIATE，防止取消/暂停请求在检查与迟到写入之间交错。
-   * English note: Atomically commit one model batch only while the Run is active.
-   * The status check and all candidate writes share BEGIN IMMEDIATE so a cancel/pause
-   * request cannot interleave between the caller's check and a late candidate insert.
    */
   saveCandidates(
     projectId: string,
@@ -581,9 +566,6 @@ export class DocumentProjectStore {
   /**
    * 仅在对应双语准确性审校返回完整结果后，标记中文单语编辑提案。
    * 最终经验证的候选替换预审提案，避免用户应用过期的中间编辑。
-   * English note: Mark source-blind Chinese editing proposals only after the corresponding bilingual
-   * accuracy review has returned a complete result. The final verified candidate replaces
-   * the pre-review proposal so the user never applies a stale intermediate edit.
    */
   markChineseEditorialFindingsReviewed(
     projectId: string,
@@ -602,8 +584,6 @@ export class DocumentProjectStore {
 
   /**
    * 采纳或驳回可选文风建议。采纳是显式用户决策，仅当建议仍针对当前原文时才记录新的已采纳人工译文。
-   * English note: Apply or dismiss an optional style proposal. Applying is an explicit user decision and
-   * records a new accepted manual translation only when the finding still targets the current source.
    */
   setReviewFindingDisposition(
     projectId: string,

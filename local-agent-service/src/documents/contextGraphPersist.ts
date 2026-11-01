@@ -139,8 +139,8 @@ export function persistAnalysisGraph(input: GraphPersistInput): void {
   const { db } = ctx;
   db.exec('BEGIN IMMEDIATE');
   try {
-    // Rebuild model-generated graph items transactionally while retaining user decisions
-    // and any model-default endpoint still referenced by a surviving user-confirmed/rejected edge.
+    // 在事务里重建模型生成的图谱条目，但保留用户决定，
+    // 以及那些仍被存活的用户确认/拒绝边引用的模型默认端点。
     clearReplaceableModelGeneratedContextGraphItems(db, ctx.revisionId);
     // 重新分析前重置上一轮模型生成的章节摘要（见 resetChapterSummariesForReanalysis）。
     resetChapterSummariesForReanalysis(db, ctx.revisionId, ctx.segments);
@@ -370,7 +370,7 @@ function persistEntityCandidateRecord(raw: any, ctx: GraphPersistContext, state:
   if (splitCompoundCanonicalName(target)) {
     entityPolicy.invalidTarget++;
     audit.disposition = 'persisted-target-quality-rejected';
-    // Preserve the source evidence for diagnostics, but never store a compound target as a mapping.
+    // 源文证据留给诊断用，但绝不把复合目标译名当映射存下去。
     saveEntityCandidate(state, {
       entityName: name, targetName: '', rawKind: raw.kind, significance,
       aliasesInput: aliases, evidence, audit,
@@ -411,8 +411,8 @@ function saveEntityCandidate(state: EntityPersistState, candidate: EntityCandida
     entityPolicy.droppedLowValue++;
     return false;
   }
-  // A manually confirmed target is the canonical value; model re-analysis may refresh evidence
-  // but never silently replace the explicit user choice for the same target language.
+  // 人工确认过的译名就是规范值；模型重新分析可以刷新证据，
+  // 但绝不能悄悄替换用户对同一目标语的明确选择。
   const existingId = nodeId(revisionId, 'entity', entityName);
   const existingNode = db.prepare(
     'SELECT status, attributes_json FROM context_graph_nodes WHERE source_revision_id = ? AND node_id = ?'
@@ -425,7 +425,7 @@ function saveEntityCandidate(state: EntityPersistState, candidate: EntityCandida
   if (!targetCheck.valid) {
     entityPolicy.invalidTarget++;
     if (state.canonicalTargetBySource.has(entityKey)) {
-      // A malformed duplicate must not erase an already valid candidate for the same source.
+      // 一条畸形的重复项，不能把同源下已经有效的候选抹掉。
       audit.disposition = 'dropped-invalid-target-conflicts-with-valid-candidate';
       return false;
     }
@@ -436,8 +436,8 @@ function saveEntityCandidate(state: EntityPersistState, candidate: EntityCandida
       state.conflictingCanonicalSources.add(entityKey);
       entityPolicy.conflictingTarget++;
       audit.disposition = 'dropped-conflicting-canonical-target';
-      // Same source with two plausible targets is ambiguous: do not let array order choose.
-      // Invalidate the earlier machine candidate, but never touch a confirmed user mapping.
+      // 同一个源名出现两个都说得通的目标译名，就是有歧义：不能让数组顺序来定。
+      // 让更早的机器候选失效，但绝不动用户确认过的映射。
       if (existingNode?.status !== 'confirmed') {
         clearPriorSuggestedTranslation(db, revisionId, entityName);
       }
@@ -505,8 +505,8 @@ function persistRelationships(ctx: GraphPersistContext): void {
     const normalized = normalize(name);
     const direct = identities.get(normalized);
     if (direct) return direct;
-    // Models may include a language-specific article while the graph stores the bare node name.
-    // This is a conservative one-token normalization; do not perform fuzzy or substring matching.
+    // 模型可能带着某语言的冠词，而图谱里存的是裸节点名。
+    // 这里只做保守的单 token 归一；不要做模糊匹配或子串匹配。
     const language = String(sourceLang || 'auto').toLocaleLowerCase().split(/[-_]/u)[0];
     const articlePatterns: Record<string, RegExp> = {
       en: /^(?:the|a|an)\s+/u,

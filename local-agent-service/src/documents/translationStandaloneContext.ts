@@ -7,12 +7,10 @@
 import { canonicalTermPattern } from './canonicalTermProtection.ts';
 import { buildProjectVoiceContext, sanitizeProjectLiteraryMemory } from './voiceContext.ts';
 /**
- * Standalone re-review requests originate in the extension and are not backed by an immutable
- * server-side Run/TranslationBrief. Treat all client-supplied memory as untrusted: only keep
- * evidence that can be verified against the exact current/preceding source text. In particular,
- * never pass book-wide summaries, recent examples, free-text descriptions, or voice profiles
- * synthesized from unseen future segments into this legacy endpoint.
- * 独立审校请求的客户端记忆不可信，仅保留可对照当前/前文原文验证的证据；不传递书级摘要等未来信息。
+ * 独立审校请求由扩展发起，背后没有服务端不可变的 Run/TranslationBrief 作依据。
+ * 客户端带来的记忆一律当不可信：只保留能对照当前或前文确切原文验证的证据。
+ * 尤其不要往这个旧接口里塞全书级摘要、近期示例、自由文本描述，
+ * 或从尚未读到的后续片段合成出来的声音档案。
  */
 export function buildStandaloneReviewMemory(input: Record<string, any>): Record<string, any> {
   const rawMemory = sanitizeProjectLiteraryMemory(input.memory);
@@ -146,13 +144,11 @@ export function buildStandaloneReviewVoiceContext(input: Record<string, any>): R
   return buildProjectVoiceContext(memory, segments, segments[0]?.contextPath || input.chapterTitle || '', preceding);
 }
 
-/** Build a bounded name-only Context Graph for legacy standalone Review requests.
- * Only explicit mappings visible in this request's source/preceding text are included; future
- * aliases from book memory are not serialized into the Reviewer prompt. 为独立审校请求构建仅含名称的有界 Context Graph，只包含当前/前文可见的显式映射。 */
+/** 为旧的独立审校请求构建只含名称的有界 Context Graph：只收录本次请求源文或前文里可见的显式映射，书级记忆里的未来别名不会写进 Reviewer 提示词。 */
 export function buildStandaloneReviewContextGraph(input: Record<string, any>): Record<string, any> {
-  // Do not accept a client-supplied Context Graph or TranslationBrief here. This endpoint has
-  // no immutable server-side Run snapshot; reconstruct a name-only graph from the source-grounded
-  // memory projection prepared by buildStandaloneReviewMemory instead.
+  // 这里不接受客户端传来的 Context Graph 或 TranslationBrief。这个接口没有
+  // 服务端不可变的 Run 快照；应当改用 buildStandaloneReviewMemory 准备好的、
+  // 有源文依据的记忆投影，重建一个只含名称的图谱。
   const nameMappings: Array<Record<string, any>> = [];
   const segments = Array.isArray(input.segments) ? input.segments : [];
   const preceding = Array.isArray(input.precedingSegments) ? input.precedingSegments : [];
@@ -173,11 +169,11 @@ export function buildStandaloneReviewContextGraph(input: Record<string, any>): R
     const aliases = Array.isArray(entity.aliases)
       ? entity.aliases.filter((alias: unknown): alias is string => typeof alias === 'string' && !!alias.trim())
       : [];
-    // If an attached alias is not visible yet, its identity reveal may have contaminated the target.
+    // 附属别名如果还没露出，它的身份揭示可能已经污染了目标译名。
     if (aliases.some((alias) => !appearsIn(alias, visibleTexts))) continue;
     if (!appearsIn(entity.source, sourceTexts) &&
         !aliases.some((alias) => appearsIn(alias, sourceTexts))) continue;
-    // Legacy confirmed mappings predate provenance fields and must retain their prior protected behavior.
+    // 旧版的已确认映射早于「出处」字段出现，必须保持它们原有的受保护行为。
     const userDecidedMapping = !entity.confirmationSource ||
       ['user-confirmed', 'user-modified', 'legacy-unknown'].includes(String(entity.confirmationSource));
     nameMappings.push({
@@ -186,8 +182,8 @@ export function buildStandaloneReviewContextGraph(input: Record<string, any>): R
       aliases,
       kind: typeof entity.kind === 'string' ? entity.kind : 'other',
       evidenceBacked: true,
-      // Standalone Review has no immutable run snapshot or verified target-surface ledger.
-      // Only explicit user decisions may become protected mappings in this legacy path.
+      // 独立审校没有不可变的 Run 快照，也没有校验过的目标译文面台账。
+      // 在这个旧路径上，只有明确的用户决定才能成为受保护的映射。
       sourceStatus: userDecidedMapping ? 'confirmed-memory' : 'candidate',
       confirmationSource: userDecidedMapping ? (entity.confirmationSource || 'user-confirmed') : 'model-default',
       targetConfidence: userDecidedMapping ? 'confirmed' : 'candidate',

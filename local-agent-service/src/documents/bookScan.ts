@@ -12,9 +12,9 @@ import {
 import { LANGUAGE_ALIASES, LANGUAGE_DETECTION_WORDS } from './bookScanLanguageLexicon.ts';
 
 /**
- * Deterministic, dependency-free source feature indexing for literary pre-analysis.
- * This is a lexical index and adaptive sampling planner, not an NER or semantic parser.
- * Every candidate keeps a stable source segment ID and UTF-16 character offsets.
+ * 确定性的、零依赖的源文特征索引，服务于文学预分析。
+ * 这是词面索引与自适应抽样计划，不是 NER，也不是语义解析器。
+ * 每个候选都保留稳定的源文片段 ID 与 UTF-16 字符偏移。
  */
 
 export interface BookScanSegment {
@@ -164,8 +164,8 @@ export function isDialogueSegment(segment: Pick<BookScanSegment, 'text'>, source
 function stripNamePrefix(name: string): string {
   const words = name.trim().split(/\s+/);
   const first = words[0]!.replace(/[.]/g, '').toLocaleLowerCase();
-  // Remove a leading article once, but don't then discard the next token: "The King Rat"
-  // is a compound epithet/name candidate, not the one-token candidate "Rat".
+  // 只在前面剥一次冠词，但别把后面那个词也丢掉："The King Rat"
+  // 是复合的称谓/名字候选，不是单词候选 "Rat"。
   if (words.length > 1 && ARTICLE_PREFIX_WORDS.has(first)) {
     words.shift();
     return words.join(' ');
@@ -183,7 +183,7 @@ function isNameCandidateAllowed(name: string, kind: BookEntityMention['kind'], s
   if (!parts.length || stopCheckParts.some((part) => NAME_STOP_WORDS.has(part.replace(/[.]/g, '').toLocaleLowerCase()))) return false;
   const japaneseName = language === 'ja' && /^[\p{Script=Han}\p{Script=Katakana}ー]{2,}$/u.test(core);
   if (!japaneseName && parts.every((part) => Array.from(part).length < 3)) return false;
-  // German capitalizes common nouns; single capitalized tokens are too noisy to sample as people.
+  // 德语里普通名词也大写；单个大写词太吵，不能当人物抽样。
   if (language === 'de' && kind === 'single-name') return false;
   return kind !== 'single-name' || japaneseName ||
     (normalizeText(core).length >= 3 && !NAME_STOP_WORDS.has(normalizeText(core)));
@@ -317,8 +317,8 @@ function collectQuantityMentions(segments: BookScanSegment[], sourceLang = 'en')
   return {mentions,discovered};
 }
 function collectNameCandidates(segments: BookScanSegment[], mentions: BookEntityMention[]): BookNameCandidate[] {
-  // Keep the exact occurrence index separate from the per-segment de-duplicated ranking index.
-  // Avoid scanning the full mention array once for each distinct spelling on large books.
+  // 保留精确的出现位置索引，与「按片段去重」的排序索引分开。
+  // 大书上要避免为每个不同拼写都扫一遍完整的提及数组。
   const allBySurface=new Map<string,BookEntityMention[]>();
   const bySurface=new Map<string,BookEntityMention[]>();
   const seenSegmentsBySurface=new Map<string,Set<string>>();
@@ -390,7 +390,7 @@ export interface BookScanOptions {
   maxQuantityMentions?: number;
 }
 
-/** Segment-local features can be computed independently and merged in source order. */
+/** 片段级特征可以各自独立计算，再按源文顺序合并。 */
 export interface BookScanFeatureChunk {
   entityMentions: BookEntityMention[];
   entityMentionsDiscovered: number;
@@ -441,7 +441,7 @@ function assembleBookScan(
   featureChunks: readonly BookScanFeatureChunk[],
   options: BookScanOptions = {},
 ): BookScanResult {
-  // Chunk ranges are contiguous and ordered, so merging preserves the exact serial scan order.
+  // 分块区间连续且有序，因此合并后与串行扫描的顺序完全一致。
   const entityDiscovered = featureChunks.reduce((sum, item) => sum + item.entityMentionsDiscovered, 0);
   const textDiscovered = featureChunks.reduce((sum, item) => sum + item.textUnitsDiscovered, 0);
   const quantityDiscovered = featureChunks.reduce((sum, item) => sum + item.quantityMentionsDiscovered, 0);
@@ -521,9 +521,9 @@ async function scanFeatureChunkInWorker(segments: BookScanSegment[], sourceLang 
 }
 
 /**
- * Parallel CPU feature extraction for large books. Results are merged in source order so
- * candidate ordering, source offsets, truncation limits and sampling remain deterministic.
- * Set VOCAL_SAGA_BOOK_SCAN_WORKERS=0 to disable Workers or 1..4 to set a bounded worker count.
+ * 大书的并行 CPU 特征提取。结果按源文顺序合并，
+ * 因此候选排序、源文偏移、截断上限与抽样都保持确定性。
+ * 设 VOCAL_SAGA_BOOK_SCAN_WORKERS=0 关闭 Worker，设 1..4 限定 worker 数量。
  */
 /**
  * 并发构建整本书的确定性特征索引。

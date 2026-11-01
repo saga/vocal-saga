@@ -113,8 +113,8 @@ export async function processBatch(
   );
   if (attemptOutcome.cancelled) return;
 
-  // Stop is checked again directly before persistence; no late model response may commit
-  // after cancellation, even if the response arrived in the same turn as a retry failure.
+  // 落盘之前再检查一次 stop；取消之后不许任何迟到的模型响应提交，
+  // 哪怕它和一次重试失败是在同一轮里回来的。
   if (store.getRunStatus(projectId, runId) === 'cancelled') {
     store.appendEvent(projectId, runId, 'batch.discarded', {
       batchIndex, reason: 'cancelled before candidate commit',
@@ -187,10 +187,10 @@ export async function processBatch(
     chineseMonolingualEdit: false,
   });
   if (scope.detachReviews) {
-    // Do not await here: another translation batch can start while this review is in flight.
+    // 这里不要 await：这次审校还在飞的时候，另一个翻译批次就该能开跑。
     scope.reviewTasks.push(scope.reviewLimiter(job));
   } else {
-    // A one-slot session pool cannot overlap translation and review safely.
+    // 会话池只有一个槽位时，翻译和审校没法安全重叠。
     await scope.reviewLimiter(job);
   }
 }
@@ -374,8 +374,8 @@ async function runBatchReview(scope: RunBatchScope, state: BatchReviewState): Pr
   // 中文单语编辑是「强」档独有的预备阶段；「中」档把它并进合并审校的双语调用里。
   state.chineseMonolingualEdit = scope.reviewStrength === 'strong' &&
     /^zh(?:[-_]|$)/i.test(String(batchContext.run.targetLang || ''));
-  // Chinese editing must happen before bilingual review: the latter verifies the edited
-  // Chinese candidate against source. Other target languages retain their existing order.
+  // 中文编辑必须排在双语审校之前：后者要拿改过的中文候选
+  // 去对照源文。其它目标语保持原来的顺序。
   if (state.chineseMonolingualEdit) await runStyleReview(scope, state);
 
   // 审校中途被丢弃时，本批不发 batch.completed：Run 已离开活跃状态，终结事件由 Run 级流程负责。
@@ -383,7 +383,7 @@ async function runBatchReview(scope: RunBatchScope, state: BatchReviewState): Pr
   try {
     settled = await runBilingualReview(scope, state, reviewStartedAt);
   } catch (error) {
-    // Review is a quality improvement, not a gate on translation progress.
+    // 审校是质量改进，不是翻译进度的闸门。
     // 审校失败以前只写 project_events，文件日志里完全看不到；批次「跑完了但没审」时
     // 只能靠打开 DB 才知道。这里补一行，带上强度档位与失败原因。
     if (store.getRunStatus(projectId, runId) !== 'cancelled') {
@@ -395,8 +395,8 @@ async function runBatchReview(scope: RunBatchScope, state: BatchReviewState): Pr
         ' · error=' + summarizeError(error));
     }
     try {
-      // If bilingual review failed as a whole, discard all provisional Chinese-only edits.
-      // The persisted first-pass candidates remain untouched and will be auto-finalized.
+      // 双语审校整体失败时，丢掉所有暂定的纯中文编辑。
+      // 已落盘的初译候选原样保留，之后会自动定稿。
       restoreInitialDrafts(state);
       if (store.getRunStatus(projectId, runId) !== 'cancelled') {
         store.appendEvent(projectId, runId, 'stage.warning', {
@@ -416,7 +416,7 @@ async function runBatchReview(scope: RunBatchScope, state: BatchReviewState): Pr
   }
   if (!settled) return;
 
-  // batch.completed remains a terminal batch event, emitted only after review settles.
+  // batch.completed 仍然是批次的终态事件，只在审校落定之后才发。
   if (store.getRunStatus(projectId, runId) !== 'cancelled') {
     store.appendEvent(projectId, runId, 'batch.completed', {
       batchIndex,
@@ -663,8 +663,8 @@ async function runBilingualReview(
     })),
   }, runId + '-review-' + batchIndex, reviewScope);
 
-  // A cancellation can happen while the reviewer is in flight. In that case neither
-  // its revised candidates nor its findings may be written after the stop request.
+  // 审校还在飞的时候也可能收到取消。这种情况下，修订后的候选和审校发现
+  // 都不能在 stop 请求之后写进去。
   if (store.getRunStatus(projectId, runId) === 'cancelled') {
     restoreInitialDrafts(state);
     store.appendEvent(projectId, runId, 'review.discarded', {
@@ -678,8 +678,8 @@ async function runBilingualReview(
     segmentId: finding.id,
     finding,
   }));
-  // Reviewer corrections and their supporting findings are one transaction. If stop wins
-  // the race, neither the revised candidate nor its audit findings are persisted.
+  // 审校修正和支撑它的发现同属一个事务。如果 stop 抢赢了，
+  // 修订后的候选和审计发现都不会落盘。
   const reviewPersisted = store.saveCandidates(projectId, runId, revisedCandidates, reviewFindings);
   if (!reviewPersisted) {
     restoreInitialDrafts(state);

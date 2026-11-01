@@ -1,9 +1,6 @@
 /**
- * 中文：一个有界、内存不可变的上下文包，由初译与两个 Reviewer 共享。
+ * 一个有界、内存不可变的上下文包，由初译与两个 Reviewer 共享。
  * 持久化快照只包含引用与紧凑记忆，不包含整本小说或完整草稿。
- * English:
- * One bounded, immutable-in-memory context bundle shared by translation and both reviewers.
- * The persisted snapshot contains references and compact memory, not the full novel or draft text.
  */
 import { createHash } from 'node:crypto';
 import { logInfo } from '../log.ts';
@@ -25,7 +22,7 @@ import { buildTemporallyVisibleMemory } from './briefTemporalMemory.ts';
 
 
 /**
- * 中文：按当前批次的时间边界过滤术语表：仅保留源名在前文或本批次出现的术语；
+ * 按当前批次的时间边界过滤术语表：仅保留源名在前文或本批次出现的术语；
  * 若术语的某个别名首次出现在本批次之后，则整体丢弃，避免未来揭示泄漏到当前译文。
  */
 function filterGlossaryForBatch(context: any, items: BriefSegment[]): unknown {
@@ -66,14 +63,14 @@ function filterGlossaryForBatch(context: any, items: BriefSegment[]): unknown {
   return {
     document_terms: terms.flatMap((term: any) => {
       const source = sourceOf(term);
-      // A static glossary entry is useful on its first actual occurrence. Only entries whose
-      // source name is absent from both the preceding book text and this batch are withheld.
+      // 静态术语表条目只在它首次真正出现时才有用。因此仅当某个条目的源名
+      // 既不见于前文正文、也不见于本批次时，才把它扣下不注入。
       if (!appearedEarlier(source) && !visibleInBatch(source)) return [];
       if (typeof term === 'string') return [term];
       if (!term || typeof term !== 'object' || Array.isArray(term)) return [];
       const aliasKeys = ['aliases', 'source_aliases', 'sourceAliases'];
-      // If any alias is first revealed at/after this batch, the canonical target may itself
-      // have been chosen from that reveal. Do not merely remove the alias and retain the target.
+      // 若某个别名到本批次或更晚才首次出现，那这条规范译名本身可能就是从那次揭示里选出来的。
+      // 不能只删掉别名却把译名留着。
       if (aliasKeys.some((key) => Array.isArray(term[key]) &&
           (term[key] as unknown[]).some((alias) => !appearedEarlier(alias) && !visibleInBatch(alias)))) return [];
       const selected: Record<string, unknown> = {};
@@ -90,7 +87,7 @@ function filterGlossaryForBatch(context: any, items: BriefSegment[]): unknown {
 }
 
 /**
- * 中文：将 TranslationBrief 的关键字段序列化为稳定字符串，用于计算 contextHash。
+ * 将 TranslationBrief 的关键字段序列化为稳定字符串，用于计算 contextHash。
  */
 function serializedContext(brief: Pick<TranslationBrief,
   'policyVersion' | 'sourceRevisionId' | 'promptRevisionId' | 'memoryRevisionId' |
@@ -126,8 +123,8 @@ export function buildTranslationBrief(
     ? precedingSegments.slice(-strategy.precedingContextSegments)
     : [];
   const visiblePrecedingSegments = resolveVisiblePrecedingSegments(projectId, sourceRevisionId, selectedPrecedingSegments);
-  // The configured soft budget controls optional historical style examples. Core source context,
-  // glossary entries, visible canonical mappings and evidence-backed voice data are not discarded.
+  // 配置里的软上限只用来裁剪可选的「历史文风示例」。核心源文上下文、术语表条目、
+  // 当前可见的规范名映射以及有证据支撑的声音数据都不会被丢弃。
   const glossary = filterGlossaryForBatch(context, items);
   const exampleBudgetChars = Math.min(MAX_ACCEPTED_EXAMPLE_CHARS,
     Math.max(1_000, Math.floor(strategy.contextBudgetChars * 0.25)));
@@ -135,7 +132,7 @@ export function buildTranslationBrief(
     ? buildTemporallyVisibleMemory(context, items, visiblePrecedingSegments, exampleBudgetChars)
     : {};
   const chapterPaths = Array.from(new Set(items.map((item) => String(item.contextPath || '').trim()).filter(Boolean)));
-  // Book batches should be chapter-scoped. If callers violate that invariant, omitting summaries is safer.
+  // 批次应当按章切分。调用方若违反这条前提，丢掉章节摘要比塞进错章节更安全。
   const chapterPath = chapterPaths.length === 1 ? chapterPaths[0]! : '';
   let graph = buildBatchContextGraph(projectId, items, visiblePrecedingSegments, chapterPath,
     sourceRevisionId, String(context?.run?.targetLang || 'zh'), context?.run?.translationMode === 'literary');
@@ -153,8 +150,8 @@ export function buildTranslationBrief(
     Array.isArray((context as any)?.memory?.characterVoices) ? (context as any).memory.characterVoices : [],
     items, visiblePrecedingSegments);
   applyStyleGuide(graph, temporalMemory);
-  // Graph chapter order is derived from source segment order and therefore is the canonical
-  // boundary. Do not use memory-only summaries when chapter matching could be ambiguous.
+  // Context Graph 的章节顺序由源文片段顺序推出，因此它就是权威边界。
+  // 章节对不上时不要退而使用只存在于记忆里的摘要。
   voiceContext.chapterSummaries = graph && chapterPath ? graph.chapterSummaries : [];
 
   const { componentDiagnostics, componentLargest } = measureBriefComponents(
@@ -253,8 +250,8 @@ export function summarizeTranslationBrief(brief: TranslationBrief): Record<strin
     recentExamples: count(voice?.recentExamples),
     dialogueParticipants: count(voice?.dialogueParticipants),
     contextDiagnostics: brief.contextDiagnostics || {},
-    // Compatibility fields consumed by the Agent Trajectory UI. Keep them aligned with the
-    // detailed fields above so the UI doesn't silently display zero for populated context.
+    // 这几个是 Agent Trajectory 界面消费的兼容字段。必须与上面的明细字段保持一致，
+    // 否则上下文其实有内容、界面却显示 0。
     entityCount: graphCharacterCount + graphEntityCount,
     relationshipCount: graphRelationshipCount,
     characterVoiceCount: voiceCharacterCount,
@@ -278,8 +275,8 @@ function resolveVisiblePrecedingSegments(
   sourceRevisionId: string,
   selectedPrecedingSegments: BriefSegment[],
 ): BriefSegment[] {
-  // Resolve predecessor metadata from the immutable run source. Some callers provide only id/text,
-  // but dialogue-participant retrieval needs the actual segment kind and must not infer it from prose.
+  // 前文元数据要从本次 Run 锁定的源文里取。有些调用方只给 id 和 text，
+  // 但检索对白参与者需要真实的片段类型，不能靠正文猜。
   const visiblePrecedingSegments: BriefSegment[] = [];
   if (selectedPrecedingSegments.length) {
     const projectContext = getDocumentProjectStore().getProjectContext(projectId);
@@ -293,7 +290,7 @@ function resolveVisiblePrecedingSegments(
     const rowsById = new Map(rows.map((row) => [String(row.segment_id), row]));
     for (const item of selectedPrecedingSegments) {
       const row = rowsById.get(item.id);
-      // A stale ID from another revision is not valid preceding context for this Run.
+      // 来自其它版本、已经过期的 ID 不能当本次 Run 的前文。
       if (!row) continue;
       visiblePrecedingSegments.push({
         id: String(row.segment_id),
@@ -329,9 +326,9 @@ function buildBatchContextGraph(
       ) as Record<string, any> | null
     : null;
   if (literary && !graph) {
-    // A book with no eligible Context Graph nodes can still have an explicit user glossary or
-    // source-evidenced LiteraryMemory. The previous null result skipped that entire merge path,
-    // so confirmed names silently disappeared from the actual translation request.
+    // 一本书即使没有可用的 Context Graph 节点，也可能有用户显式给的术语表，
+    // 或有源文证据的文学记忆。此处若返回 null，整条合并路径都会被跳过，
+    // 已确认的译名就会从实际请求里悄悄消失。
     graph = {
       policyVersion: 'context-graph-v6-default-adoption',
       knowledgeBoundaryOrdinal: null,
@@ -378,7 +375,7 @@ function mergeMemoryEntitiesIntoMappings(
   const graphRetrievalDiagnostics = takeGraphRetrievalDiagnostics(graph);
   if (!graph || !Array.isArray(graph.nameMappings)) return graphRetrievalDiagnostics;
 
-  // Do not feed generic titles or aliases belonging to another person back to the translator.
+  // 通用称谓、以及属于别人的别名，都不要回喂给译者。
   graph.nameMappings = graph.nameMappings.flatMap((mapping: any) => {
     const source = typeof mapping?.source === 'string' ? mapping.source.trim() : '';
     const target = typeof mapping?.target === 'string' ? mapping.target.trim() : '';
@@ -394,8 +391,8 @@ function mergeMemoryEntitiesIntoMappings(
     upsertNameMapping(graph, decided.incoming, decided.userConfirmedMapping);
   }
   rankNameMappings(graph, items, visiblePrecedingSegments);
-  // Do not apply a count cap here. A later batch-scoped pass, after pinned profiles are
-  // merged, removes mappings not mentioned in this batch or its configured preceding context.
+  // 这里不设数量上限。等锁定档案合并之后的批次级过滤，会统一清掉
+  // 本批次及其配置的前文里都没提到的映射。
   return graphRetrievalDiagnostics;
 }
 
@@ -476,17 +473,17 @@ function decideMemoryMapping(
   })) return null;
   const confirmedPersonMapping = entity.kind === 'person' && userConfirmedMapping;
   // A confirmed person name is a canonical mapping in 人物管理. Activate it only when the
-  // canonical source or one of its aliases is visible; omit later-only aliases without suppressing
-  // the whole translation name.
+  // 只要规范源名或其中一个别名可见即可；仅在后面才出现的别名单独摘掉，
+  // 不要连带压掉整个译名。
   if (!visibility.sourceVisible(source) && !rawAliases.some((alias: unknown) => visibility.sourceVisible(alias))) {
     return null;
   }
   const aliasesVisibleAtBoundary = rawAliases.every((alias: unknown) => visibility.aliasVisible(alias));
-  // Inferred/non-person mappings remain fail-closed when any identity alias first appears later.
+  // 推断出来的、非人物类映射仍然失败关闭：只要任一身份别名首次出现在后面，就不注入。
   if (!aliasesVisibleAtBoundary && !confirmedPersonMapping) return null;
   if (!isMemoryEvidenceVisible(entity, evidence, visibility, source, userConfirmedMapping)) return null;
-  // The alias must be visible by the start of this batch or in its actual source text;
-  // an alias first revealed in a later chapter still cannot activate the mapping.
+  // 别名必须在本批次开始时已经可见，或就出现在本批次源文里；
+  // 只在后续章节才揭示的别名，仍然不能激活这条映射。
   const aliases = rawAliases.filter((alias: unknown) => visibility.aliasVisible(alias));
   const targetRefs = Array.isArray(entity.targetEvidenceRefs) ? entity.targetEvidenceRefs : [];
   const corroboratedTarget = entity.targetConfidence === 'corroborated' &&
@@ -508,8 +505,8 @@ function decideMemoryMapping(
 /**
  * 证据可见性。用户确认的映射直接放行——它是一个「源名→译名」决定，不该因为出处是后文而消失；
  * 其余映射必须落在边界前的证据上，且引文要与源名对得上。
- * New dynamic memory has segment-specific provenance. Do not fall back to searching the
- * same quotation elsewhere in the book, because duplicate prose can predate the observation.
+ * 新的动态记忆带有片段级出处。不要退而到全书里搜同一句引文，
+ * 因为重复出现的原文可能早于这条观察本身。
  */
 function isMemoryEvidenceVisible(
   entity: any,
@@ -535,8 +532,8 @@ function isMemoryEvidenceVisible(
 
 /**
  * 写入一条映射：用户确认的覆盖同名条目并置顶；动态候选只在没有更强条目时替换。
- * A source-ordered dynamic candidate outranks an unconfirmed whole-book proposal,
- * but never a confirmed Context Graph mapping.
+ * 按源文顺序排出的动态候选优先于未经确认的全书提议，
+ * 但永远低于已确认的 Context Graph 映射。
  */
 function upsertNameMapping(
   graph: Record<string, any>,
@@ -599,9 +596,8 @@ function mergePinnedProfileMappings(
     const visibleSourceSegments = [...visiblePrecedingSegments, ...items];
     const isVisibleHere = (name: unknown) => typeof name === 'string' && name.trim() &&
       visibleSourceSegments.some((item) => sourceNameMatches(item.text, name));
-    // Use the run-pinned, Store-validated profile snapshot for canonical names. Voice-context
-    // retrieval deliberately requires earlier evidence, so using only its selected profiles would
-    // make a confirmed name disappear when its supporting quote belongs to the current batch.
+    // 规范名取自本 Run 锁定、并经 Store 校验过的档案快照。声音上下文检索刻意只认更早的证据，
+    // 若只用它选出的档案，一个已确认的译名就会因为它对应的引文落在本批次里而消失。
     for (const profile of pinnedProfiles) {
       const source = typeof profile?.canonicalSourceName === 'string' ? profile.canonicalSourceName.trim() : '';
       const target = typeof profile?.targetName === 'string' ? profile.targetName.trim() : '';
@@ -609,8 +605,8 @@ function mergePinnedProfileMappings(
       if (!source || !target || profile.useForTranslation === false ||
           !['confirmed', 'candidate'].includes(status) || isGenericCanonicalSourceName(source)) continue;
       const aliases = safeCanonicalSourceAliases(source, profile.aliases).filter(isVisibleHere);
-      // The canonical source or at least one safe, source-visible alias must be relevant to
-      // this batch. Names merely stored elsewhere in the book are not injected into the prompt.
+      // 规范源名、或至少一个安全的、在源文里可见的别名，必须与本批次相关。
+      // 只是存在于书里别处的名字，不会注入提示词。
       if (!isVisibleHere(source) && !aliases.length) continue;
       const incoming = {
         source, target, aliases, kind: 'character',
@@ -626,8 +622,8 @@ function mergePinnedProfileMappings(
         matches(mapping) && ['confirmed', 'confirmed-memory'].includes(String(mapping?.sourceStatus || '')) &&
         normalizedSourceText(mapping?.target) !== normalizedSourceText(target));
       if (status === 'confirmed' && conflicting.length) {
-        // Two confirmed sources disagree. Remove hard mappings for the overlapping names and
-        // expose the conflict as a constraint; never silently let array order select the winner.
+        // 两个已确认来源互相矛盾。删掉重叠名字上的硬映射，把冲突作为约束暴露出去；
+        // 绝不能让数组顺序悄悄决定谁赢。
         graph.nameMappings = graph.nameMappings.filter((mapping: any) => !matches(mapping));
         const oldConflicts = Array.isArray(graph.canonicalNameMappingConflicts) ? graph.canonicalNameMappingConflicts : [];
         graph.canonicalNameMappingConflicts = [
@@ -674,9 +670,8 @@ function mergePinnedProfileMappings(
       };
       return rank(b) - rank(a);
     });
-    // Retain every mapping actually mentioned in this batch or its visible preceding context.
-    // A mapping for an unrelated person mentioned hundreds of pages earlier is retrieved again
-    // when that name becomes relevant; it does not need to inflate every intervening request.
+    // 只保留本批次或其可见前文里真正提到的映射。几百页前出现过的无关人物，
+    // 等这个名字重新相关时会再次被检索到，没必要让它撑大中间每一次请求。
     if (characterProfileMappingConflictCount) {
       logInfo('translation-brief', 'confirmed character profile mapping conflicts=' + characterProfileMappingConflictCount);
     }
@@ -692,8 +687,8 @@ function mergePinnedProfileMappings(
  * 应用文风基线：只补文风、语域、句法，绝不从中推断人物身份或剧情结论。
  */
 function applyStyleGuide(graph: Record<string, any> | null, temporalMemory: Record<string, any>): void {
-  // A completed, version-matched style-only baseline is auto-applied. Its fields must never
-  // supply plot facts or identity claims; user-confirmed style memory has priority.
+  // 已完成且版本匹配的纯文风基线会自动应用。它的字段不得拿来提供情节事实或身份论断；
+  // 用户确认过的文风记忆优先。
   if (graph) {
     const candidateStyle = graph.styleGuide && typeof graph.styleGuide === 'object' ? graph.styleGuide : {};
     const required = ['narrativeStyle', 'register', 'rhythm', 'dialogue', 'diction'];
@@ -727,8 +722,8 @@ function measureBriefComponents(
   graph: Record<string, any> | null,
   voiceContext: Record<string, any>,
 ): { componentDiagnostics: Record<string, any>; componentLargest: string } {
-  // Size attribution is metadata-only: it lets diagnostics identify which retrieved
-  // component dominates a prompt without exporting source, translation, or memory text.
+  // 体积归因只是元数据：它让诊断能指出哪个检索成分占了提示词的大头，
+  // 而不必导出源文、译文或记忆正文。
   const jsonChars = (value: unknown) => JSON.stringify(value ?? null)?.length || 0;
   const sectionStats = (value: unknown) => {
     const chars = jsonChars(value);
@@ -771,10 +766,10 @@ function finalizeBriefDiagnostics(
   temporalMemory: Record<string, any>,
   componentDiagnostics: Record<string, any>,
 ): void {
-  // Do not prune retrieved context to satisfy a configured character budget. In particular,
-  // never erase glossary terms, voice profiles, accepted examples, preceding dialogue, or confirmed
-  // name mappings as an indirect consequence of a prompt-size heuristic. The runtime/provider owns
-  // the actual model context-window check and should surface a real limit error without mutating evidence.
+  // 不要为了凑配置的字符预算去裁剪已检索的上下文。尤其不能因为某个提示词体积启发式，
+  // 间接抹掉术语表词条、声音档案、已采纳示例、前文对白或已确认的译名映射。
+  // 真正的模型上下文窗口检查归运行时和提供方负责：它应当直接暴露真实的超限错误，
+  // 而不是让上游回头改数据。
   const serialized = serializedContext(brief);
   (brief.contextDiagnostics as any).budgetTrimCount = Number((temporalMemory as any)?.__translationBriefDiagnostics?.acceptedExamplesTrimmedByBudget || 0);
   (brief.contextDiagnostics as any).budgetFallbackUsed = false;

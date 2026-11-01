@@ -34,7 +34,6 @@ import { buildBatches } from './translationBatchPlan.ts';
 import { takeRunUsage } from './translationRunUsage.ts';
 import { processBatch, type RunBatchScope } from './translationRunBatch.ts';
 /**
- * Readiness is pinned to this Run's immutable source revision, analysis version and language pair.
  * 就绪状态绑定到 Run 的不可变原文版本、分析版本与语言对。
  */
 export function isContextGraphReadyForTranslationRun(
@@ -45,8 +44,8 @@ export function isContextGraphReadyForTranslationRun(
   const progress = graph.progress && typeof graph.progress === 'object' ? graph.progress : {};
   if (Number(progress.sampleCount || 0) <= 0) return false;
   if (progress.strategy !== 'A' && progress.strategy !== 'B') return false;
-  // B is a checkpointed five-stage workflow. A completed DB row is not sufficient if any
-  // required stage checkpoint is missing (e.g. a stale/partially recovered completion event).
+  // B 方案是带检查点的五阶段工作流。数据库里那行写着「已完成」还不够——
+  // 只要缺任何一个必需阶段的检查点，就不能认（例如完成事件是过期或半恢复的）。
   if (progress.strategy === 'B') {
     const requiredStages = ['style', 'characters', 'entities', 'relationships', 'chapters'];
     const completedStages = Array.isArray(progress.completedStages) ? progress.completedStages : [];
@@ -154,7 +153,7 @@ export async function prepareRunExecution(
   const initialStatus = context.run.status;
   if (initialStatus === 'completed' || initialStatus === 'cancelled' || initialStatus === 'awaiting_acceptance') return null;
 
-  // Full-book analysis and evidence are service-owned; the extension submits the Run and renders status.
+  // 全书分析与证据归服务端所有；扩展只负责提交 Run 和渲染状态。
   if (!(await ensureLiteraryPreprocessingBeforeRun(projectId, runId, context.run as Record<string, any>))) return null;
 
   if (!store.setRunStatus(projectId, runId, 'running', null) ||
@@ -330,7 +329,7 @@ export function finalizeRunExecution(
         policy: 'validated-finalization; manual-edits-and-source-hashes-protected',
       });
     } catch (acceptError) {
-      // Translation candidates stay durable and the extension recovery path can retry the same idempotent operation.
+      // 译文候选会持久保留，扩展的恢复流程可以用同一个幂等操作重试。
       store.appendEvent(projectId, runId, 'stage.warning', {
         stage: 'acceptance',
         warning: '服务端自动采纳未完成，候选已保留供恢复：' +
@@ -376,9 +375,9 @@ export function finalizeRunExecution(
       const isAutomaticRepairPass = automationScope?.kind === 'quality-audit-repair' &&
         Number(automationScope.pass) >= 1;
 
-      // A book-level audit is useful after any Run, but its missing-translation findings
-      // must not silently widen a selected/chapter/stale Run into unrelated book translation.
-      // Use the immutable run_segments membership, not a re-evaluation of the current scope.
+      // 全书级审计在任何 Run 之后做都有意义，但它报出的「缺译文」发现
+      // 绝不能把一个按片段/按章/过期范围选的 Run 悄悄扩大成整本翻译。
+      // 用不可变的 run_segments 成员关系，而不是重新评估当前范围。
       const parentRunSegmentIds = new Set(store.getRunSegmentIds(projectId, runId));
       const allMissingFindings = (Array.isArray(audit.findings) ? audit.findings : [])
         .filter((finding: any) => finding.type === 'missing-translation' && finding.repairable === true);
@@ -424,7 +423,7 @@ export function finalizeRunExecution(
         });
       }
     } catch (auditError) {
-      // Quality audit is an additional safety net: it must never turn persisted translations into a failed Run.
+      // 质量审计只是一层额外兜底：它绝不能把已经落库的译文变成一次失败的 Run。
       try {
         store.appendEvent(projectId, runId, 'stage.warning', {
           stage: 'quality-audit',
@@ -506,11 +505,11 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
     const message = error instanceof Error ? error.message : String(error);
     try {
       const status = store.getRunStatus(projectId, runId);
-      // An exception that arrives after explicit cancellation must not turn a cancelled run
-      // into failed or overwrite its user-facing reason.
+      // 用户已明确取消之后才到的异常，不能把 cancelled 的 Run 变成 failed，
+      // 也不能覆盖给它看的取消原因。
       if (status !== 'cancelled' && status !== 'paused') {
-        // A fatal persistence/scheduler error must not strand segments in "running"; failed
-        // segments are eligible for an explicit retry/resume through getRunSegmentsForExecution.
+        // 致命的持久化/调度错误不能把片段卡在 running；标成失败之后，
+        // 才能通过 getRunSegmentsForExecution 显式重试或续跑。
         const run = store.getRun(projectId, runId);
         const stuckIds = (run.segments || [])
           .filter((item: any) => item.status === 'running')
@@ -587,7 +586,7 @@ async function scheduleTranslationWaves(
     }
     return null;
   } catch (error) {
-    // runWithConcurrency waits for all translation workers before surfacing an error.
+    // runWithConcurrency 会等所有翻译 worker 都结束，然后才把错误抛出来。
     return error;
   }
 }
@@ -623,8 +622,8 @@ async function drainAndSettleReviews(
       ' · translationWall=' + Math.round((drainedAt - runStartedAt) / 1000) + 's');
   }
 
-  // Wait for all detached reviews before computing the terminal run status. Translation and
-  // review overlap, but a run cannot be accepted as complete while its reviewers are pending.
+  // 算终态之前要等所有已拆出去的审校结束。翻译和审校是重叠进行的，
+  // 但只要有审校还在跑，这次 Run 就不能算完成。
   const reviewResults = await Promise.allSettled(reviewTasks);
   if (schedulerError) throw schedulerError;
   const failedReviewTask = reviewResults.find((result): result is PromiseRejectedResult => result.status === 'rejected');
@@ -696,8 +695,8 @@ function commitRunContextMemory(
       throw transactionError;
     }
   } catch (memoryError) {
-    // Context memory is supplementary to translation delivery. Never turn a completed translation
-    // into a failed run merely because the suggestion projection could not be saved.
+    // 上下文记忆只是翻译交付的补充。绝不能因为建议投影存不下去，
+    // 就把一次已完成的翻译变成失败的 Run。
     store.appendEvent(projectId, runId, 'stage.warning', {
       stage: 'context-memory',
       warning: '译文已保存，但本轮人物/上下文候选未能并入项目记忆：' +

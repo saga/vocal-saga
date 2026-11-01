@@ -25,8 +25,8 @@ export function recoverInterruptedRuns(store: DocumentProjectStore): void {
       let recoveredTranslations = 0;
       let recoveredContextGraphs = 0;
 
-      // Normalize interrupted segment workers before writing recovery events. The terminal
-      // counts must describe the durable post-recovery state, not the pre-restart worker state.
+      // 先把被打断的片段 worker 归一，再写恢复事件。终态计数必须描述
+      // 恢复之后的持久状态，而不是重启前 worker 的状态。
       db.prepare("UPDATE run_segments SET status = 'pending', updated_at = ? WHERE status = 'running'").run(now);
       const runSegmentCounts = (runId: string): Record<string, number> => {
         const rows = db.prepare(
@@ -39,8 +39,8 @@ export function recoverInterruptedRuns(store: DocumentProjectStore): void {
         };
       };
 
-      // A terminal event is part of the durable state transition. If it already exists,
-      // reconcile the row from that event instead of creating a contradictory second ending.
+      // 终态事件本身就是状态转移的一部分。若它已经存在，
+      // 就按这条事件去对齐记录，不要再造一个自相矛盾的第二个结局。
       const translationRuns = db.prepare(
         "SELECT run_id FROM translation_runs WHERE status IN ('running','queued')"
       ).all() as Array<{ run_id: string }>;
@@ -76,7 +76,7 @@ export function recoverInterruptedRuns(store: DocumentProjectStore): void {
         }
       }
 
-      // Migrate legacy restart-orphans that an older version incorrectly left as paused.
+      // 迁移旧版本误留在 paused 的重启孤儿。
       const legacyPausedRuns = db.prepare(
         "SELECT run_id FROM translation_runs WHERE status = 'paused' AND error = '服务重启后等待恢复'"
       ).all() as Array<{ run_id: string }>;
@@ -96,8 +96,8 @@ export function recoverInterruptedRuns(store: DocumentProjectStore): void {
           recoveredTranslations++;
         }
       }
-      // Backfill legacy terminal rows too: older recovery code changed the DB status but
-      // skipped the terminal event, which is exactly how a phase-only trajectory became immortal.
+      // 旧终态行也要补：老恢复代码改了库里的状态却跳过终态事件，
+      // 轨迹因此只剩阶段事件、永远收不了尾。
       const terminalTranslationRows = db.prepare(
         "SELECT r.run_id, r.status, r.error FROM translation_runs r " +
         "WHERE r.status IN ('failed','completed','partial','cancelled','awaiting_acceptance') " +
@@ -114,7 +114,7 @@ export function recoverInterruptedRuns(store: DocumentProjectStore): void {
         recoveredTranslations++;
       }
 
-      // Running segments were normalized to pending before Run recovery events were written.
+      // 写 Run 恢复事件之前，running 的片段已经归一成 pending 了。
 
       const graphSchemaExists = db.prepare(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'context_graph_runs'"
@@ -187,9 +187,9 @@ export function recoverInterruptedRuns(store: DocumentProjectStore): void {
       }
       db.exec('COMMIT');
 
-      // A process may stop after finishRun persisted awaiting_acceptance but before the
-      // executor committed memory deltas and accepted candidates. Complete that durable
-      // finalization during startup; it is idempotent and keeps new Runs blocked until done.
+      // 进程可能在 finishRun 落盘 awaiting_acceptance 之后、执行器提交记忆增量
+      // 与采纳候选之前停掉。启动时把这步收尾补完；它幂等，
+      // 且在补完之前会继续挡住新的 Run。
       const awaitingAcceptance = db.prepare(
         "SELECT run_id FROM translation_runs WHERE status = 'awaiting_acceptance' ORDER BY created_at, rowid"
       ).all() as Array<{ run_id: string }>;

@@ -1,5 +1,5 @@
 /**
- * Deterministic policy for book-level canonical entity mappings.
+ * 全书级规范实体映射的确定性策略。
  *
  * 原文证据有效，不代表实体值得长期保存，也不代表目标译名正确。
  * Context Graph、context_delta 和记忆升级都应调用本模块，避免不同入口出现不同规则。
@@ -92,7 +92,6 @@ export type EntityWorthInput = {
 };
 
 /**
- * True means the mapping is useful as a book-level canonical entry, not simply that the term exists.
  * 常见国名、语言/民族称谓、普通名词和通用头衔交由普通翻译处理；具有专属含义的概念可显式例外。
  */
 export function isWorthCanonicalEntityMapping(input: EntityWorthInput): boolean {
@@ -105,12 +104,12 @@ export function isWorthCanonicalEntityMapping(input: EntityWorthInput): boolean 
   const genericTerm = kind !== 'person' &&
     (COUNTRY_OR_NATIONALITY.has(source) || GENERIC_NON_PERSON_TERMS.has(source));
 
-  // A standard country name or common word stays out by default. Even a model's claim that it is
-  // book-specific must be supported by recurrence and a concrete significance note.
+  // 标准国名或普通词默认排除。即便模型声称它是本书专属，
+  // 也必须由反复出现和具体的意义说明来支撑。
   if (genericTerm) return explicitMeaning && recurring && hasSignificance;
 
-  // Concepts require cross-chapter evidence even when marked book-specific; that flag is a reason
-  // to retain a recurring concept, not a bypass for a one-off common word or vocabulary example.
+  // 概念类即使被标为「本书专属」，仍然需要跨章证据；这个标记是用来
+  // 保留反复出现的概念，不是给一次性普通词或词汇示例开后门。
   if (kind === 'concept') {
     const crossChapter = (input.chapterCount || 0) >= 2;
     return hasSignificance && crossChapter &&
@@ -121,11 +120,10 @@ export function isWorthCanonicalEntityMapping(input: EntityWorthInput): boolean 
       /^[A-Z][\p{L}\p{M}'’.-]*(?:\s+[A-Z][\p{L}\p{M}'’.-]*){0,5}$/u.test(input.source.trim());
   }
   if (explicitMeaning) return true;
-  // A proper person, named organization, work, object, or place can be useful even if infrequent.
+  // 具名的人物、组织、作品、物件或地点，即使只出现一两次也可能值得收录。
   return ['person', 'place', 'object', 'organization', 'work', 'artifact'].includes(kind);
 }
 
-/** A source name with two distinct normalized targets is ambiguous; do not choose by output order. */
 /**
  * 判断两个目标译名是否冲突（规范化后不同且非空）；用于检测同一源名出现不同译名。
  */
@@ -142,8 +140,8 @@ export type TargetQualityResult = {
 };
 
 /**
- * Target shape guard; it is not a semantic correctness oracle. Strong mapping requires this check
- * plus source evidence and (unless user-confirmed) independent target corroboration.
+ * 目标译名的形状守卫，不是语义正确性的裁判。要成为强映射，还需要
+ * 源文证据，以及（除非用户已确认）来自独立来源的目标佐证。
  */
 export function validateCanonicalTarget(input: {
   source: string;
@@ -155,18 +153,18 @@ export function validateCanonicalTarget(input: {
   let target = input.target.normalize('NFKC').replace(/\s+/g, ' ').trim();
   if (!target) return { valid: false, normalizedTarget: '', reason: 'empty' };
 
-  // A whole-string quote is formatting, not part of the canonical name.
+  // 整体包裹的引号只是排版，不属于规范名。
   target = target.replace(/^[\"'“”‘’《》「」『』]+|[\"'“”‘’《》「」『』]+$/g, '').trim();
   if (!target) return { valid: false, normalizedTarget: '', reason: 'empty' };
-  // NFKC turns a full-width slash into '/', so judge Chinese targets after normalization.
-  // A slash embedded in a Chinese target almost always means multiple alternatives; preserve
-  // Latin product names such as AC/DC only when there is no CJK text around the delimiter.
+  // NFKC 会把全角斜杠转成 '/'，所以要在归一化之后判断中文目标。
+  // 中文目标里夹斜杠，几乎都意味着并列多个译法；只有分隔符两侧
+  // 都没有 CJK 文本时，才保留 AC/DC 这类拉丁产品名。
   if (hasCompoundCanonicalSyntax(target) ||
       /[|]/.test(target) ||
       (/\//.test(target) && (/\p{Script=Han}/u.test(target) || /\s\/\s/.test(target)))) {
     return { valid: false, normalizedTarget: target, reason: 'compound-target' };
   }
-  // Parenthetical translations/notes are not part of a canonical name ("ship (honorific)").
+  // 括号里的译文或注释不属于规范名（如 "ship (honorific)"）。
   if (/[（(][^）)]*[）)]/.test(target)) {
     return { valid: false, normalizedTarget: target, reason: 'annotation-target' };
   }
@@ -179,7 +177,7 @@ export function validateCanonicalTarget(input: {
   const sourceNorm = normalized(source);
   const targetNorm = normalized(target);
   if (targetLang === 'zh' || targetLang.startsWith('zh-')) {
-    // A source acronym can legitimately remain Latin; arbitrary mixed romanized fragments cannot.
+    // 源文缩写本来就可能是拉丁字母；但随意混排的罗曼化碎片不行。
     const latinRuns = target.match(/[A-Za-z]{2,}/g) || [];
     const hasCjk = /[\u3400-\u9fff\u3040-\u30ff]/u.test(target);
     const kind = normalizeCanonicalEntityKind(input.kind);

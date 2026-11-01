@@ -21,7 +21,7 @@ export function normalizeCanonicalTerm(value: string): string {
   return value.normalize('NFKC').toLocaleLowerCase().replace(/[’]/g, "'").replace(/\s+/g, ' ').trim();
 }
 
-// Standalone titles and generic references are contextual language, not canonical entity names.
+// 独立出现的头衔与泛称属于语境语言，不是规范实体名。
 const NON_CANONICAL_NAME_FORMS = new Set([
   'lord', 'general', 'sire', 'council', 'regent', 'regents', 'ship',
   'sir', 'madam', 'madame', 'captain', 'lady', 'samurai',
@@ -59,16 +59,14 @@ function escapeCanonicalTermRegex(value: string): string {
 /** 构建专名匹配正则（拉丁词边界/CJK 子串）。 */
 export function canonicalTermPattern(value: string): string {
   const escaped = value.trim().split(/\s+/).map(escapeCanonicalTermRegex).join('\\s+').replace(/['’]/g, "['’]");
-  // Latin names require token boundaries (King must not match Kingfisher); CJK terms use
-  // exact substring matching because adjacent CJK characters do not have word boundaries.
+  // 拉丁名要求词边界（King 不能匹配到 Kingfisher）；CJK 词用
+  // 精确子串匹配，因为相邻汉字之间没有词边界。
   return /^[A-Za-z0-9][A-Za-z0-9\s._'’\-]*$/.test(value)
     ? '(?<![\\p{L}\\p{N}])' + escaped + '(?![\\p{L}\\p{N}])'
     : escaped;
 }
 
 /**
- * Only map terms backed by a source-visible, operational mapping. Prefer confirmed LiteraryMemory
- * targets over Context Graph targets; contradictory mappings at the same authority level fail closed.
  * 仅保护源文可见、可操作的规范译名映射；确认记忆优先于图谱；同级矛盾映射失败闭合。
  */
 export function buildCanonicalTermProtections(
@@ -115,13 +113,13 @@ export function buildCanonicalTermProtections(
       if (!key || !items.some((item) => new RegExp(canonicalTermPattern(sourceForm), 'iu').test(item.text))) continue;
       const existing = candidateByName.get(key);
       if (!existing || priority > existing.priority) {
-        // An explicitly maintained LiteraryMemory mapping takes precedence over a stale
-        // Context Graph proposal; the winning target must be the same in prompt and restore.
+        // 显式维护的 LiteraryMemory 映射优先于过期的 Context Graph 提议；
+        // 提示词里和恢复时用的目标译名必须是同一个。
         candidateByName.set(key, { sourceForm, target, priority, conflicting: false });
       } else if (priority === existing.priority &&
           normalizeCanonicalTerm(existing.target) !== normalizeCanonicalTerm(target)) {
-        // Two equally authoritative, contradictory mappings are genuinely ambiguous. Fail
-        // closed instead of choosing based on incidental array order.
+        // 两条权威级别相同却互相矛盾的映射，是真的有歧义。
+        // 失败关闭，而不是按数组碰巧的顺序挑一个。
         existing.conflicting = true;
       }
     }
@@ -145,11 +143,11 @@ export function buildCanonicalTermProtections(
 }
 
 /**
- * Context deltas are model-generated metadata, not a second source of truth for canonical names.
- * When the current batch already used a validated TranslationBrief mapping, normalize matching
- * entity proposals to that exact target before persisting the delta. This keeps contradictory
- * "米诺原"/"源氏" proposals from reintroducing a conflict after the translated text was protected.
- * It does not promote unmapped candidates or create target evidence that the model did not provide.
+ * Context 增量是模型生成的元数据，不是规范名的第二个真相来源。
+ * 当本批次已经用了校验过的 TranslationBrief 映射时，在落盘增量之前
+ * 先把匹配的实体提议归一到那个确切的目标译名。这样「米诺原」/「源氏」
+ * 这类矛盾提议，就不会在译文已被保护之后又引入冲突。
+ * 它不会提升未映射的候选，也不会造出模型没给过的目标证据。
  */
 export function normalizeContextDeltaCanonicalTargets(
   delta: ValidatedTranslationContextDelta,
@@ -222,8 +220,7 @@ export function restoreCanonicalTermMarkers(
   return result;
 }
 
-/** Verify every protected marker occurs in the output exactly as often as it occurs
- * in the masked source. A mere includes() check lets the model drop repeated mentions silently. 校验每个受保护标记在输出中的出现次数与掩码源一致，避免模型静默丢弃重复提及。 */
+/** 校验每个受保护标记在输出中的出现次数，是否与掩码源文一致；只做 includes() 检查会放过模型静默丢弃重复提及的情况。 */
 export function canonicalMarkerCountsMatch(
   maskedSource: string,
   maskedTranslation: string,
@@ -313,8 +310,7 @@ export function maskCanonicalTargetText(text: string, protections: CanonicalTerm
   );
 }
 
-/** Mask both source names and their canonical target in Reviewer drafts, preventing review from
- * reintroducing an alternative rendering after the first translation was already corrected. 在 Reviewer 草稿中同时掩码源名称与规范译名，防止审校在初译已修正后重新引入替代译法。 */
+/** 在 Reviewer 草稿里同时掩码源名与其规范译名，防止审校在初译已修正之后重新引入另一种译法。 */
 export function protectCanonicalReviewSegments<T extends { id: string; source: string; draft: string }>(
   segments: T[],
   contextGraph: Record<string, unknown> | null,
@@ -358,8 +354,8 @@ export function restoreCanonicalMarkersDeep(
     return Object.fromEntries(Object.entries(value as Record<string, unknown>)
       .map(([key, item]) => [
         key,
-        // sourceExcerpt is evidence against the original source; restoring it to the target
-        // language would make a valid quoted finding fail server-side grounding checks.
+        // sourceExcerpt 是针对原始源文的证据；把它还原成目标语，
+        // 会让一条本来有效的引文型发现过不了服务端的接地检查。
         restoreCanonicalMarkersDeep(item, protections, key === 'sourceExcerpt' ? 'source' : mode),
       ]));
   }

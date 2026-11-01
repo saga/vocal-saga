@@ -1,7 +1,7 @@
 /**
- * HTTP adapter for the durable document-project API.
- * Request handling is deliberately thin: project state and transitions live in projectStore,
- * while model execution is owned by translationAgent. This keeps UI and CLI on one contract.
+ * 持久化文档项目接口的 HTTP 适配层。
+ * 请求处理刻意做得很薄：项目状态与状态转移归 projectStore，
+ * 模型执行归 translationAgent。这样界面和命令行走的是同一份契约。
  */
 import type { Request, Response } from 'express';
 import { getDocumentProjectStore, type DocumentProjectStore } from './projectStore.ts';
@@ -100,7 +100,7 @@ export async function handleDocumentProjectRequest(req: Request, res: Response, 
       return true;
     }
     const store = getDocumentProjectStore();
-    // Resolve from the service catalog so extension IndexedDB/session loss cannot create duplicate projects.
+    // 从服务端 catalog 解析，免得扩展的 IndexedDB 或会话丢失后又建出一个重复项目。
     if (pathParts.length === 4 && pathParts[3] === 'resolve' && method === 'POST') {
       return await handleProjectResolve(request, store);
     }
@@ -109,8 +109,8 @@ export async function handleDocumentProjectRequest(req: Request, res: Response, 
     }
 
     const projectId = pathParts[3]!;
-    // Every nested route, including run resume/accept/cancel, must reject archived projects.
-    // The per-process SQLite connection cache must not turn an archived project into a live one.
+    // 每个嵌套路由（含 run 的 resume/accept/cancel）都必须拒绝已归档项目。
+    // 进程内的 SQLite 连接缓存不能把已归档项目又变成活项目。
     if (!store.getProject(projectId)) {
       sendApiError(res, 404, '找不到文档项目或项目已归档');
       return true;
@@ -175,9 +175,9 @@ async function handleProjectCollection(request: ProjectApiRequest): Promise<bool
       prompt: body.prompt && typeof body.prompt === 'object' ? body.prompt : undefined,
     };
 
-    // Make concurrent auto-initialization idempotent. The explicit "separate project" action
-    // opts out; every ordinary creation first reuses an exact source match or rejects a
-    // same-name/source-changed candidate so the client can ask for an explicit decision.
+    // 让并发的自动初始化保持幂等。显式的「另建项目」动作退出这套逻辑；
+    // 普通创建会先复用完全匹配的源文，或拒绝「同名但源文已改」的候选，
+    // 好让客户端去问用户做明确决定。
     if (body.allowDuplicate !== true) {
       const resolution = store.resolveProjectForSource(input);
       if (resolution.exactProject) {
@@ -213,7 +213,7 @@ async function handleProjectResolve(request: ProjectApiRequest, store: DocumentP
     sendJson(res, 200, resolution);
     return true;
   }
-  // Import raw files within the local service. The extension does not parse or split documents.
+  // 原始文件在本地服务里导入。扩展不负责解析或切分文档。
   return false;
 }
 
@@ -271,9 +271,9 @@ async function handleProjectImportFile(request: ProjectApiRequest, store: Docume
       return true;
     }
 
-    // A legacy project may have been segmented by an older extension parser. If its immutable
-    // original file matches exactly, reuse its SQLite segments rather than misclassifying the
-    // new server parser's different segmentation as a user-edited source.
+    // 旧项目可能是由更早版本的扩展解析器切的段。若它的不可变原始文件
+    // 完全一致，就复用它已有的 SQLite 片段；不要因为新版服务端解析器
+    // 切分不同，就把源文误判成用户改过。
     if (resolution.relatedProject?.sourceFileSaved &&
         store.matchesStoredSourceFile(resolution.relatedProject.projectId, bytes)) {
       sendJson(res, 200, {
@@ -284,9 +284,9 @@ async function handleProjectImportFile(request: ProjectApiRequest, store: Docume
       return true;
     }
 
-    // Never silently create a second project for a same-name book with different content.
-    // The server parsed this file already, so return the parsed preview for the existing
-    // source-change confirmation workflow instead of asking the extension to parse the binary.
+    // 绝不为「同名但内容不同」的书悄悄再建一个项目。
+    // 服务端已经解析过这个文件，因此直接返回解析预览，
+    // 走已有的「源文已变更」确认流程，而不用再让扩展去解析二进制。
     if (resolution.relatedProject) {
       sendJson(res, 200, {
         sourceChanged: true,
@@ -305,8 +305,8 @@ async function handleProjectImportFile(request: ProjectApiRequest, store: Docume
     });
     try {
       const sourceFile = await store.storeSourceFile(project.projectId, fileName, bytes);
-      // Opening/importing a book must not automatically start a long analysis. The explicit
-      // UI action or a persisted literary Run owns Context Graph preprocessing.
+      // 打开或导入一本书，不能顺手触发一次长时间分析。Context Graph 预处理
+      // 归显式的界面操作、或某次已落盘的文学 Run 所有。
       sendJson(res, 201, { project, sourceFile, reusedExisting: false });
     } catch (error) {
       try { store.archiveProject(project.projectId); } catch { /* preserve the original error */ }
@@ -530,7 +530,7 @@ async function handleRunRoutes(context: ProjectRouteContext): Promise<boolean> {
   const { req, res, url, method, pathParts, store, projectId } = context;
   if (pathParts.length === 7 && pathParts[4] === 'runs' && pathParts[6] === 'translation-briefs' && method === 'GET') {
     const runId = pathParts[5]!;
-    // includeContent is explicit here because the API user is requesting this run's auditable retrieval snapshot.
+    // 这里显式要 includeContent：接口调用方要的正是这次 Run 可审计的检索快照。
     sendJson(res, 200, { runId, translationBriefs: store.listTranslationBriefSnapshots(projectId, runId, true) });
     return true;
   }
@@ -694,8 +694,8 @@ async function handleProjectEventRoutes(context: ProjectRouteContext): Promise<b
     if (!Number.isSafeInteger(after) || after < 0) {
       throw Object.assign(new Error('after 必须是非负整数'), { status: 400 });
     }
-    // Initial trajectory hydration needs the newest window, not the first 5,000 historical rows.
-    // Keep incremental polling bounded, while allowing a larger latest-only snapshot.
+    // 首次拉取轨迹要的是最新那一窗口，而不是最早的 5000 条历史。
+    // 增量轮询保持有界，同时允许首屏只取最新时放宽上限。
     const maxLimit = latest && after === 0 ? 5000 : 1000;
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > maxLimit) {
       throw Object.assign(new Error('limit 必须是 1-' + maxLimit + ' 的整数'), { status: 400 });

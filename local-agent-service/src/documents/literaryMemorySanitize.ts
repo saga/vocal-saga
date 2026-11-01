@@ -34,9 +34,9 @@ function emptyLiteraryMemory(): Record<string, any> {
  */
 export function sanitizeProjectLiteraryMemory(input: unknown): Record<string, any> {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return emptyLiteraryMemory();
-  // Deliberately project known fields before measuring size. A caller may have extra
-  // properties such as a full source document or Context Graph payload; none belongs in
-  // LiteraryMemory and unknown fields must not make a valid structured memory fail to save.
+  // 刻意先只投影已知字段，再来量体积。调用方可能带着额外属性，
+  // 比如整份源文或 Context Graph 负载；这些都不属于 LiteraryMemory，
+  // 未知字段也不能让一份本来合法的结构化记忆存不下去。
   const raw = input as Record<string, any>;
   const rejectedItems = normalizeRejectedItems(raw);
   const characterVoices = normalizeCharacterVoices(raw);
@@ -309,16 +309,16 @@ function normalizeCharacterVoices(raw: Record<string, any>): Array<Record<string
     if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
     const canonicalSourceName = text(item.canonicalSourceName || item.source || item.name, 120);
     const characterId = text(item.characterId, 100);
-    // Old numeric defaults (Context Graph 0.55 and literary fallback 0.4) have no provenance; do not treat them as scores.
+    // 旧的数值默认值（Context Graph 的 0.55、文学回退的 0.4）没有出处，不能当分数用。
     const profileConfidence = numericConfidence(item.confidence);
     const profileConfidenceSource = profileConfidence !== null && item.confidenceSource === 'model_self_report'
       ? 'model_self_report' as const
       : undefined;
     const voice = item.voiceCore && typeof item.voiceCore === 'object' && !Array.isArray(item.voiceCore) ? item.voiceCore : {};
     const rawEvidence = Array.isArray(item.evidence) ? item.evidence : [];
-    // Old persisted records capped evidence to eight rows without recording whether more existed.
-    // They are ambiguous: their voiceCore may summarize later dialogue no longer present in the
-    // stored evidence list. Mark those legacy profiles incomplete so temporal retrieval fails closed.
+    // 旧的持久记录把证据截到八行，却没记下是否还有更多。
+    // 这类记录有歧义：它们的 voiceCore 可能概括了早已不在证据列表里的后文对白。
+    // 把旧档案标记为不完整，好让时间检索失败关闭。
     const evidenceTruncated = item.evidenceTruncated === true ||
       (item.evidencePolicyVersion !== 'character-evidence-v2-complete' && rawEvidence.length >= 8);
     const evidence = rawEvidence.slice(-12).flatMap((ev: any) => {
@@ -427,8 +427,8 @@ function normalizeChineseEditorialProfile(raw: Record<string, any>): Record<stri
   };
   const editorialStatus = rawEditorial?.status === 'rejected' ? 'rejected' : 'confirmed';
   const pendingEditorialUpdate = normalizeEditorialCandidate(rawEditorial?.pendingUpdate);
-  // Migrate legacy pending updates to the active profile automatically. New updates are already
-  // adopted by the generator; this path handles snapshots created by older versions.
+  // 把旧的 pending 更新自动迁移成活动档案。新的更新由生成器直接采纳；
+  // 这条路径只为处理旧版本留下的快照。
   const chineseEditorialProfile = rawEditorial ? {
     version: 1,
     profileVersion: Math.max(1, Math.min(1000, Number(rawEditorial.profileVersion) || 1)) + (pendingEditorialUpdate && editorialStatus !== 'rejected' ? 1 : 0),
@@ -461,15 +461,15 @@ function normalizeChineseEditorialProfile(raw: Record<string, any>): Record<stri
  * 而不是切序列化 JSON（那会破坏记忆 schema）。全部字段耗尽仍超限则报 413。
  */
 function enforceMemoryByteLimit(memory: Record<string, any>): void {
-  // 中文：上限作用于最终持久化的规范 DTO，而非上面已丢弃的不可信输入字段。
+  // 上限作用于最终持久化的规范 DTO，而非上面已丢弃的不可信输入字段。
   // 确定性地裁剪低价值证据；绝不直接切片序列化 JSON（可能破坏记忆 schema）。
-  // The cap applies to the canonical DTO that will actually be persisted, not untrusted
-  // input fields that are discarded above. Prune lower-value evidence deterministically;
-  // never slice serialized JSON (which could corrupt the memory schema).
+  // 上限作用在真正要落盘的规范 DTO 上，而不是上面已丢弃的不可信输入字段。
+  // 按确定性顺序裁掉价值更低的证据；
+  // 绝不要对序列化后的 JSON 直接切片（那会把记忆结构切坏）。
   const serializedBytes = () => Buffer.byteLength(JSON.stringify(memory), 'utf8');
   while (serializedBytes() > MAX_MEMORY_BYTES) {
-    // Trim low-value historical arrays in batches. Re-serializing a multi-megabyte memory
-    // once per entry made worst-case normalization quadratic and could stall document startup.
+    // 分批裁剪低价值的历史数组。原先每处理一条就重新序列化一次几 MB 的记忆，
+    // 最坏情况下的归一化是平方复杂度，能把文档启动卡住。
     if (memory.recentExamples.length) {
       memory.recentExamples.splice(0, Math.max(1, Math.ceil(memory.recentExamples.length / 2)));
       continue;
@@ -483,9 +483,9 @@ function enforceMemoryByteLimit(memory: Record<string, any>): void {
       continue;
     }
 
-    // Keep profiles/names, but progressively reduce source excerpts. Preserve at least one
-    // recent evidence item per profile, and prune evidence in a round-robin pass so input order
-    // does not cause one early character to lose every quote before later profiles are touched.
+    // 保留档案与名字，逐步削减源文摘录。每个档案至少留一条最近证据，
+    // 并用轮转方式裁剪，避免因输入顺序让靠前的角色被削光引文、
+    // 而靠后的档案还没轮到。
     const bytesToFree = serializedBytes() - MAX_MEMORY_BYTES + 16 * 1024;
     let freedBytes = 0;
     const profilesWithEvidence = memory.characterVoices.filter((profile: any) => profile.evidence.length > 1);
@@ -525,8 +525,8 @@ function enforceMemoryByteLimit(memory: Record<string, any>): void {
       memory.openQuestions.pop();
       continue;
     }
-    // All collection fields are exhausted; bounded scalar/style fields should keep this
-    // unreachable, but fail with a precise error instead of storing over-cap data.
+    // 所有集合字段都削到头了；有界的标量/文风字段本应让这里到不了，
+    // 但真到了就要精确报错，而不是把超限数据存下去。
     throw Object.assign(new Error('结构化文学记忆本身超过 5 MiB 上限，已达到可裁剪边界'), { status: 413 });
   }
 }
