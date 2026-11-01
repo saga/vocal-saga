@@ -28,15 +28,13 @@ function runComparisonData(projectId: string, runId: string) {
 }
 
 /**
- * 对两个不同 Run 做同源版本的前后对照评测。
- * 先比较来源版本和语言条件，再计算确定性指标并生成盲评映射；不同来源版本的数字没有可比性，
- * 盲评/人工评价与自动指标分开保存，不能将模型自报分数当作实际质量改善证据。
+ * 前后对照的可比性：来源版本、语言、翻译模式、终态与片段集合都必须一致。
+ * 任一条不满足就直接拒绝——数字不可比时给出报告比不给更危险。
  */
-export function createProjectQualityEvaluation(projectId: string, beforeRunId: string, afterRunId: string): Record<string, any> {
-  if (!beforeRunId || !afterRunId || beforeRunId === afterRunId) fail('必须提供两个不同的 beforeRunId 和 afterRunId。');
-  const store = getDocumentProjectStore();
-  const before = runComparisonData(projectId, beforeRunId);
-  const after = runComparisonData(projectId, afterRunId);
+function assertEvaluationComparable(
+  before: ReturnType<typeof runComparisonData>,
+  after: ReturnType<typeof runComparisonData>,
+): void {
   if (before.metrics.sourceRevisionId !== after.metrics.sourceRevisionId) fail('前后运行的来源版本不同，不能作有效对照。', 409);
   if (before.metrics.targetLang !== after.metrics.targetLang || before.context.run.sourceLang !== after.context.run.sourceLang) {
     fail('前后运行的源语言或目标语言不同，不能作有效对照。', 409);
@@ -53,18 +51,25 @@ export function createProjectQualityEvaluation(projectId: string, beforeRunId: s
       before.metrics.segmentIds.some((id: string) => !afterIdSet.has(id))) {
     fail('前后运行的片段范围不同；为了可比性，必须使用同一来源版本和相同片段集合。', 409);
   }
-  const beforeIds = new Set(before.metrics.segmentIds);
-  const segmentsRows = store.getProjectContext(projectId).db.prepare(
-    'SELECT segment_id AS id, ordinal, text, context_path AS contextPath FROM source_segments WHERE source_revision_id = ? ORDER BY ordinal'
-  ).all(before.metrics.sourceRevisionId) as any[];
-  const sourceById = new Map(segmentsRows.map((row) => [String(row.id), row]));
-  const candidateIds = before.metrics.segmentIds.filter((id: string) =>
+}
+
+/**
+ * 盲评抽样：先按等距章节各取一条，再用等距的剩余变化片段补满。
+ * 这样长篇小说不会只抽到前 40 章。
+ * Reserve one sample per evenly spaced chapter first, then use evenly spaced remaining
+ * changed segments. This prevents long novels from sampling only the first 40 chapters.
+ */
+function selectBlindSampleIds(
+  before: ReturnType<typeof runComparisonData>,
+  after: ReturnType<typeof runComparisonData>,
+  sourceById: Map<string, any>,
+): Set<string> {
+  const maxSamples = 40;
+  const changedIds = before.metrics.segmentIds.filter((id: string) =>
     before.translations.get(id) !== after.translations.get(id));
-  const prioritized = candidateIds;
-  const maxBlindItems = 40;
-  const maxSamples = Math.min(maxBlindItems, prioritized.length);
+
   const byChapter = new Map<string, string[]>();
-  for (const id of prioritized) {
+  for (const id of changedIds) {
     const segment = sourceById.get(id);
     if (!segment) continue;
     const chapter = String(segment.contextPath || '');
@@ -74,20 +79,39 @@ export function createProjectQualityEvaluation(projectId: string, beforeRunId: s
   }
   const chapterEntries = Array.from(byChapter.entries());
   const selected = new Set<string>();
-  // Reserve one sample per evenly spaced chapter first, then use evenly spaced remaining
-  // changed segments. This prevents long novels from sampling only the first 40 chapters.
   const chapterSlots = Math.min(maxSamples, chapterEntries.length);
   for (let i = 0; i < chapterSlots; i++) {
     const chapterIndex = Math.floor(i * chapterEntries.length / chapterSlots);
     const representative = chapterEntries[chapterIndex]?.[1]?.[0];
     if (representative) selected.add(representative);
   }
-  const remainingIds = prioritized.filter((id: string) => !selected.has(id));
+  const remainingIds = changedIds.filter((id: string) => !selected.has(id));
   const additionalSlots = Math.min(maxSamples - selected.size, remainingIds.length);
   for (let i = 0; i < additionalSlots; i++) {
     const index = Math.floor(i * remainingIds.length / additionalSlots);
     selected.add(remainingIds[index]!);
   }
+  return selected;
+}
+
+/** 读取评估需要的源段索引（章节、原文），盲评包与抽样都要用。 */
+function loadEvaluationSourceIndex(projectId: string, sourceRevisionId: string): Map<string, any> {
+  const rows = getDocumentProjectStore().getProjectContext(projectId).db.prepare(
+    'SELECT segment_id AS id, ordinal, text, context_path AS contextPath FROM source_segments WHERE source_revision_id = ? ORDER BY ordinal'
+  ).all(sourceRevisionId) as any[];
+  return new Map(rows.map((row) => [String(row.id), row]));
+}
+
+/** 盲评包：每个样本独立随机 A/B 位置，映射关系单独保存，评完才揭示。 */
+function buildBlindPacket(
+  selected: Set<string>,
+  sourceById: Map<string, any>,
+  before: ReturnType<typeof runComparisonData>,
+  after: ReturnType<typeof runComparisonData>,
+): {
+  blindPacket: Array<Record<string, any>>;
+  blindMapping: Record<string, { A: 'before' | 'after'; B: 'before' | 'after' }>;
+} {
   const blindMapping: Record<string, { A: 'before' | 'after'; B: 'before' | 'after' }> = {};
   const blindPacket = Array.from(selected).map((id) => {
     const source = sourceById.get(id)!;
@@ -104,19 +128,74 @@ export function createProjectQualityEvaluation(projectId: string, beforeRunId: s
       variantB: mapping.B === 'before' ? beforeText : afterText,
     };
   });
-  const metricKeys = [
-    'missingTranslationCount', 'missingTranslationRatePer100Segments', 'coveragePercent', 'terminologyDriftCount',
-    'terminologyDriftRatePer100Segments', 'numericTokenMismatchCount', 'numericTokenMismatchRatePer100Segments',
-    'repeatedExpressionDriftGroups', 'repeatedExpressionDriftRatePer100Segments',
-    'styleFindingCount', 'styleFindingRatePer100Segments', 'characterVoiceFindingCount', 'characterVoiceFindingRatePer100Segments',
-    'totalPipelineRequestCount', 'totalPromptCharsKnown', 'modelDurationMsKnown',
-  ];
+  return { blindPacket, blindMapping };
+}
+
+const EVALUATION_METRIC_KEYS = [
+  'missingTranslationCount', 'missingTranslationRatePer100Segments', 'coveragePercent', 'terminologyDriftCount',
+  'terminologyDriftRatePer100Segments', 'numericTokenMismatchCount', 'numericTokenMismatchRatePer100Segments',
+  'repeatedExpressionDriftGroups', 'repeatedExpressionDriftRatePer100Segments',
+  'styleFindingCount', 'styleFindingRatePer100Segments', 'characterVoiceFindingCount', 'characterVoiceFindingRatePer100Segments',
+  'totalPipelineRequestCount', 'totalPromptCharsKnown', 'modelDurationMsKnown',
+];
+
+/** 指标差（after − before）：只做确定性数值相减，不含任何质量判断。 */
+function buildMetricDelta(
+  before: ReturnType<typeof runComparisonData>,
+  after: ReturnType<typeof runComparisonData>,
+): Record<string, number> {
   const delta: Record<string, number> = {};
-  for (const key of metricKeys) {
+  for (const key of EVALUATION_METRIC_KEYS) {
     const a = Number(before.metrics.metrics[key] || 0);
     const b = Number(after.metrics.metrics[key] || 0);
     delta[key] = Math.round((b - a) * 100) / 100;
   }
+  return delta;
+}
+
+/** 配置快照：两次运行的模型/模式/版本必须留档，否则后面的数字无从解释。 */
+function buildRunConfiguration(metrics: any): Record<string, any> {
+  return {
+    sourceLang: metrics.sourceLang, targetLang: metrics.targetLang,
+    provider: metrics.provider, model: metrics.model,
+    translationMode: metrics.translationMode, reviewEnabled: metrics.reviewEnabled,
+    promptRevisionId: metrics.promptRevisionId, memoryRevisionId: metrics.memoryRevisionId,
+    status: metrics.status,
+  };
+}
+
+/** 盲评说明：有样本时强调不要预设修订版本更好；没有样本时说明为什么不做盲评。 */
+function buildBlindReviewSection(
+  blindPacket: Array<Record<string, any>>,
+): Record<string, any> {
+  return {
+    status: blindPacket.length ? 'pending' : 'not_applicable',
+    sampleCount: blindPacket.length,
+    instruction: blindPacket.length
+      ? '请先对照原文盲评 A/B，不要查阅运行 ID；每个样本只比较给定维度，不预设修订版本一定更好。A/B 位置已按样本独立随机化。'
+      : '前后运行的目标译文完全相同，没有可进行文本偏好盲评的样本；仅报告覆盖率、审校发现与可用成本指标。',
+    packet: blindPacket,
+    result: blindPacket.length ? null : { reason: 'no_translation_differences' },
+  };
+}
+
+/**
+ * 对两个不同 Run 做同源版本的前后对照评测。
+ * 先比较来源版本和语言条件，再计算确定性指标并生成盲评映射；不同来源版本的数字没有可比性，
+ * 盲评/人工评价与自动指标分开保存，不能将模型自报分数当作实际质量改善证据。
+ */
+export function createProjectQualityEvaluation(projectId: string, beforeRunId: string, afterRunId: string): Record<string, any> {
+  if (!beforeRunId || !afterRunId || beforeRunId === afterRunId) fail('必须提供两个不同的 beforeRunId 和 afterRunId。');
+  const store = getDocumentProjectStore();
+  const before = runComparisonData(projectId, beforeRunId);
+  const after = runComparisonData(projectId, afterRunId);
+  assertEvaluationComparable(before, after);
+
+  const sourceById = loadEvaluationSourceIndex(projectId, before.metrics.sourceRevisionId);
+  const selected = selectBlindSampleIds(before, after, sourceById);
+  const { blindPacket, blindMapping } = buildBlindPacket(selected, sourceById, before, after);
+  const delta = buildMetricDelta(before, after);
+
   const evaluationId = randomUUID();
   const report: any = {
     evaluationId,
@@ -128,20 +207,8 @@ export function createProjectQualityEvaluation(projectId: string, beforeRunId: s
     comparable: true,
     deterministic: {
       configuration: {
-        before: {
-          sourceLang: before.metrics.sourceLang, targetLang: before.metrics.targetLang,
-          provider: before.metrics.provider, model: before.metrics.model,
-          translationMode: before.metrics.translationMode, reviewEnabled: before.metrics.reviewEnabled,
-          promptRevisionId: before.metrics.promptRevisionId, memoryRevisionId: before.metrics.memoryRevisionId,
-          status: before.metrics.status,
-        },
-        after: {
-          sourceLang: after.metrics.sourceLang, targetLang: after.metrics.targetLang,
-          provider: after.metrics.provider, model: after.metrics.model,
-          translationMode: after.metrics.translationMode, reviewEnabled: after.metrics.reviewEnabled,
-          promptRevisionId: after.metrics.promptRevisionId, memoryRevisionId: after.metrics.memoryRevisionId,
-          status: after.metrics.status,
-        },
+        before: buildRunConfiguration(before.metrics),
+        after: buildRunConfiguration(after.metrics),
       },
       before: before.metrics.metrics,
       after: after.metrics.metrics,
@@ -154,15 +221,7 @@ export function createProjectQualityEvaluation(projectId: string, beforeRunId: s
       },
       runDisclosure: null as null | { beforeRunId: string; afterRunId: string },
     },
-    blindReview: {
-      status: blindPacket.length ? 'pending' : 'not_applicable',
-      sampleCount: blindPacket.length,
-      instruction: blindPacket.length
-        ? '请先对照原文盲评 A/B，不要查阅运行 ID；每个样本只比较给定维度，不预设修订版本一定更好。A/B 位置已按样本独立随机化。'
-        : '前后运行的目标译文完全相同，没有可进行文本偏好盲评的样本；仅报告覆盖率、审校发现与可用成本指标。',
-      packet: blindPacket,
-      result: blindPacket.length ? null : { reason: 'no_translation_differences' },
-    },
+    blindReview: buildBlindReviewSection(blindPacket),
   };
   if (!blindPacket.length) report.deterministic.runDisclosure = { beforeRunId, afterRunId };
   store.saveQualityEvaluation(projectId, report, blindMapping, []);

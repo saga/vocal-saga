@@ -392,6 +392,48 @@ function buildBriefDiagnostics(input: {
   };
 }
 
+/** 检索停用词：只影响分词打分，不参与任何持久化。 */
+const EXAMPLE_STOP_WORDS = new Set([
+  'about','after','again','against','almost','also','among','another','around','because','before','being',
+  'between','could','does','during','each','every','from','have','hers','himself','into','just','more',
+  'most','other','over','same','should','some','such','than','that','their','them','then','there','these',
+  'they','this','those','through','under','very','were','what','when','where','which','while','with','would',
+  'your','you','the','and','for','are','was','were','but','not','you','his','her','she','him','our','out',
+  'who','how','why','can','did','had','has','its','let','may','now','off','once','one','only','own','say',
+  'said','see','too','two','all','any','day','get','got','new','old','way'
+]);
+
+/** 词面 token：2 字以上的字母数字串，去掉停用词。 */
+function sourceTokens(value: unknown): Set<string> {
+  return new Set(
+    (normalizedSourceText(value).match(/[\p{L}\p{N}]{2,}/gu) || [])
+      .filter((token) => !EXAMPLE_STOP_WORDS.has(token))
+  );
+}
+
+/** 检索用的当前批次快照：词面、章节、体裁与可见人名，打分只依赖这些。 */
+type ExampleRetrievalBase = {
+  currentExampleSource: string;
+  currentTokens: Set<string>;
+  currentKinds: Set<string>;
+  currentChapters: Set<string>;
+  visibleReferenceNames: unknown[];
+  currentChapterParams: string[];
+  candidateTerms: string[];
+  recentOrdinalBoundary: number;
+};
+
+/** 取数返回的一行已采纳译例。 */
+type RawAcceptedExampleRow = {
+  segmentId: string; ordinal: number; source: string; chapter: string; kind: string;
+  target: string; origin: string; acceptedAt: string;
+};
+
+/** 打分后的一行译例：保留原始字段与命中信息，供排序与去重阶段共用。 */
+type ScoredExampleRow = RawAcceptedExampleRow & {
+  score: number; shared: number; exactPhrase: number; sharedNamedEntity: number; tokens: Set<string>;
+};
+
 /**
  * 检索可用的历史译例：只从「同一来源版本、已采纳、且早于批次」的记录里挑，
  * 再按词面重合度、同名实体、同章节、人工采纳与临近程度打分，最后做去重与字数预算裁剪。
@@ -401,23 +443,42 @@ function retrieveAcceptedExamples(
   rawMemory: Record<string, any>,
   exampleBudgetChars: number,
 ): AcceptedExampleRetrieval {
-  const { db, revisionId, firstOrdinal, items, precedingSegments, appearedBefore } = boundary;
+  const base = buildExampleRetrievalBase(boundary, rawMemory);
+  const acceptedExampleRows = loadAcceptedExampleRows(boundary, base);
+  const scoredExamples = scoreAcceptedExamples(acceptedExampleRows, base, boundary.firstOrdinal);
+  const selection = selectRetrievedExamples(scoredExamples, boundary.precedingSegments, exampleBudgetChars);
+
+  rawMemory.recentExamples = selection.retrievedExamples;
+  rawMemory.__translationBriefDiagnostics = {
+    ...(rawMemory.__translationBriefDiagnostics || {}),
+    acceptedExamplesRetrieved: scoredExamples.length,
+    acceptedExamplesInjected: selection.retrievedExamples.length,
+    acceptedExamplesExcludedAsPreceding: selection.excludedAsPreceding,
+    acceptedExamplesTrimmedByBudget: selection.trimmedByBudget,
+    acceptedExampleChars: selection.retrievedExampleChars,
+    acceptedExampleBudgetChars: Math.max(0, exampleBudgetChars),
+  };
+
+  return {
+    retrievedExamples: selection.retrievedExamples,
+    scoredExamples,
+    acceptedExampleRows,
+    currentChapters: base.currentChapters,
+    currentTokens: base.currentTokens,
+    candidateTerms: base.candidateTerms,
+    recentOrdinalBoundary: base.recentOrdinalBoundary,
+    retrievedExampleChars: selection.retrievedExampleChars,
+    acceptedExamplesExcludedAsPreceding: selection.excludedAsPreceding,
+    acceptedExamplesTrimmedByBudget: selection.trimmedByBudget,
+  };
+}
+
+/** 当前批次的检索基准：词面、章节、体裁与「边界前出现过」的可见人名。 */
+function buildExampleRetrievalBase(boundary: TemporalBoundary, rawMemory: Record<string, any>): ExampleRetrievalBase {
+  const { firstOrdinal, items, precedingSegments, appearedBefore } = boundary;
   // Never trust book-level recentExamples: retrieve examples from the accepted translation
   // ledger, pinned to this source revision and strictly before the current batch.
   const currentExampleSource = [...precedingSegments, ...items].map((item) => String(item.text || '')).join(' ');
-  const stopWords = new Set([
-    'about','after','again','against','almost','also','among','another','around','because','before','being',
-    'between','could','does','during','each','every','from','have','hers','himself','into','just','more',
-    'most','other','over','same','should','some','such','than','that','their','them','then','there','these',
-    'they','this','those','through','under','very','were','what','when','where','which','while','with','would',
-    'your','you','the','and','for','are','was','were','but','not','you','his','her','she','him','our','out',
-    'who','how','why','can','did','had','has','its','let','may','now','off','once','one','only','own','say',
-    'said','see','too','two','all','any','day','get','got','new','old','way'
-  ]);
-  const sourceTokens = (value: unknown) => new Set(
-    (normalizedSourceText(value).match(/[\p{L}\p{N}]{2,}/gu) || [])
-      .filter((token) => !stopWords.has(token))
-  );
   const currentTokens = sourceTokens(currentExampleSource);
   const currentKinds = new Set(items.map((item) => String(item.kind || '')).filter(Boolean));
   const currentChapters = new Set(items.map((item) => String(item.contextPath || '')).filter(Boolean));
@@ -427,24 +488,39 @@ function retrieveAcceptedExamples(
     ...(Array.isArray(rawMemory.characterVoices) ? rawMemory.characterVoices.flatMap((profile: any) =>
       [profile?.canonicalSourceName, ...(Array.isArray(profile?.aliases) ? profile.aliases : [])]) : []),
   ].filter((name: unknown) => typeof name === 'string' && appearedBefore(name));
+  return {
+    currentExampleSource,
+    currentTokens,
+    currentKinds,
+    currentChapters,
+    visibleReferenceNames,
+    currentChapterParams: Array.from(currentChapters),
+    candidateTerms: Array.from(currentTokens)
+      .filter((token) => token.length >= 3)
+      .sort((a, b) => b.length - a.length || a.localeCompare(b))
+      .slice(0, 12),
+    recentOrdinalBoundary: Math.max(0, firstOrdinal - 250),
+  };
+}
 
-  // Keep retrieval bounded without relying on a fixed "last N examples" window alone:
-  // include recent accepted work, the current chapter, manually accepted examples, and rows
-  // matching a small set of distinctive current-source tokens. Scoring/ranking below remains
-  // authoritative. Query results are pinned to the immutable source revision and accepted row.
-  const currentChapterParams = Array.from(currentChapters);
-  const candidateTerms = Array.from(currentTokens)
-    .filter((token) => token.length >= 3)
-    .sort((a, b) => b.length - a.length || a.localeCompare(b))
-    .slice(0, 12);
+/**
+ * 候选译例的取数：只取同一来源版本、最新一条已采纳、且 ordinal 早于边界的记录。
+ * 命中共四类——近期窗口、当前章节、人工采纳、与当前原文有区分度词面重合。
+ * Keep retrieval bounded without relying on a fixed "last N examples" window alone:
+ * include recent accepted work, the current chapter, manually accepted examples, and rows
+ * matching a small set of distinctive current-source tokens. Scoring/ranking below remains
+ * authoritative. Query results are pinned to the immutable source revision and accepted row.
+ */
+function loadAcceptedExampleRows(boundary: TemporalBoundary, base: ExampleRetrievalBase): RawAcceptedExampleRow[] {
+  const { db, revisionId, firstOrdinal } = boundary;
+  const { currentChapterParams, candidateTerms, recentOrdinalBoundary } = base;
   const candidateClauses = [
     's.ordinal >= ?',
     ...(currentChapterParams.length ? ['s.context_path IN (' + currentChapterParams.map(() => '?').join(',') + ')'] : []),
     "tr.origin = 'manual'",
     ...candidateTerms.map(() => 'instr(lower(s.text), lower(?)) > 0'),
   ];
-  const recentOrdinalBoundary = Math.max(0, firstOrdinal - 250);
-  const acceptedExampleRows = db.prepare(
+  return db.prepare(
     'SELECT s.segment_id AS segmentId, s.ordinal, s.text AS source, s.context_path AS chapter, ' +
       's.kind, tr.translation_text AS target, tr.origin, COALESCE(tr.accepted_at, tr.created_at) AS acceptedAt ' +
     'FROM translation_results tr JOIN source_segments s ' +
@@ -464,12 +540,17 @@ function retrieveAcceptedExamples(
     ...(currentChapterParams.length ? currentChapterParams : []),
     ...candidateTerms,
     ...(currentChapterParams.length ? currentChapterParams : []),
-  ) as Array<{
-    segmentId: string; ordinal: number; source: string; chapter: string; kind: string;
-    target: string; origin: string; acceptedAt: string;
-  }>;
+  ) as RawAcceptedExampleRow[];
+}
 
-  const scoredExamples = acceptedExampleRows.map((row) => {
+/** 打分：词面重合度为主，完全包含原文短语、同名实体、同章节、人工采纳与临近程度各自加权。 */
+function scoreAcceptedExamples(
+  acceptedExampleRows: RawAcceptedExampleRow[],
+  base: ExampleRetrievalBase,
+  firstOrdinal: number,
+): ScoredExampleRow[] {
+  const { currentExampleSource, currentTokens, currentKinds, currentChapters, visibleReferenceNames } = base;
+  return acceptedExampleRows.map((row) => {
     const tokens = sourceTokens(row.source);
     const shared = Array.from(tokens).filter((token) => currentTokens.has(token)).length;
     const overlap = shared / Math.max(1, Math.min(currentTokens.size, 12));
@@ -489,24 +570,39 @@ function retrieveAcceptedExamples(
   }).filter((row) => row.shared >= 2 || row.exactPhrase > 0 || row.sharedNamedEntity > 0)
     .sort((a, b) => b.score - a.score || Number(b.origin === 'manual') - Number(a.origin === 'manual') ||
       Number(b.ordinal) - Number(a.ordinal));
+}
 
+/**
+ * 去重与预算裁剪：高度重合的译例只会重复同一份证据，挤掉真正有用的风格样本。
+ * 与已选译例词面高度重合、且既不同名实体也不完全包含原文的，直接跳过。
+ */
+function selectRetrievedExamples(
+  scoredExamples: ScoredExampleRow[],
+  precedingSegments: BriefSegment[],
+  exampleBudgetChars: number,
+): {
+  retrievedExamples: AcceptedExample[];
+  retrievedExampleChars: number;
+  excludedAsPreceding: number;
+  trimmedByBudget: number;
+} {
   // Select a compact, diverse set rather than injecting every historical match. Highly
   // overlapping examples usually repeat the same evidence and displace useful style variety.
-  const retrievedExamples: Array<{ segmentId: string; source: string; target: string; chapter: string; origin: string }> = [];
+  const retrievedExamples: AcceptedExample[] = [];
   const selectedExampleTokens: Set<string>[] = [];
   const selectedPrecedingIds = new Set(precedingSegments.map((segment) => segment.id));
   let retrievedExampleChars = 0;
-  let acceptedExamplesExcludedAsPreceding = 0;
-  let acceptedExamplesTrimmedByBudget = 0;
+  let excludedAsPreceding = 0;
+  let trimmedByBudget = 0;
   for (const row of scoredExamples) {
     const source = String(row.source || '');
     const target = String(row.target || '');
     if (!source || !target) continue;
     if (selectedPrecedingIds.has(String(row.segmentId))) {
-      acceptedExamplesExcludedAsPreceding++;
+      excludedAsPreceding++;
       continue;
     }
-    const tokens = row.tokens as Set<string>;
+    const tokens = row.tokens;
     const redundant = selectedExampleTokens.some((selected) => {
       if (!tokens.size || !selected.size) return false;
       const intersection = Array.from(tokens).filter((token) => selected.has(token)).length;
@@ -522,29 +618,14 @@ function retrieveAcceptedExamples(
     const exampleChars = JSON.stringify(example).length;
     if (retrievedExamples.length >= MAX_ACCEPTED_EXAMPLES ||
         retrievedExampleChars + exampleChars + (retrievedExamples.length ? 1 : 2) > Math.max(0, exampleBudgetChars)) {
-      acceptedExamplesTrimmedByBudget++;
+      trimmedByBudget++;
       continue;
     }
     retrievedExamples.push(example);
     retrievedExampleChars += exampleChars;
     selectedExampleTokens.push(tokens);
   }
-  rawMemory.recentExamples = retrievedExamples;
-  rawMemory.__translationBriefDiagnostics = {
-    ...(rawMemory.__translationBriefDiagnostics || {}),
-    acceptedExamplesRetrieved: scoredExamples.length,
-    acceptedExamplesInjected: retrievedExamples.length,
-    acceptedExamplesExcludedAsPreceding,
-    acceptedExamplesTrimmedByBudget,
-    acceptedExampleChars: retrievedExampleChars,
-    acceptedExampleBudgetChars: Math.max(0, exampleBudgetChars),
-  };
-
-  return {
-    retrievedExamples, scoredExamples, acceptedExampleRows, currentChapters, currentTokens,
-    candidateTerms, recentOrdinalBoundary, retrievedExampleChars,
-    acceptedExamplesExcludedAsPreceding, acceptedExamplesTrimmedByBudget,
-  };
+  return { retrievedExamples, retrievedExampleChars, excludedAsPreceding, trimmedByBudget };
 }
 
 /**

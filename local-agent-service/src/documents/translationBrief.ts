@@ -348,6 +348,20 @@ function buildBatchContextGraph(
   return graph;
 }
 
+/** 记忆实体在本批次的时间可见性判定，实体循环里反复用到。 */
+type MemoryVisibility = {
+  db: any;
+  revisionId: string;
+  firstOrdinal: number;
+  sourceText: string;
+  /** 名字在批次开始时已经出现，或出现在本批原文里。 */
+  sourceVisible(name: unknown): boolean;
+  /** 别名同样要求边界可见，后文才出现的别名不得激活映射。 */
+  aliasVisible(alias: unknown): boolean;
+  /** 证据引文所属源段，带缓存；找不到返回 null。 */
+  sourceRowFor(segmentId: unknown): { ordinal: number; text: string } | null;
+};
+
 /**
  * 把时间可见记忆里的实体合并进 Context Graph 的 nameMappings。
  * 用户确认的映射是权威条目：它覆盖同名候选，且在首次出现时就生效。
@@ -361,37 +375,70 @@ function mergeMemoryEntitiesIntoMappings(
   visiblePrecedingSegments: BriefSegment[],
   targetLang: string,
 ): Record<string, any> {
-  const graphRetrievalDiagnostics = (graph as any)?.retrievalDiagnostics &&
+  const graphRetrievalDiagnostics = takeGraphRetrievalDiagnostics(graph);
+  if (!graph || !Array.isArray(graph.nameMappings)) return graphRetrievalDiagnostics;
+
+  // Do not feed generic titles or aliases belonging to another person back to the translator.
+  graph.nameMappings = graph.nameMappings.flatMap((mapping: any) => {
+    const source = typeof mapping?.source === 'string' ? mapping.source.trim() : '';
+    const target = typeof mapping?.target === 'string' ? mapping.target.trim() : '';
+    if (!source || !target || isGenericCanonicalSourceName(source)) return [];
+    return [{ ...mapping, aliases: safeCanonicalSourceAliases(source, mapping.aliases) }];
+  });
+
+  const visibility = createMemoryVisibility(projectId, sourceRevisionId, items, visiblePrecedingSegments);
+  const memoryEntities = Array.isArray((temporalMemory as any)?.entities) ? (temporalMemory as any).entities : [];
+  for (const entity of memoryEntities) {
+    const decided = decideMemoryMapping(entity, visibility, targetLang);
+    if (!decided) continue;
+    upsertNameMapping(graph, decided.incoming, decided.userConfirmedMapping);
+  }
+  rankNameMappings(graph, items, visiblePrecedingSegments);
+  // Do not apply a count cap here. A later batch-scoped pass, after pinned profiles are
+  // merged, removes mappings not mentioned in this batch or its configured preceding context.
+  return graphRetrievalDiagnostics;
+}
+
+/** 取出并移除图上的检索诊断，避免它们被当成映射写进 Prompt。 */
+function takeGraphRetrievalDiagnostics(graph: Record<string, any>): Record<string, any> {
+  const diagnostics = (graph as any)?.retrievalDiagnostics &&
     typeof (graph as any).retrievalDiagnostics === 'object'
     ? { ...(graph as any).retrievalDiagnostics } : {};
-  let graphMappingCandidatesBeforeBatchFilter = 0;
-  let graphMappingsExcludedNotMentioned = 0;
   if (graph && Object.prototype.hasOwnProperty.call(graph, 'retrievalDiagnostics')) {
     delete (graph as any).retrievalDiagnostics;
   }
-  if (graph && Array.isArray(graph.nameMappings)) {
-    // Do not feed generic titles or aliases belonging to another person back to the translator.
-    graph.nameMappings = graph.nameMappings.flatMap((mapping: any) => {
-      const source = typeof mapping?.source === 'string' ? mapping.source.trim() : '';
-      const target = typeof mapping?.target === 'string' ? mapping.target.trim() : '';
-      if (!source || !target || isGenericCanonicalSourceName(source)) return [];
-      return [{ ...mapping, aliases: safeCanonicalSourceAliases(source, mapping.aliases) }];
-    });
-    const sourceText = [...visiblePrecedingSegments, ...items].map((item) => item.text).join('\n');
-    const priorSourceText = visiblePrecedingSegments.map((item) => item.text).join('\n');
-    const projectContext = getDocumentProjectStore().getProjectContext(projectId);
-    const batchRows = projectContext.db.prepare(
-      'SELECT ordinal FROM source_segments WHERE source_revision_id = ? AND segment_id IN (' +
-        items.map(() => '?').join(',') + ')'
-    ).all(sourceRevisionId, ...items.map((item) => item.id)) as Array<{ ordinal: number }>;
-    const ordinals = batchRows.map((row) => Number(row.ordinal)).filter(Number.isFinite);
-    const firstOrdinal = ordinals.length ? Math.min(...ordinals) : Number.POSITIVE_INFINITY;
-    const sourceVisible = (name: unknown) =>
-      firstMatchingSourceOrdinal(projectContext.db, sourceRevisionId, name, 'name') < firstOrdinal ||
-      sourceNameMatches(sourceText, name);
-    const memoryEntities = Array.isArray((temporalMemory as any)?.entities) ? (temporalMemory as any).entities : [];
-    const sourceRowCache = new Map<string, { ordinal: number; text: string } | null>();
-    const sourceRowFor = (segmentId: unknown) => {
+  return diagnostics;
+}
+
+/**
+ * 建立本批次的可见性判定：边界 ordinal 由本批片段的源段位置决定，
+ * 名字/引文的可见性一律以「边界之前出现过」或「就在本批原文里」为准。
+ */
+function createMemoryVisibility(
+  projectId: string,
+  sourceRevisionId: string,
+  items: BriefSegment[],
+  visiblePrecedingSegments: BriefSegment[],
+): MemoryVisibility {
+  const sourceText = [...visiblePrecedingSegments, ...items].map((item) => item.text).join('\n');
+  const projectContext = getDocumentProjectStore().getProjectContext(projectId);
+  const batchRows = projectContext.db.prepare(
+    'SELECT ordinal FROM source_segments WHERE source_revision_id = ? AND segment_id IN (' +
+      items.map(() => '?').join(',') + ')'
+  ).all(sourceRevisionId, ...items.map((item) => item.id)) as Array<{ ordinal: number }>;
+  const ordinals = batchRows.map((row) => Number(row.ordinal)).filter(Number.isFinite);
+  const firstOrdinal = ordinals.length ? Math.min(...ordinals) : Number.POSITIVE_INFINITY;
+  const sourceRowCache = new Map<string, { ordinal: number; text: string } | null>();
+  const appearsBefore = (name: unknown) =>
+    firstMatchingSourceOrdinal(projectContext.db, sourceRevisionId, name, 'name') < firstOrdinal;
+  return {
+    db: projectContext.db,
+    revisionId: sourceRevisionId,
+    firstOrdinal,
+    sourceText,
+    sourceVisible: (name) => appearsBefore(name) || sourceNameMatches(sourceText, name),
+    aliasVisible: (alias) => appearsBefore(alias) || sourceNameMatches(sourceText, alias),
+    sourceRowFor: (segmentId) => {
       const id = typeof segmentId === 'string' ? segmentId : '';
       if (!id) return null;
       if (sourceRowCache.has(id)) return sourceRowCache.get(id) || null;
@@ -402,103 +449,137 @@ function mergeMemoryEntitiesIntoMappings(
         ? { ordinal: Number(row.ordinal), text: String(row.text || '') } : null;
       sourceRowCache.set(id, value);
       return value;
-    };
-    for (const entity of memoryEntities) {
-      const source = String(entity?.source || '').trim();
-      const target = String(entity?.target || '').trim();
-      const evidence = String(entity?.evidence || '').trim();
-      const rawAliases = Array.isArray(entity.aliases) ? entity.aliases : [];
-      const userConfirmedMapping = entity.reviewStatus === 'confirmed' && entity.confirmationSource === 'user-confirmed';
-      const entityKind = normalizeCanonicalEntityKind(entity.kind);
-      if (!source || !target || !validateCanonicalTarget({ source, target, targetLang: targetLang, kind: entityKind }).valid) continue;
-      if (!userConfirmedMapping && !isWorthCanonicalEntityMapping({ source, kind: entityKind, significance: entity.description || entity.evidence, explicitBookSpecificMeaning: entity.bookSpecificMeaning === true })) continue;
-      const confirmedPersonMapping = entity.kind === 'person' && userConfirmedMapping;
-      // A confirmed person name is a canonical mapping in 人物管理. Activate it only when the
-      // canonical source or one of its aliases is visible; omit later-only aliases without suppressing
-      // the whole translation name.
-      if (!source || !target ||
-          (!sourceVisible(source) && !rawAliases.some((alias: unknown) => sourceVisible(alias)))) continue;
-      const aliasIsVisible = (alias: unknown) =>
-        firstMatchingSourceOrdinal(projectContext.db, sourceRevisionId, alias, 'name') < firstOrdinal ||
-        sourceNameMatches(sourceText, alias);
-      const aliasesVisibleAtBoundary = rawAliases.every(aliasIsVisible);
-      // Inferred/non-person mappings remain fail-closed when any identity alias first appears later.
-      if (!aliasesVisibleAtBoundary && !confirmedPersonMapping) continue;
-      const visibleEvidenceRefs = (Array.isArray(entity.evidenceRefs) ? entity.evidenceRefs : []).filter((ref: any) => {
-        const row = sourceRowFor(ref?.segmentId);
-        return !!row && row.ordinal < firstOrdinal &&
-          sourceQuoteMatches(row.text, ref?.sourceQuote) &&
-          sourceNameMatches(ref.sourceQuote, source);
-      });
-      // New dynamic memory has segment-specific provenance. Do not fall back to searching the
-      // same quotation elsewhere in the book, because duplicate prose can predate the observation.
-      // Legacy/user-authored mappings without evidenceRefs retain the source-quote fallback.
-      // A confirmed person mapping is the canonical target shown in 人物管理. Its source name
-      // and aliases must still be visible at this temporal boundary, but a character's voice-evidence
-      // quote need not be from an earlier segment; otherwise the same confirmed name could disappear
-      // from some batches and translator/Reviewer behavior would drift.
-      // A user-confirmed source→target name mapping is canonical regardless of entity kind.
-      // It must work on the first source occurrence too; requiring earlier evidence would make
-      // confirmed organization/clan/place names behave differently from confirmed character names.
-      const explicitCanonicalMapping = userConfirmedMapping;
-      const evidenceVisible = explicitCanonicalMapping ||
-        (Array.isArray(entity.evidenceRefs) && entity.evidenceRefs.length
-          ? visibleEvidenceRefs.length > 0
-          : !!evidence && (
-              firstMatchingSourceOrdinal(projectContext.db, sourceRevisionId, evidence, 'quote') < firstOrdinal ||
-              normalizedSourceText(sourceText).includes(normalizedSourceText(evidence))));
-      if (!evidenceVisible) continue;
-      // The alias must be visible by the start of this batch or in its actual source text;
-      // an alias first revealed in a later chapter still cannot activate the mapping.
-      const aliases = rawAliases.filter((alias: unknown) =>
-        firstMatchingSourceOrdinal(projectContext.db, sourceRevisionId, alias, 'name') < firstOrdinal ||
-        sourceNameMatches(sourceText, alias));
-      const targetRefs = Array.isArray(entity.targetEvidenceRefs) ? entity.targetEvidenceRefs : [];
-      const corroboratedTarget = entity.targetConfidence === 'corroborated' &&
-        new Set(targetRefs.map((ref: any) => ref?.segmentId).filter(Boolean)).size >= 2;
-      const incoming = {
-        source, target, aliases,
-        kind: String(entity.kind || 'other'),
-        evidenceBacked: true,
-        targetConfidence: userConfirmedMapping ? 'confirmed' :
-          corroboratedTarget ? 'corroborated' : 'candidate',
-        sourceStatus: userConfirmedMapping ? 'confirmed-memory' : corroboratedTarget ? 'auto' : 'candidate',
-        confirmationSource: entity.confirmationSource || 'legacy-unknown',
-      };
-      const names = new Set([source, ...aliases].map((name) => normalizedSourceText(name)));
-      const index = graph.nameMappings.findIndex((mapping: any) =>
-        [mapping.source, ...(Array.isArray(mapping.aliases) ? mapping.aliases : [])]
-          .some((name: unknown) => names.has(normalizedSourceText(name))));
-      if (userConfirmedMapping) {
-        if (index >= 0) graph.nameMappings[index] = { ...graph.nameMappings[index], ...incoming };
-        else graph.nameMappings.unshift(incoming);
-      } else if (index < 0) {
-        graph.nameMappings.push(incoming);
-      } else {
-        // A source-ordered dynamic candidate outranks an unconfirmed whole-book proposal.
-        // Keep an already confirmed Context Graph mapping, but avoid injecting two competing targets.
-        const existing = graph.nameMappings[index];
-        const existingStatus = String(existing?.sourceStatus || '');
-        if (!['confirmed', 'confirmed-memory'].includes(existingStatus) &&
-            (existingStatus !== 'run-canonical' || incoming.sourceStatus === 'auto')) {
-          graph.nameMappings[index] = { ...existing, ...incoming };
-        }
-      }
-    }
-    const mappingRelevance = (mapping: any) => {
-      const names = [mapping.source, ...(Array.isArray(mapping.aliases) ? mapping.aliases : [])];
-      const inCurrent = names.some((name: unknown) => items.some((item) => sourceNameMatches(item.text, name))) ? 2 : 0;
-      const inPreceding = names.some((name: unknown) => visiblePrecedingSegments.some((item) =>
-        sourceNameMatches(item.text, name))) ? 1 : 0;
-      const statusRank = ['confirmed', 'confirmed-memory'].includes(String(mapping.sourceStatus)) ? 5 :
-        mapping.sourceStatus === 'auto' ? 4 : mapping.sourceStatus === 'run-canonical' ? 3 : 1;
-      return statusRank + inCurrent + inPreceding;
-    };
-    graph.nameMappings.sort((a: any, b: any) => mappingRelevance(b) - mappingRelevance(a));
-    // Do not apply a count cap here. A later batch-scoped pass, after pinned profiles are
-    // merged, removes mappings not mentioned in this batch or its configured preceding context.
+    },
+  };
+}
+
+/**
+ * 判断一条记忆实体能否进入本批映射，返回待写入的映射与「是否为用户确认」。
+ * 四道判定依次是：译名质量、是否值得建映射、名字可见、证据可见。
+ */
+function decideMemoryMapping(
+  entity: any,
+  visibility: MemoryVisibility,
+  targetLang: string,
+): { incoming: Record<string, any>; userConfirmedMapping: boolean } | null {
+  const source = String(entity?.source || '').trim();
+  const target = String(entity?.target || '').trim();
+  const evidence = String(entity?.evidence || '').trim();
+  const rawAliases = Array.isArray(entity.aliases) ? entity.aliases : [];
+  const userConfirmedMapping = entity.reviewStatus === 'confirmed' && entity.confirmationSource === 'user-confirmed';
+  const entityKind = normalizeCanonicalEntityKind(entity.kind);
+  if (!source || !target || !validateCanonicalTarget({ source, target, targetLang: targetLang, kind: entityKind }).valid) return null;
+  if (!userConfirmedMapping && !isWorthCanonicalEntityMapping({
+    source, kind: entityKind,
+    significance: entity.description || entity.evidence,
+    explicitBookSpecificMeaning: entity.bookSpecificMeaning === true,
+  })) return null;
+  const confirmedPersonMapping = entity.kind === 'person' && userConfirmedMapping;
+  // A confirmed person name is a canonical mapping in 人物管理. Activate it only when the
+  // canonical source or one of its aliases is visible; omit later-only aliases without suppressing
+  // the whole translation name.
+  if (!visibility.sourceVisible(source) && !rawAliases.some((alias: unknown) => visibility.sourceVisible(alias))) {
+    return null;
   }
-  return graphRetrievalDiagnostics;
+  const aliasesVisibleAtBoundary = rawAliases.every((alias: unknown) => visibility.aliasVisible(alias));
+  // Inferred/non-person mappings remain fail-closed when any identity alias first appears later.
+  if (!aliasesVisibleAtBoundary && !confirmedPersonMapping) return null;
+  if (!isMemoryEvidenceVisible(entity, evidence, visibility, source, userConfirmedMapping)) return null;
+  // The alias must be visible by the start of this batch or in its actual source text;
+  // an alias first revealed in a later chapter still cannot activate the mapping.
+  const aliases = rawAliases.filter((alias: unknown) => visibility.aliasVisible(alias));
+  const targetRefs = Array.isArray(entity.targetEvidenceRefs) ? entity.targetEvidenceRefs : [];
+  const corroboratedTarget = entity.targetConfidence === 'corroborated' &&
+    new Set(targetRefs.map((ref: any) => ref?.segmentId).filter(Boolean)).size >= 2;
+  return {
+    incoming: {
+      source, target, aliases,
+      kind: String(entity.kind || 'other'),
+      evidenceBacked: true,
+      targetConfidence: userConfirmedMapping ? 'confirmed' :
+        corroboratedTarget ? 'corroborated' : 'candidate',
+      sourceStatus: userConfirmedMapping ? 'confirmed-memory' : corroboratedTarget ? 'auto' : 'candidate',
+      confirmationSource: entity.confirmationSource || 'legacy-unknown',
+    },
+    userConfirmedMapping,
+  };
+}
+
+/**
+ * 证据可见性。用户确认的映射直接放行——它是一个「源名→译名」决定，不该因为出处是后文而消失；
+ * 其余映射必须落在边界前的证据上，且引文要与源名对得上。
+ * New dynamic memory has segment-specific provenance. Do not fall back to searching the
+ * same quotation elsewhere in the book, because duplicate prose can predate the observation.
+ */
+function isMemoryEvidenceVisible(
+  entity: any,
+  evidence: string,
+  visibility: MemoryVisibility,
+  source: string,
+  userConfirmedMapping: boolean,
+): boolean {
+  if (userConfirmedMapping) return true;
+  const evidenceRefs = Array.isArray(entity.evidenceRefs) ? entity.evidenceRefs : [];
+  if (!evidenceRefs.length) {
+    return !!evidence && (
+      firstMatchingSourceOrdinal(visibility.db, visibility.revisionId, evidence, 'quote') < visibility.firstOrdinal ||
+      normalizedSourceText(visibility.sourceText).includes(normalizedSourceText(evidence)));
+  }
+  return evidenceRefs.some((ref: any) => {
+    const row = visibility.sourceRowFor(ref?.segmentId);
+    return !!row && row.ordinal < visibility.firstOrdinal &&
+      sourceQuoteMatches(row.text, ref?.sourceQuote) &&
+      sourceNameMatches(ref.sourceQuote, source);
+  });
+}
+
+/**
+ * 写入一条映射：用户确认的覆盖同名条目并置顶；动态候选只在没有更强条目时替换。
+ * A source-ordered dynamic candidate outranks an unconfirmed whole-book proposal,
+ * but never a confirmed Context Graph mapping.
+ */
+function upsertNameMapping(
+  graph: Record<string, any>,
+  incoming: Record<string, any>,
+  userConfirmedMapping: boolean,
+): void {
+  const names = new Set([incoming.source, ...incoming.aliases].map((name) => normalizedSourceText(name)));
+  const index = graph.nameMappings.findIndex((mapping: any) =>
+    [mapping.source, ...(Array.isArray(mapping.aliases) ? mapping.aliases : [])]
+      .some((name: unknown) => names.has(normalizedSourceText(name))));
+  if (userConfirmedMapping) {
+    if (index >= 0) graph.nameMappings[index] = { ...graph.nameMappings[index], ...incoming };
+    else graph.nameMappings.unshift(incoming);
+    return;
+  }
+  if (index < 0) {
+    graph.nameMappings.push(incoming);
+    return;
+  }
+  const existing = graph.nameMappings[index];
+  const existingStatus = String(existing?.sourceStatus || '');
+  if (!['confirmed', 'confirmed-memory'].includes(existingStatus) &&
+      (existingStatus !== 'run-canonical' || incoming.sourceStatus === 'auto')) {
+    graph.nameMappings[index] = { ...existing, ...incoming };
+  }
+}
+
+/** 排序：状态优先，其次本次正文命中，再次前文命中。稳定前缀越靠前，缓存越容易命中。 */
+function rankNameMappings(
+  graph: Record<string, any>,
+  items: BriefSegment[],
+  visiblePrecedingSegments: BriefSegment[],
+): void {
+  const mappingRelevance = (mapping: any) => {
+    const names = [mapping.source, ...(Array.isArray(mapping.aliases) ? mapping.aliases : [])];
+    const inCurrent = names.some((name: unknown) => items.some((item) => sourceNameMatches(item.text, name))) ? 2 : 0;
+    const inPreceding = names.some((name: unknown) => visiblePrecedingSegments.some((item) =>
+      sourceNameMatches(item.text, name))) ? 1 : 0;
+    const statusRank = ['confirmed', 'confirmed-memory'].includes(String(mapping.sourceStatus)) ? 5 :
+      mapping.sourceStatus === 'auto' ? 4 : mapping.sourceStatus === 'run-canonical' ? 3 : 1;
+    return statusRank + inCurrent + inPreceding;
+  };
+  graph.nameMappings.sort((a: any, b: any) => mappingRelevance(b) - mappingRelevance(a));
 }
 
 /**
