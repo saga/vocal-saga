@@ -1,6 +1,6 @@
 /**
- * Local-only document ingestion. The extension is deliberately not involved in file parsing.
- * Supports text EPUB, DOCX, UTF-8/UTF-16 text, Markdown, HTML and text-layer PDFs.
+ * 只在本机进行的文档解析。扩展刻意不参与文件解析。
+ * 支持文本型 EPUB、DOCX、UTF-8/UTF-16 纯文本、Markdown、HTML 与带文字层的 PDF。
  */
 import { spawn } from 'node:child_process';
 import { inflateRawSync } from 'node:zlib';
@@ -184,7 +184,6 @@ function htmlBlocks(html: string): Array<{ text: string; kind: string; level?: n
   return blocks;
 }
 
-/** Keep long no-blank-line input and unusually large EPUB/DOCX paragraphs within batch limits. */
 /**
  * 将超长文本按标点/空白切分为 <= maxChars 的块；避免拆分 UTF-16 代理对。
  */
@@ -204,7 +203,7 @@ function splitLongText(value: string, maxChars = 1800): string[] {
       if (whitespace >= Math.floor(maxChars * 0.75)) cut = whitespace;
     }
     if (cut < 1) cut = maxChars;
-    // Never separate a UTF-16 surrogate pair at a hard boundary.
+    // 硬切时绝不能把 UTF-16 代理对劈开。
     if (cut < remaining.length) {
       const before = remaining.charCodeAt(cut - 1);
       const after = remaining.charCodeAt(cut);
@@ -234,8 +233,8 @@ function segmentsFromBlocks(
   const result: ProjectSegment[] = [];
   const hasHeadings = blocks.some((block) => block.kind === 'heading');
   const totalChars = blocks.reduce((sum, block) => sum + block.text.length, 0);
-  // Plain-text exports often have no heading markers. Divide these into stable virtual sections
-  // so summaries/retrieval stay local instead of treating the complete novel as one chapter.
+  // 纯文本导出的文件通常没有标题标记。把这种内容切成稳定的虚拟小节，
+  // 好让摘要与检索停留在局部，而不是把整本小说当成一章。
   const autoPartition = !hasHeadings && (blocks.length > 20 || totalChars > 20_000);
   let chapter = initialChapter || '正文';
   let autoChapter = 1;
@@ -392,8 +391,8 @@ function parseEpub(bytes: Buffer, fileName: string): ProjectSegment[] {
     let localIndex = 0;
     for (const block of blocks) {
       if (block.kind === 'heading' && !segments.some((segment) => segment.contextPath === block.text)) {
-        // A visible section heading is more useful than the XHTML file name, but keep one chapter
-        // path per spine document so chronology and chapter retrieval remain stable.
+        // 可见的小节标题比 XHTML 文件名有用，但每个 spine 文档只保留一个章节路径，
+        // 这样时间顺序与章节检索才稳定。
         if (block.text.length <= 160 && (localIndex === 0 || block.level === 1)) chapter = block.text;
       }
       const chunks = splitLongText(block.text);
@@ -414,7 +413,7 @@ function parseEpub(bytes: Buffer, fileName: string): ProjectSegment[] {
   if (!segments.length) fail('EPUB spine 中没有可提取的 XHTML 正文。', 415);
   const title = opf.match(/<dc:title\b[^>]*>([\s\S]*?)<\/dc:title\s*>/i)?.[1];
   if (title) {
-    // Store title as an event-free project segment only when the first spine has no visible title.
+    // 只有当第一个 spine 没有可见标题时，才把书题存成一条无事件的项目片段。
     const decodedTitle = cleanText(title).slice(0, 160);
     if (decodedTitle && !segments.some((segment) => segment.kind === 'heading' && segment.text === decodedTitle)) {
       segments.unshift({ id: 'epub-title', text: decodedTitle, kind: 'heading', contextPath: decodedTitle, path: opfPath });

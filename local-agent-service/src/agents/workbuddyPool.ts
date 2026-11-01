@@ -27,7 +27,7 @@ interface Slot {
   session: PooledSession | null;
   /** 当前会话实际使用的模型标识；空字符串表示未设置/运行时默认。 */
   model: string;
-  /** Complete scope key; document batches add run, role, prompt revision, lane and batch index to isolate history. */
+  /** 完整的 scope 键；文档批次还会加上 run、角色、提示词版本、泳道与批次号，用来隔离历史。 */
   scopeKey: string;
   /** 当前会话对应的 schema 序列化键；空字符串表示纯文本模式。 */
   schemaKey: string;
@@ -200,15 +200,15 @@ export class WorkbuddySessionPool {
     schema?: Record<string, unknown>,
   ): Promise<number> {
     this.assertOpen();
-    // Shared text requests reuse a bounded slot; tasks needing explicit thinking/effort use query() instead.
+    // 共享文本请求复用同一个有界槽位；需要显式思考深度或 effort 的任务改走 query()。
     if (scopeKey === 'shared-text-translation' && !schema) return this.acquireSharedTextSlot(agent);
 
     const schemaKey = schema ? JSON.stringify(schema) : '';
     const requestedKey = JSON.stringify([scopeKey, agent.model || '<runtime-default>', schemaKey]);
     for (;;) {
       this.assertOpen();
-      // A scoped conversation has exactly one slot. Do not create a second copy while its
-      // first copy is busy: parallel sends would split history and make turn order nondeterministic.
+      // 一个带 scope 的会话只占一个槽位。它第一份还忙着的时候，不要另建第二份：
+      // 并发发送会把历史割裂，轮次顺序也变得不确定。
       const existingIndex = this.slots.findIndex((slot) => slot.scopeKey === requestedKey);
       if (existingIndex >= 0) {
         const slot = this.slots[existingIndex];
@@ -231,7 +231,7 @@ export class WorkbuddySessionPool {
 
       let index = this.slots.findIndex((slot) => !slot.busy && !slot.session);
       if (index < 0) {
-        // Bound memory/CLI children: evict the least-recently-used idle session only.
+        // 给内存和 CLI 子进程设上界：只淘汰最久未使用的空闲会话。
         const idle = this.slots
           .map((slot, slotIndex) => ({ slot, slotIndex }))
           .filter(({ slot }) => !slot.busy)
@@ -339,7 +339,7 @@ export class WorkbuddySessionPool {
    * 返回值：boolean；索引越界或槽位不存在时返回 `false`（uses 为 undefined）。
    * 边界：仅读取内存计数，不触发会话创建或状态变更。
    */
-  /** True when the next turn must seed a fresh session with stable system instructions. */
+  /** 为 true 表示下一轮必须用稳定的系统指令重新开一个会话。 */
   isFresh(index: number): boolean {
     return this.slots[index]?.uses === 0;
   }
@@ -444,8 +444,8 @@ export class WorkbuddySessionPool {
         '），会话已丢弃重建；请重试该批次',
       );
     }
-    // The document workflow logs role, batch, latency and output counts at the project boundary.
-    // Keep internal Session reuse counters out of the default terminal output.
+    // 文档工作流在项目边界上记角色、批次、延迟和输出量。
+    // 内部的会话复用计数不要写进默认终端输出。
     slot.uses += 1;
     if (slot.uses >= this.maxUses) this.dropSession(index, '用满 ' + this.maxUses + ' 轮');
     return { text: text.trim(), structuredOutput, usage };
@@ -465,8 +465,8 @@ export class WorkbuddySessionPool {
    */
   closeAll(): void {
     if (this.closed) return;
-    // Closing is terminal for this pool instance. Wake queued acquire() calls so they
-    // reject instead of looping back and creating new CLI sessions after shutdown.
+    // 关闭对本池实例是终态。要唤醒排队中的 acquire()，让它们直接拒绝，
+    // 而不是关停之后又绕回去新建 CLI 会话。
     this.closed = true;
     for (let i = 0; i < this.slots.length; i++) this.dropSession(i, '关闭池');
     this.waiters.splice(0).forEach((wake) => { wake(); });
@@ -567,8 +567,8 @@ export class WorkbuddySessionPool {
       logInfo('pool', '新建会话 · slot=' + index + ' · ' + reason + ' · scope=' + describeScope(requestedKey) +
         ' · model=' + (agent.model || '<运行时默认>') + ' · ' + (Date.now() - startedAt) + 'ms');
       slot.model = agent.model || '';
-      // Shared text slots have a model-qualified key; keep it aligned after a hot switch
-      // or a rebuild, otherwise diagnostics and subsequent scope checks retain stale model data.
+      // 共享文本槽的键带模型限定；热切换或重建之后要保持对齐，
+      // 否则诊断信息和后续 scope 检查会留着过期的模型数据。
       slot.scopeKey = requestedKey.startsWith('shared-slot:')
         ? 'shared-slot:' + index + ':' + (agent.model || '<runtime-default>')
         : requestedKey;
@@ -586,8 +586,8 @@ export class WorkbuddySessionPool {
     }
     if ((agent.model || '') !== slot.model) {
       if (!slot.session.setModel) {
-        // Do not update the cached model label when this SDK Session cannot actually switch models.
-        // Recreate it instead, otherwise telemetry claims one model while the CLI still uses another.
+        // 这个 SDK 会话实际上换不了模型时，就别更新缓存的模型标签。
+        // 直接重建它，否则遥测说用的是 A、CLI 却还在用 B。
         this.dropSession(index, 'Session API 不支持 setModel，重建以应用模型');
         await create('切换模型（Session 不支持 setModel）');
         return;

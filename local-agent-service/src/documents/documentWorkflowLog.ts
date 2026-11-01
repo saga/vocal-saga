@@ -224,7 +224,7 @@ function describeDroppedCharacters(charactersRaw: unknown): string[] {
     });
 }
 
-/** Print only user-actionable workflow milestones; never print full novel text or prompts. */
+/** 只打印用户能据此采取行动的工作流里程碑；绝不打印整本小说正文或提示词。 */
 export function logWorkflowEvent(runId: string | null, type: string, rawPayload: unknown): void {
   if (process.env.NODE_TEST_CONTEXT || process.env.NODE_ENV === 'test') return;
   const payload = rawPayload && typeof rawPayload === 'object' ? rawPayload as EventPayload : {};

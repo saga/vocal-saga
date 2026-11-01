@@ -22,7 +22,7 @@ export function graphAnalysisPrompt(projectTitle: string, format: string, source
   const sampledMentionByName = new Map<string, BookScanResult['entityMentions']>();
   for (const mention of scan.entityMentions) {
     const sampleText = sampleTextById.get(mention.segmentId);
-    // The model must be able to inspect each cited span in the text actually included in this call.
+    // 模型得能在本次调用真正纳入的文本里，查到每一处被引用的片段。
     if (!sampleText || mention.end > sampleText.length ||
         sampleText.slice(mention.start, mention.end) !== mention.surface) continue;
     const list = sampledMentionByName.get(mention.normalized) || [];
@@ -84,7 +84,7 @@ export function graphAnalysisPrompt(projectTitle: string, format: string, source
   ].join('\n\n');
 }
 
-/** Build an example from the same runtime prompt builder so the UI can show its actual input shape. */
+/** 用同一个运行时提示词构造器生成示例，让界面展示它真实的输入结构。 */
 export function getDefaultContextGraphUserPromptTemplate(): string {
   const chapterPath = '{{CHAPTER_PATH}}';
   const segment: Segment = {

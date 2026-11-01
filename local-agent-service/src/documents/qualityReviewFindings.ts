@@ -38,8 +38,8 @@ export function currentReviewFindings(
   ).all(reviewRunId, revisionId) as any[];
   const findings = rows.flatMap((row) => {
     const reviewedTranslation = typeof row.reviewed_translation === 'string' ? row.reviewed_translation : null;
-    // When auditing accepted text (no runId specified), suppress stale style findings from an
-    // older candidate whose translation is no longer the accepted text for this source revision.
+    // 审计已采纳文本时（没指定 runId），要压掉旧候选留下的过期文风发现——
+    // 那份译文已经不是当前源文版本的已采纳文本了。
     if (!requestedRunId) {
       const accepted = db.prepare(
         'SELECT translation_text FROM translation_results WHERE source_revision_id = ? AND segment_id = ? ' +

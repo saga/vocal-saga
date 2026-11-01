@@ -101,8 +101,8 @@ function canonicalNameAuditMappings(memory: Record<string, any>): CanonicalNameA
     if (entity?.reviewStatus !== 'confirmed') continue;
     add(entity.source, entity.target, entity.aliases, entity.kind, 'literary-memory');
   }
-  // Character/Voice profiles maintain their own canonical target names. They may be the only
-  // source of an approved name mapping, so book-level audits must inspect them as well as entities.
+  // 人物/声音档案维护着自己的规范译名。它们可能是某个已认可译名的唯一来源，
+  // 所以全书级审计既要查实体，也要查这些档案。
   for (const profile of Array.isArray(memory.characterVoices) ? memory.characterVoices : []) {
     if (profile?.status !== 'confirmed' || profile?.useForTranslation === false) continue;
     add(profile.canonicalSourceName, profile.targetName, profile.aliases, 'character', 'character-voice');
@@ -133,8 +133,8 @@ export function canonicalNameMappingConflictFindings(
     conflictedSources.add(sourceKey);
     const forms = group.flatMap((mapping) => [mapping.source, ...mapping.aliases]);
     const affected = segments.filter((segment) => forms.some((form) => containsName(segment.text, form)));
-    // A conflicting stored rule matters even if it has not been used in the current translation.
-    // Attach the specific affected source IDs whenever the name occurs in this book.
+    // 即使某条已存规则在当前这次翻译里还没用上，只要冲突就要报。
+    // 只要这个名字在本书中出现过，就带上具体受影响的源文 ID。
     if (!affected.length) continue;
     const ids = affected.map((segment) => segment.id);
     const confirmed = group.every((mapping) => mapping.status === 'confirmed');
@@ -174,8 +174,8 @@ export function terminologyFindings(
     const translation = translations.get(segment.id) || '';
     if (!translation) continue;
     for (const mapping of mappings) {
-      // When two confirmed sources disagree, report the mapping conflict once rather than making
-      // each valid target appear to be a separate translation defect.
+      // 两个已确认来源互相矛盾时，报一次映射冲突，
+      // 而不是让每个有效译名看起来都是独立的翻译缺陷。
       if (conflictedSources.has(normalized(mapping.source))) continue;
       const forms = [mapping.source, ...mapping.aliases];
       const matchedSource = forms.find((alias) => containsName(segment.text, alias));

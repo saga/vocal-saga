@@ -114,8 +114,8 @@ function prepareReviewInputs(body: any): PreparedReview {
   const segments = validateSegments(body.segments, 32, 'review');
   const memory = body.memory && typeof body.memory === 'object' ? body.memory : {};
   const suppliedPrecedingSegments = normalizePrecedingSegments(body.precedingSegments);
-  // Project translation passes the exact immutable TranslationBrief used by initial translation.
-  // Standalone review requests fall back to the bounded legacy retrieval path.
+  // 项目翻译传入的，正是初译用过的那份不可变 TranslationBrief。
+  // 独立审校请求则回退到有界的旧检索路径。
   const translationBrief = body.translationBrief && typeof body.translationBrief === 'object'
     ? body.translationBrief as Record<string, any>
     : null;
@@ -215,7 +215,7 @@ function collectSegmentFindings(input: {
     const draftExcerpt = chineseMonolingualEdit ? targetExcerpt :
       typeof item.draftExcerpt === 'string' ? item.draftExcerpt.trim().slice(0, 240) : '';
     if (chineseMonolingualEdit && candidateText === original.draft) continue;
-    // Monolingual findings are grounded only in the exact Chinese draft the editor saw.
+    // 单语发现只能锚定在编辑当时看到的那份确切中文草稿上。
     if (chineseMonolingualEdit
       ? !isChineseLiteraryFindingGrounded(original.draft, targetExcerpt)
       : !isLiteraryReviewFindingGrounded(original.source, original.draft, sourceExcerpt, draftExcerpt)) continue;

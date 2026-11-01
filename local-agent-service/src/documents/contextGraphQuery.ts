@@ -60,7 +60,7 @@ export function getContextGraphStatus(projectId: string, runId?: string): Record
     ? db.prepare('SELECT * FROM context_graph_runs WHERE source_revision_id = ? AND run_id = ?').get(revisionId, runId) as any
     : (recentRows[0] || null);
   if (row && ['queued', 'running'].includes(String(row.status))) {
-    // Recover a stale active status if completion was committed before process exit.
+    // 若完成状态在进程退出前已提交，这里把残留的活动状态修正过来。
     const completion = db.prepare(
       "SELECT payload_json, created_at FROM project_events WHERE run_id = ? AND event_type = 'context-graph.completed' ORDER BY created_at DESC LIMIT 1"
     ).get(row.run_id) as { payload_json?: string; created_at?: string } | undefined;
@@ -110,7 +110,7 @@ export function getContextGraphStatus(projectId: string, runId?: string): Record
   ] as const;
   const styleMissingFields = requiredStyleFields.filter(([, value]) => !value.trim()).map(([key]) => key)
     .concat(styleRules.length ? [] : ['styleRules']);
-  // UI/status DTO only: never return graph nodes, edges, evidence or chapter summaries while polling.
+  // 仅供界面/状态用的 DTO：轮询时绝不返回图谱节点、边、证据或章节摘要。
   return {
     sourceRevisionId: revisionId, segmentCount,
     // analysisVersion 是「这条记录由哪个版本产出」，currentAnalysisVersion 是「服务端当前版本」。
@@ -142,8 +142,8 @@ export function getContextGraph(projectId: string): Record<string, unknown> {
   const nodes = db.prepare('SELECT * FROM context_graph_nodes WHERE source_revision_id = ? ORDER BY kind, name LIMIT 500').all(revisionId) as any[];
   const edges = db.prepare('SELECT * FROM context_graph_edges WHERE source_revision_id = ? ORDER BY kind LIMIT 800').all(revisionId) as any[];
   const runs = db.prepare('SELECT * FROM context_graph_runs WHERE source_revision_id = ? ORDER BY started_at DESC, rowid DESC LIMIT 10').all(revisionId) as any[];
-  // The completion event is committed with the graph transaction. This read still reconciles
-  // databases created by older versions, where the row and terminal event could diverge.
+  // 完成事件与图谱事务一起提交。这次读取仍然要对齐旧版本建的库，
+  // 那时行状态和终态事件可能不一致。
   for (const run of runs) {
     if (!['queued', 'running'].includes(String(run.status))) continue;
     const completion = db.prepare(
@@ -260,7 +260,7 @@ export function reviewContextGraphItems(
   const reviewed: Array<Record<string, unknown>> = [];
   db.exec('BEGIN IMMEDIATE');
   try {
-    // Serialize against Run creation so a batch cannot be partially applied while a translation starts.
+    // 与 Run 创建串行化，避免翻译启动时批次只被应用了一半。
     assertNoActiveTranslation(projectId, db);
     for (const item of normalized) {
       const table = item.type === 'node' ? 'context_graph_nodes' : 'context_graph_edges';
@@ -293,9 +293,9 @@ export function reviewContextGraphItems(
         now, item.id, revisionId,
       );
     }
-    // When the caller supplies the updated LiteraryMemory projection, persist it under the
-    // same SQLite write transaction as graph rejections. A failed memory validation rolls back
-    // every node/edge decision instead of leaving the two projections out of sync.
+    // 调用方给了更新后的 LiteraryMemory 投影时，让它与图谱拒绝
+    // 处在同一个 SQLite 写事务里。记忆校验失败会回滚所有节点/边决定，
+    // 而不是留下两个不一致的投影。
     if (memory !== undefined) store.saveLiteraryMemory(projectId, memory);
     for (const item of reviewed) {
       store.appendEvent(projectId, null, 'context-graph.reviewed', {

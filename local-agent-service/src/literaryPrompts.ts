@@ -89,9 +89,9 @@ export function buildLiteraryReviewPrompt(input: {
  * 故意排除原文名、引文、章节摘要、术语表和源语言证据：
  * 该上下文服务于中文润色，而非双语正确性审校。
  *
- * Build a target-language-only view of literary memory. Source names, quotations,
- * chapter summaries, glossary entries and source-linked evidence are intentionally
- * excluded: this context is for Chinese copyediting, not bilingual correctness review.
+ * 构建只含目标语的文学记忆视图。源名、引文、章节摘要、术语表条目
+ * 以及与源文挂钩的证据都刻意排除：这份上下文是给中文润色用的，
+ * 不是给双语准确性审校用的。
  */
 export function buildChineseTargetOnlyVoiceContext(input: Record<string, any> | null | undefined): Record<string, unknown> {
   const context = input && typeof input === 'object' ? input : {};
@@ -132,8 +132,8 @@ export function buildChineseTargetOnlyVoiceContext(input: Record<string, any> | 
         return name ? [{ character: name, role: participant.role, confidence: participant.confidence }] : [];
       }).slice(0, 24)
     : [];
-  // TranslationBrief has already retrieved accepted examples from the same source revision
-  // and strictly before the current batch. Keep only their Chinese side; never expose source.
+  // TranslationBrief 已经从同一源文版本、且严格早于本批次的范围里
+  // 检出了已采纳示例。这里只保留它们的中文一侧，绝不暴露源文。
   const recentExamples = Array.isArray(context.recentExamples)
     ? context.recentExamples.flatMap((example: any) =>
         example && typeof example.target === 'string' && example.target.trim()

@@ -50,7 +50,7 @@ export function buildAnalysisMemoryContext(input: unknown): Record<string, unkno
     relationshipVoiceRules: memory.relationshipVoiceRules.filter((rule: any) => rule.status === 'confirmed').slice(0, 24),
     voiceAnchors: memory.voiceAnchors.filter((anchor: any) => anchor.status === 'approved').slice(-16),
   };
-  // Keep valid JSON by dropping whole lower-priority records rather than slicing a serialized string.
+  // 要保持 JSON 合法，就整条丢掉优先级更低的记录，而不是去切序列化后的字符串。
   while (JSON.stringify(result).length > 24000 && result.characterVoices.some((profile: any) => profile.evidence.length > 1)) {
     result.characterVoices.forEach((profile: any) => { profile.evidence = profile.evidence.slice(0, 1); });
   }
@@ -118,7 +118,7 @@ function buildAnalysisPrompt(
     BOOK_MEMORY_JSON: JSON.stringify(buildAnalysisMemoryContext(memory)),
     CHAPTER_SEGMENTS_JSON: JSON.stringify(segments),
   };
-  // Single-pass replacement avoids interpreting placeholder-looking text inside source/book memory.
+  // 单趟替换，避免把源文或书籍记忆里长得像占位符的文本也当成占位符。
   return DEFAULT_LITERARY_ANALYSIS_USER_PROMPT_TEMPLATE.replace(
     /\{\{(TARGET_LANGUAGE|CHAPTER_TITLE|BOOK_MEMORY_JSON|CHAPTER_SEGMENTS_JSON)\}\}/g,
     (_match, key: string) => promptValues[key] ?? '',

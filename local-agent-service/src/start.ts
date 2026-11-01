@@ -1,8 +1,8 @@
 /**
- * Service entrypoint.
+ * 服务入口。
  *
- * Load .env before dynamically importing server.ts because runtime configuration
- * is read when that module is evaluated. A missing .env is a supported default.
+ * 要在动态导入 server.ts 之前先加载 .env，因为运行时配置
+ * 是在那个模块求值时读取的。没有 .env 是支持的默认情况。
  */
 import { existsSync } from 'node:fs';
 import path from 'node:path';

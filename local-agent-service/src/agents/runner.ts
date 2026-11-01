@@ -78,11 +78,10 @@ function logModelFailure(
 export interface AgentRunResult<T> {
   result: T;
   usage: TurnUsage | null;
-  /** Present for persistent CodeBuddy query() sessions used by resumable workflows. */
+  /** 可续跑的工作流所用的持久 CodeBuddy query() 会话存在时才有。 */
   sessionId?: string;
 }
 
-/** Unified model invocation; document tasks can supply immutable per-task settings. */
 /**
  * 统一的文本模型调用入口：按 provider 分派到 Workbuddy/OpenCode，应用 taskProfile 的 Prompt/模型覆盖，
  * 记录开始/完成/失败日志，返回文本与 usage。

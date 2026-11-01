@@ -6,9 +6,9 @@
  */
 import { positiveIntegerEnv } from '../config.ts';
 /**
- * Per-run scheduler caps. With the default six-session pool, literary runs budget up to four
- * translation workers and two reviewers; runs without review may use all six translation slots.
- * The pool is the final global concurrency guard across overlapping runs.
+ * 每个 Run 的调度上限。默认六会话池下，文学 Run 最多给四个翻译 worker、
+ * 两个审校；不需要审校的 Run 可以把六个槽位全用于翻译。
+ * 会话池是所有重叠 Run 之上的最终全局并发闸门。
  */
 export const CONFIGURED_TRANSLATION_CONCURRENCY = positiveIntegerEnv('LOCAL_AGENT_DOCUMENT_TRANSLATION_CONCURRENCY', 6);
 
@@ -71,9 +71,6 @@ export function buildDocumentBatchSessionScope(input: {
 }
 
 /**
- * Run a finite list with a fixed worker count. Worker errors do not cause Promise.all to reject
- * early while sibling workers are still committing; all workers settle before the first error
- * is re-thrown. shouldStop prevents new work from starting after pause/cancel.
  * 以固定并发执行有限列表；worker 出错不提前拒绝，所有 worker 完成后抛出首个错误；shouldStop 可阻止新任务启动。
  */
 export async function runWithConcurrency<T>(
@@ -94,8 +91,8 @@ export async function runWithConcurrency<T>(
       try {
         await task(items[index]!, index);
       } catch (error) {
-        // Let sibling work already in flight settle, but do not allocate more batches after
-        // a fatal scheduler/persistence error.
+        // 让已经在飞的同批工作自然结束；但出现致命的调度/持久化错误之后，
+        // 不再分配新批次。
         stopAfterFailure = true;
         throw error;
       }
@@ -106,7 +103,6 @@ export async function runWithConcurrency<T>(
   if (failed) throw failed.reason;
 }
 
-/** A FIFO limiter for detached reviews. Waiting jobs reserve no Workbuddy slot until admitted. */
 /**
  * 可调并发闸门。
  *

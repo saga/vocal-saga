@@ -38,7 +38,6 @@ export function initDatabase(): DatabaseSync {
   return database;
 }
 
-/** SQLite translation cache shared by webpages and document batches. */
 /**
  * 按 cacheKey 查询未过期的翻译缓存；命中则递增 hits 并解析 JSON，损坏/过期则清理并返回 null。
  * 返回值必须是对象（数组视为无效缓存）。
@@ -77,7 +76,7 @@ export function setTranslationCache(cacheKey: string, value: unknown, ttlMs: num
     'INSERT INTO translation_cache(cache_key, payload_json, created_at, expires_at, hits) VALUES (?, ?, ?, ?, 0) ' +
     'ON CONFLICT(cache_key) DO UPDATE SET payload_json=excluded.payload_json, created_at=excluded.created_at, expires_at=excluded.expires_at, hits=0'
   ).run(cacheKey, payload, new Date(now).toISOString(), now + ttl);
-  // Opportunistic cleanup: expired rows and oldest/least-used rows are bounded.
+  // 顺手清理：过期行，以及最旧、最少使用的行，都设了上界。
   db!.prepare('DELETE FROM translation_cache WHERE expires_at <= ?').run(now);
   db!.prepare('DELETE FROM translation_cache WHERE cache_key IN (SELECT cache_key FROM translation_cache ORDER BY hits ASC, created_at ASC LIMIT MAX(0, (SELECT COUNT(*) FROM translation_cache) - 20000))').run();
 }
@@ -100,7 +99,6 @@ export function normalizeDocumentSegments(input: unknown) {
   });
 }
 
-/** Store resumable document state in SQLite; this is separate from short-lived request history. */
 /**
  * 保存/更新可恢复的文档会话（document_sessions）。mergeExisting=true 时合并 prior/incoming snapshot，
  * 以 segment id 为 key 合并 translations Map，避免覆盖已有译文。payload 超 5 MiB 抛 413。

@@ -98,8 +98,8 @@ export function runProjectQualityAudit(projectId: string, runId?: string): Recor
  */
 function assertAuditPreconditions(runId: string | undefined, context: any, segments: any[]): void {
   if (!segments.length) fail('当前来源版本没有可审计的片段。', 409);
-  // Each document project owns its own SQLite database, so every row here belongs to this project.
-  // "partial" is a terminal status, not an active worker: its missing accepted translations need auditing.
+  // 每个文档项目有自己的 SQLite 库，所以这里每一行都属于本项目。
+  // "partial" 是终态而不是还在跑的 worker：它缺的已采纳译文需要被审计。
   const active = context.db.prepare(
     "SELECT run_id FROM translation_runs WHERE status IN ('queued','running','paused') LIMIT 1"
   ).get() as { run_id?: string } | undefined;
@@ -370,7 +370,7 @@ function buildAuditReport(input: {
     projectId,
     sourceRevisionId: revisionId,
     runId: runId || null,
-    // Aggregate hashes keep stale-repair protection bounded even for very long books.
+    // 用聚合哈希来防过期修复，即使书很长也能保持有界。
     translationSnapshotHash: input.effectiveTranslationSnapshotHash,
     acceptedTranslationSnapshotHash: input.acceptedTranslationSnapshotHash,
     reviewRunId: section.review.reviewRunId,

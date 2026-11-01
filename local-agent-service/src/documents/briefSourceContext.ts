@@ -96,8 +96,8 @@ function sourceRowsForRevision(db: any, revisionId: string): Array<{ ordinal: nu
     sourceRowsByRevision.set(revisionId, cached);
     return cached;
   }
-  // Source revisions are immutable. A bounded two-revision LRU avoids rescanning SQLite for
-  // every alias while keeping memory usage bounded when several books are open.
+  // 源文版本不可变。两版本上限的 LRU 避免为每个别名都去扫一遍 SQLite，
+  // 同时在同时打开几本书时把内存控住。
   const rows = db.prepare(
     'SELECT ordinal, text FROM source_segments WHERE source_revision_id = ? ORDER BY ordinal'
   ).all(revisionId) as Array<{ ordinal: number; text: string }>;
@@ -126,8 +126,8 @@ export function firstMatchingSourceOrdinal(
   const cacheKey = revisionId + '\u0000' + kind + '\u0000' + normalizedTerm;
   const cached = firstSourceOccurrenceCache.get(cacheKey);
   if (cached !== undefined) return cached;
-  // Do not prefilter using SQLite instr(lower(text), lower(term)): that literal comparison
-  // rejects normalized-equivalent forms such as O’Connor/O'Connor before JS can compare them.
+  // 不要用 SQLite 的 instr(lower(text), lower(term)) 预过滤：那种字面比较
+  // 会在 JS 拿到之前，就把 O’Connor / O'Connor 这类归一后等价的写法排除掉。
   const match = sourceRowsForRevision(db, revisionId).find((row) => kind === 'quote'
     ? sourceQuoteMatches(row.text, term)
     : sourceNameMatches(row.text, term));

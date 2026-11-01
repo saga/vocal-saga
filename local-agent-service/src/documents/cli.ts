@@ -1,7 +1,7 @@
 /**
- * CLI for automation, debugging and bulk document runs.
- * It accepts normalized segment JSON or parses original text documents inside local-agent-service;
- * the extension is not involved in the import-file command.
+ * 面向自动化、调试与批量文档运行的命令行入口。
+ * 它接受归一化后的片段 JSON，或在 local-agent-service 内部解析原始文本文档；
+ * 导入文件的命令不经过扩展。
  *
  * 命令放在注册表里：新增子命令只需加一条，不必再往分发函数里塞分支。
  */

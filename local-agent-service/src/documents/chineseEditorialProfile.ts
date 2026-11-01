@@ -95,8 +95,8 @@ export function applyChineseEditorialProfileReview(
 }
 
 /**
- * Build a book-level Chinese target voice from accepted translations only.
- * Source text is used locally for deterministic sample selection and is never placed in the model prompt.
+ * 只用已采纳译文构建全书级的中文目标语声音。
+ * 源文只在本地用于确定性抽样，绝不进入模型提示词。
  *
  * 从已采纳译文构建书级中文目标语表达档案：校验运行模式/语言/来源版本，查询采纳样本，
  * 确定性抽样，调用模型归纳风格档案，证据校验后自动采纳/更新 LiteraryMemory。
@@ -119,8 +119,8 @@ export async function refreshChineseEditorialProfile(projectId: string, runId: s
 
   const agent = parseAgentModel(String(ctx.run.model || 'auto'), String(ctx.run.provider || 'workbuddy'));
   const rawTaskProfile = getCodeBuddyTaskProfile(ctx.context.prompt?.config || {}, 'styleReview');
-  // A profile-generation task uses the configured model/effort, but not a user-authored style-review
-  // template that may contain instructions for segment-level findings.
+  // 档案生成任务沿用配置里的模型与 effort，但不用用户写的文风审校模板——
+  // 那里面可能有针对片段级发现的指令。
   const taskProfile = { ...rawTaskProfile, userPromptTemplate: '', systemPromptAppendix: '' };
   const { prompt, systemPrompt } = buildProfilePrompts(samples);
 
@@ -355,7 +355,7 @@ async function adoptGeneratedProfile(args: {
   const { profile, evidenceRefs } = generated;
   const evidenceSegmentCount = new Set(evidenceRefs.map((item) => item.segmentId)).size;
 
-  // Reload after the model call. Preserve user-managed profiles; replace machine-default profiles automatically.
+  // 模型调用结束后重新加载。用户维护的档案保留；机器默认档案自动替换。
   const latest = store.getCurrentLiteraryMemory(projectId);
   const latestProfile = latest.memory.chineseEditorialProfile;
   const generatedAt = new Date().toISOString();

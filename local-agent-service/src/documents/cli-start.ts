@@ -1,5 +1,5 @@
 /**
- * CLI entrypoint: load the same local .env before importing modules that read process.env.
+ * 命令行入口：先加载同一份本地 .env，再导入会读 process.env 的模块。
  */
 import { existsSync } from 'node:fs';
 import path from 'node:path';

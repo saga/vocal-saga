@@ -47,7 +47,7 @@ export function buildUserPrompt(template: string, items: TranslationItem[], cont
       ? translationBrief?.glossary ?? { document_terms: [] }
       : context.prompt.config?.glossary ?? null,
     // 当前批次只注入相关人物声音、关系规则和 approved 锚点，不把整本书的记忆全部塞进上下文。
-    // Translator and both reviewers consume this same bounded, source-revision-pinned snapshot.
+    // 译者和两个审校消费的是同一份有界、绑定源文版本的快照。
     translationBrief: translationBrief ? {
       policyVersion: translationBrief.policyVersion,
       contextHash: translationBrief.contextHash,
@@ -62,7 +62,7 @@ export function buildUserPrompt(template: string, items: TranslationItem[], cont
     voiceContext: context.run.translationMode === 'literary'
       ? translationBrief?.voiceContext ?? buildProjectVoiceContext(context.memory, items, items[0]?.contextPath || context.project.title, precedingSegments)
       : null,
-    // Select only temporally visible graph evidence matching this chapter-scoped batch.
+    // 只挑与这个按章切分的批次时间上可见的图谱证据。
     contextGraph: effectiveContextGraph,
   });
   if (template.includes('{{CONTENT}}')) return template.replaceAll('{{CONTENT}}', payload);

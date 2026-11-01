@@ -110,8 +110,8 @@ export function parseJsonValue(text: unknown, context = ''): Record<string, any>
   const direct = parseContainer(value);
   if (direct !== null) return direct;
 
-  // Find the first complete top-level object/array while respecting escaped quotes and nesting.
-  // This handles output such as "Result:\\n[{...}]" without slicing on braces inside strings.
+  // 找出第一个完整的顶层对象或数组，同时正确处理转义引号与嵌套。
+  // 这样像 "Result:\n[{...}]" 这种输出也能解析，而不会在字符串里的花括号处切断。
   // 截断输出只能捡回第一个完整 item（如 {"id":"b33",...}），先记下来，后面跟 repair 比"谁捡得多"。
   let scanned: Record<string, any> | any[] | null = null;
   for (let start = 0; start < value.length && scanned === null; start += 1) {
@@ -178,7 +178,6 @@ function containerItemCount(value: Record<string, any> | any[] | null): number {
     typeof (item as Record<string, unknown>).id === 'string').length;
 }
 
-/** Retain an object-only parser for the literary analysis and Reviewer schemas. */
 /**
  * 仅保留对象形态的解析器：复用 parseJsonValue，若结果是数组则返回 null。
  * 用于文学分析与 Reviewer 等必须返回 JSON 对象的场景。

@@ -21,7 +21,7 @@ import { handleDocumentProjectRequest } from './documents/projectRoutes.ts';
 import { handleApiPreflight, handleLocalApiRoutes } from './localApiRoutes.ts';
 import { handleLongTaskRequest, isSupportedLongTask } from './longTaskRoutes.ts';
 
-// Keep the constant referenced so TypeScript does not drop the side-effect-free import in tests.
+// 保留这个常量引用，免得 TypeScript 在测试里把这个无副作用的导入消掉。
 void _MAX_BODY_BYTES;
 
 /**

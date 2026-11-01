@@ -169,7 +169,7 @@ function parseLocalizedNumberRun(
  * 按语言习惯将数字字面量标准化为点小数形式。
  */
 function normalizeNumericLiteralToken(value: string, language: string): string {
-  // Spanish, French, German and Italian conventionally use comma decimals and dot grouping.
+  // 西班牙语、法语、德语、意大利语习惯用逗号表示小数、点表示分组。
   if (['es','fr','de','it'].includes(language)) {
     if (value.includes(',')) {
       const separator = value.lastIndexOf(',');
@@ -186,8 +186,8 @@ function normalizeNumericLiteralToken(value: string, language: string): string {
  * 从文本中提取可比较的数字 token 列表，支持多语言与中文量词。
  */
 function numericTokens(value: unknown, allowImplicitChineseClassifierOne = true, sourceLang = 'en'): string[] {
-  // Unsupported source-language words are not guessed. Only recognized numerals and explicit digits
-  // are compared; an unrecognized number phrase must not be treated as a source value of zero.
+  // 不认识的源语言词不去猜。只比较能识别的数词和明确写出的阿拉伯数字；
+  // 无法识别的数量短语不能被当成源值为 0。
   const source=String(value??'').normalize('NFKC').toLocaleLowerCase();
   const language=normalizeAuditLanguage(sourceLang, source);
   const matches=Array.from(source.matchAll(/\d+(?:[,.]\d+)*|[零〇一二两三四五六七八九十百千万亿]+|[\p{Script=Latin}][\p{Script=Latin}\p{M}]*/giu),
@@ -281,9 +281,9 @@ function numericQuantityUnits(value: unknown, sourceLang = 'en'): string[] {
       if(unit)found.push({index:match.index??0,unit});
     }
   }
-  // The Japanese katakana scanner and the CJK unit scanner can match the same source span.
-  // De-duplicate only identical (offset, canonical unit) pairs; repeated quantities at different
-  // offsets remain separate so cardinality differences are still visible.
+  // 日语片假名扫描器与 CJK 单位扫描器可能命中同一段源文。
+  // 只对「偏移一致且规范单位一致」的项去重；同单位但偏移不同的重复数量
+  // 仍然分开保留，这样基数差异还能看出来。
   const unique = new Map<string, { index: number; unit: string }>();
   for (const item of found) unique.set(item.index + ':' + item.unit, item);
   return Array.from(unique.values()).sort((a,b)=>a.index-b.index).map((item)=>item.unit);
@@ -304,8 +304,8 @@ export function numericFindings(
     if(!translation.trim())continue;
     const sourceNumbers=numericTokens(segment.text,false,resolvedSourceLang);
     const sourceUnits=numericQuantityUnits(segment.text,resolvedSourceLang);
-    // Only compare when the source contains a number/quantity the selected lexical rules could
-    // identify. Empty source evidence is "unknown", not a numeric value of zero.
+    // 只有当源文里存在所选词法规则能识别的数字或数量时才比较。
+    // 源文没有证据意味着「未知」，不是数值 0。
     if(!sourceNumbers.length && !sourceUnits.length)continue;
     const targetNumbers=numericTokens(translation,sourceNumbers.length>0,'zh');
     const targetUnits=numericQuantityUnits(translation,'zh');

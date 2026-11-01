@@ -7,10 +7,10 @@
  */
 
 export const TRANSLATION_BRIEF_POLICY_VERSION = 'translation-brief-v10-bounded-examples';
-// Historical examples are style evidence, not a chapter transcript.
+// 历史示例是文风证据，不是章节逐字记录。
 export const MAX_ACCEPTED_EXAMPLES = 8;
 export const MAX_ACCEPTED_EXAMPLE_CHARS = 4_000;
-// Absolute serialization safety ceiling.
+// 序列化安全上限的绝对天花板。
 export const MAX_TRANSLATION_BRIEF_CHARS = 1_000_000;
 
 export interface BriefSegment {
@@ -29,7 +29,7 @@ export interface TranslationBrief {
   sourceRevisionId: string;
   promptRevisionId: string;
   memoryRevisionId: string | null;
-  /** Count of source-ordered context deltas merged for this run-local wave snapshot. */
+  /** 本次 run 级波次快照里合并的、按源文顺序排列的上下文增量条数。 */
   contextDeltaCount: number;
   sourceSegmentIds: string[];
   chapterPath: string;
@@ -37,7 +37,7 @@ export interface TranslationBrief {
   precedingSegments: Array<{ id: string; text: string; contextPath: string }>;
   contextGraph: Record<string, any> | null;
   voiceContext: Record<string, any>;
-  /** Retrieval, temporal-boundary and budget-trimming counters for the trajectory/audit log. */
+  /** 供轨迹与审计日志用的检索、时间边界与预算裁剪计数器。 */
   contextDiagnostics: Record<string, unknown>;
   contextChars: number;
   contextHash: string;

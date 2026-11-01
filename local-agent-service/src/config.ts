@@ -20,7 +20,7 @@ export const ENV_FILE_PATH = path.resolve(process.env.LOCAL_AGENT_ENV_FILE?.trim
 export const DOCUMENTS_DIR = path.join(DATA_DIR, 'documents');
 
 const configuredToken = (process.env.LOCAL_AGENT_TOKEN || '').trim();
-// Token is optional for loopback-only use. Treat the example placeholder as unset.
+// 只在回环地址上使用时 token 可以省略；示例占位值等同于未设置。
 export const LOCAL_TOKEN = configuredToken && !/replace-with-a-long-random-token/i.test(configuredToken)
   ? configuredToken
   : '';
@@ -46,7 +46,7 @@ export const WORKBUDDY_FREE_MODELS = workbuddyCatalog
   .map((model) => model.id);
 export const DEFAULT_OPENCODE_MODEL = (process.env.LOCAL_OPENCODE_MODEL || process.env.OPENCODE_MODEL || '').trim();
 
-/** Parse optional integer settings without allowing malformed .env values to poison runtime timers/SQL. */
+/** 解析可选整数配置，别让 .env 里的畸形值污染运行时的定时器或 SQL。 */
 export function positiveIntegerEnv(name: string, fallback: number, minimum = 1): number {
   const raw = process.env[name];
   if (raw == null || !raw.trim()) return fallback;
@@ -59,8 +59,8 @@ export function positiveIntegerEnv(name: string, fallback: number, minimum = 1):
 }
 
 export const REQUEST_TIMEOUT_MS = positiveIntegerEnv('LOCAL_AGENT_TIMEOUT_MS', 180_000, 10_000);
-// Reviewer calls can use high reasoning effort and operate on longer, multi-segment
-// prompts. Keep their deadline separate from ordinary translation/API calls.
+// 审校调用可以开高推理强度，而且要处理更长的多片段提示词。
+// 它们的截止时间要与普通翻译、接口调用分开。
 export const REVIEW_TIMEOUT_MS = positiveIntegerEnv('LOCAL_AGENT_REVIEW_TIMEOUT_MS', 300_000, 10_000);
 // 全书预处理要在一个调用里读完数十段样本，输出人物/实体/关系/章节摘要，
 // 单个调用常常超过普通翻译批次的阈值。给这类长任务单独设上限，
@@ -77,5 +77,5 @@ export const MAX_BODY_BYTES = 24 * 1024 * 1024;
 export const MAX_DOCUMENT_BODY_BYTES = 100 * 1024 * 1024;
 export const MAX_HISTORY_ROWS = positiveIntegerEnv('LOCAL_AGENT_MAX_HISTORY', 500, 50);
 export const STORE_CONTENT = (process.env.LOCAL_AGENT_STORE_CONTENT || 'true').toLowerCase() !== 'false';
-// Only a failed JSON response is previewed in local terminal logs; set false to suppress text previews.
+// 本地终端日志只预览失败的 JSON 响应；设为 false 可关掉文本预览。
 export const LOG_RESPONSE_PREVIEW = (process.env.LOCAL_AGENT_LOG_RESPONSE_PREVIEW || 'true').toLowerCase() !== 'false';

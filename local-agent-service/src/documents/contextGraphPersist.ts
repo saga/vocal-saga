@@ -158,6 +158,12 @@ export function persistAnalysisGraph(input: GraphPersistInput): void {
   }
 }
 
+/**
+ * 组装落库上下文：给全部源文片段建 id 索引，并单独列出「允许作为证据」的抽样片段。
+ *
+ * 证据只认抽样内的片段——模型可能引用一段它没真正读到的原文，这类引用不能进图谱。
+ * 证据统计容器在这里初始化，后续各阶段只做累加。
+ */
 function createGraphPersistContext(input: GraphPersistInput): GraphPersistContext {
   const sourceById = new Map(input.segments.map((segment) => [segment.id, segment]));
   const allowedEvidence = new Map<string, Segment>();
@@ -200,6 +206,12 @@ function createEvidenceValidator(
     });
 }
 
+/**
+ * 把文风字段逐项写进 meta 表。
+ *
+ * 每个字段都有独立长度上限，且是「按字段名取」而不是整块 JSON：这样后续读取某个维度时
+ * 不必反序列化整份分析结果。styleRules / styleAvoid 额外去重并限量。
+ */
 function saveStyleMeta(ctx: GraphPersistContext): void {
   const { db, revisionId, data, samples } = ctx;
   saveMeta(db, revisionId, 'stylePolicyVersion', 'literary-style-v3-default-adoption');

@@ -37,8 +37,8 @@ export function sendJson(res: Response, status: number, body: unknown): void {
 }
 
 /**
- * Backward-compatible API error envelope. Keep the endpoint's legacy `error` value
- * (string or object) while exposing a top-level message and stable machine-readable code.
+ * 向后兼容的接口错误外壳。保留端点原有的 `error` 值（字符串或对象），
+ * 同时在上层给出 message 和稳定的机器可读 code。
  */
 export function sendApiError(
   res: Response,
@@ -61,8 +61,8 @@ export function sendApiError(
 }
 
 export function addCors(req: Request, res: Response): boolean {
-  // A loopback service can still be targeted by a webpage open in the browser.
-  // Permit browser extension origins only; allow command-line clients with no Origin header.
+  // 就算是回环地址上的服务，浏览器里打开的网页也可能打到它。
+  // 只放行浏览器扩展的来源；没有 Origin 头的命令行客户端允许通过。
   const origin = typeof req.headers.origin === 'string' ? req.headers.origin : '';
   if (origin) {
     let parsed: URL;

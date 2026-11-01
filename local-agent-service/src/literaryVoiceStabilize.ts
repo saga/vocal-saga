@@ -123,9 +123,8 @@ function buildVoiceProfile(
   const evidenceTruncated = rawEvidenceTruncated ||
     existingProfile?.evidenceTruncated === true ||
     combinedEvidence.length > 12;
-  // Keep the newest evidence when a rolling voice profile reaches its storage bound. The
-  // completeness flag above remains authoritative: temporal retrieval will withhold the
-  // aggregate VoiceCore if any source evidence was omitted by the bound.
+  // 滚动的声音档案到达存储上限时，保留最新的证据。上面那个完整性标记
+  // 仍然是权威：只要有源文证据被这个上限挤掉，时间检索就不会用这份聚合的 VoiceCore。
   const stableEvidence = combinedEvidence.slice(-12);
   return {
     analysisConflictWithConfirmed,
@@ -142,7 +141,7 @@ function buildVoiceProfile(
     voiceCore: existingProfile?.status === 'confirmed' ? existingProfile.voiceCore : raw.voiceCore,
     status: existingProfile?.status === 'confirmed' ? 'confirmed'
       : existingProfile?.status === 'rejected' ? 'rejected' : 'candidate',
-    // Translation inclusion is a user preference, not something the model may decide.
+    // 是否用于翻译属于用户偏好，不是模型能决定的事。
     useForTranslation: existingProfile
       ? existingProfile.useForTranslation !== false && existingProfile.status !== 'rejected'
       : true,

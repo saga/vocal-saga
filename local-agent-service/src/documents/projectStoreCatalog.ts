@@ -16,6 +16,8 @@ import { MAX_DOCUMENT_SOURCE_BYTES, normalizeDocumentTranslationStrategy, normal
 import { createProjectSchema } from './projectSchema.ts';
 import { type ProjectSummary, type CreateProjectInput, type DocumentProjectStore } from './projectStore.ts';
 
+// 新建项目时的兜底系统提示词。用户未在 prompt 里指定 systemPrompt 时用它，
+// 因此这里的约束（逐段翻译、保留否定与数字、只回 JSON）是翻译链路的最后一道口径。
 const DEFAULT_SYSTEM_PROMPT = [
   'You are a careful document translation worker. Translate every input segment faithfully into the requested target language.',
   'Preserve meaning, negation, names, dates, numbers, paragraph boundaries and the source author’s tone. Do not add explanations or content that is not in the source.',

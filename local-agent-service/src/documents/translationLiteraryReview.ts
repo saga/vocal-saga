@@ -17,10 +17,6 @@ import {
 } from './canonicalTermProtection.ts';
 import { getDocumentProjectStore } from './projectStore.ts';
 /**
- * Reviewer-only safety merge. TranslationBrief remains the source/time-scoped mapping snapshot for
- * initial translation. Reviewers also get the run-pinned project-memory snapshot; retain explicit
- * confirmed names even if a graph snapshot has pruned that mapping. Protections still require a
- * name or alias to occur in the source of one of the segments currently under review.
  * Reviewer 专用的安全合并：保留图谱快照中可能被裁剪的确认译名，并要求名称/别名出现在当前审校源文中。
  */
 export function mergeConfirmedMemoryNameMappings(
@@ -104,8 +100,8 @@ export function mergeConfirmedMemoryNameMappings(
   const combinedMappings: Array<Record<string, any>> = [...graphMappings, ...confirmedEntityMappings, ...confirmedCharacterMappings];
   if (!graph && !combinedMappings.length) return null;
 
-  // Strong mappings may contradict one another. A candidate is only a suggestion and must
-  // not knock out a confirmed target; unresolved conflicts among strong sources fail closed.
+  // 强映射之间也可能互相矛盾。候选只是建议，不能把已确认的译名顶掉；
+  // 多个强来源之间若有未解冲突，就失败关闭。
   const strongTargetsBySource = new Map<string, Set<string>>();
   const targetsBySource = new Map<string, Set<string>>();
   for (const mapping of combinedMappings) {
@@ -181,8 +177,8 @@ export async function runLiteraryReviewWithMissingRetry(input: Record<string, an
       const rawTranslation = rawTranslations[maskedSegment.id];
       if (typeof rawTranslation === 'string' &&
           canonicalMarkerCountsMatch(maskedSegment.source, rawTranslation, relevantMarkers)) continue;
-      // A reviewer must not be allowed to remove an evidenced canonical name. Retain the
-      // already-normalized initial draft for this ID instead of accepting an incompatible rewrite.
+      // 不允许审校把有证据的规范名删掉。遇到这种情况保留该 ID 已归一的初译，
+      // 而不是接受一次不兼容的重写。
       const original = originalById.get(maskedSegment.id) as any;
       if (original && typeof original.draft === 'string') {
         safeTranslations[maskedSegment.id] = original.draft;

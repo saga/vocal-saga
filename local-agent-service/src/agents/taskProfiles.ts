@@ -1,7 +1,7 @@
 /**
- * Explicit CodeBuddy execution profiles for translation and book-analysis tasks.
- * Only SDK-supported settings are emitted; deprecated maxThinkingTokens and undocumented
- * effort CLI flags are intentionally not used.
+ * 翻译与书籍分析任务使用的 CodeBuddy 执行档案。
+ * 只下发 SDK 支持过的设置；已弃用的 maxThinkingTokens
+ * 与未文档化的 effort CLI 参数，刻意都不用。
  */
 export type CodeBuddyTaskKey =
   | 'translation'
@@ -14,19 +14,19 @@ export type CodeBuddyThinkingMode = 'disabled' | 'adaptive' | 'enabled';
 export type CodeBuddyEffort = 'low' | 'medium' | 'high' | 'xhigh';
 
 export interface CodeBuddyTaskProfile {
-  /** Optional SDK model ID override for this task. */
+  /** 可选：为该任务覆盖 SDK 模型 ID。 */
   model: string;
-  /** Optional context-window tier (token count), omitted to preserve model defaultLength. */
+  /** 可选的上下文窗口档位（token 数）；不填则沿用模型的 defaultLength。 */
   contextWindow?: number;
-  /** Optional SDK fallbackModel used when the preferred model is unavailable. */
+  /** 可选：首选模型不可用时使用的 SDK fallbackModel。 */
   fallbackModel: string;
   thinkingMode: CodeBuddyThinkingMode;
-  /** Used only when thinkingMode='enabled'. */
+  /** 只在 thinkingMode='enabled' 时使用。 */
   thinkingBudgetTokens: number;
   effort: CodeBuddyEffort;
-  /** Added before built-in/mandatory instructions, so host contracts stay later in the prompt. */
+  /** 加在内置与强制指令之前，因此宿主契约仍排在提示词靠后位置。 */
   systemPromptAppendix: string;
-  /** Wraps the service-generated task input using {{CONTENT}}; omitted means the built-in input is used. */
+  /** 用 {{CONTENT}} 包裹服务端生成的任务输入；不填则使用内置输入。 */
   userPromptTemplate: string;
 }
 
@@ -87,7 +87,7 @@ function text(value: unknown, maxLength: number): string {
   return normalized.toLowerCase() === 'auto' ? '' : normalized;
 }
 
-/** Merge partial/old stored settings with explicit task defaults and hard bounds. */
+/** 把不完整或旧版存储的设置，与任务的显式默认值和硬边界合并。 */
 export function normalizeCodeBuddyTaskProfile(
   input: unknown,
   task: CodeBuddyTaskKey,
@@ -146,7 +146,6 @@ export function normalizeCodeBuddyTaskProfiles(input: unknown): CodeBuddyTaskPro
   };
 }
 
-/** Get an effective profile from either the UI's taskProfiles object or a legacy request body. */
 /**
  * 从 UI taskProfiles 或旧版 request body 中取出指定任务的 profile，并归一化。
  * 兼容 root.taskProfiles 与 root.taskProfile 两种传入形态。
@@ -162,9 +161,9 @@ export function getCodeBuddyTaskProfile(input: unknown, task: CodeBuddyTaskKey):
 }
 
 /**
- * Apply task prompt fields without replacing the service's mandatory output/security contracts.
- * The user template receives the complete built-in task input; absent {{CONTENT}} is appended
- * rather than silently dropping the actual task payload.
+ * 应用任务提示词字段，但不替换服务端强制要求的输出与安全契约。
+ * 用户模板拿到的是完整的内置任务输入；模板里没有 {{CONTENT}} 时，
+ * 就把实际任务负载追加在后面，绝不静默丢弃。
  */
 export function applyCodeBuddyTaskPrompt(
   prompt: string,
@@ -188,7 +187,7 @@ export function applyCodeBuddyTaskPrompt(
   };
 }
 
-/** Convert the persisted profile to the official SDK's thinking option. */
+/** 把持久化的档案转成官方 SDK 的 thinking 选项。 */
 export function codeBuddyThinkingOption(profile: CodeBuddyTaskProfile): Record<string, unknown> {
   if (profile.thinkingMode === 'disabled') return { type: 'disabled' };
   if (profile.thinkingMode === 'enabled') {

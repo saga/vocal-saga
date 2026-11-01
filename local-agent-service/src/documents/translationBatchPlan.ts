@@ -40,7 +40,7 @@ export function buildBatches(
     }
     current.push(item);
     chars += size;
-    // An individual paragraph may exceed the aggregate budget; isolate it in its own batch.
+    // 单个段落可能超过总预算；把它单独放进一个批次。
     if (size > strategy.maxBatchSourceChars) {
       batches.push(current);
       current = [];

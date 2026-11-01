@@ -48,11 +48,28 @@ export const TITLE_PREFIX_WORDS = new Set([
 ]);
 
 // 人名匹配模式。单名/复合/带称谓三类，es 与 ja 各补本语言语序的变体。
+//
+// 所有拉丁模式都要求「大写开头 + 至少两个小写字母」，因此天然排除全大写缩写（NASA）
+// 与单字母（"A."）；首尾的 lookaround 保证不在单词内部命中。
+
+// 单名。`Ann`、`Jean-Luc`、`O'Brien` 能中，`ANNA` 与 `A` 不能。
 export const NAME_PATTERN = /(?<![\p{L}\p{N}])\p{Lu}\p{Ll}{2,}(?:[’'-]\p{Lu}?\p{Ll}+)*(?![\p{L}\p{N}])/gu;
+// 复合名：在一段单名之后再接 1~2 个大写词（`Captain Ahab` 之外的 `Jean Paul Sartre` 这类）。
+// 上限取 2 是为了不把整行标题吞成一个名字。
 export const COMPOUND_NAME_PATTERN = /(?<![\p{L}\p{N}])\p{Lu}\p{Ll}{2,}(?:[’'-]\p{Lu}?\p{Ll}+)*(?:\s+\p{Lu}\p{Ll}{2,}(?:[’'-]\p{Lu}?\p{Ll}+)*){1,2}(?![\p{L}\p{N}])/gu;
+// 带称谓的写法。称谓既可能是名词 prefix（Mr./Herr），也可能是 `King Rat` 里的限定词；
+// 这里把它们连同后面的名字一次抓出来，交给 stripNamePrefix 去剥离。
 export const TITLED_NAME_PATTERN = /(?<![\p{L}\p{N}])(?:[Tt]he|[Aa]|[Aa]n|[Mm]r\.?|[Mm]rs\.?|[Mm]s\.?|[Mm]iss|[Dd]r\.?|[Pp]rof\.?|[Ss]ir|[Ll]ord|[Ll]ady|[Cc]aptain|[Cc]apt\.?|[Kk]ing|[Qq]ueen|[Pp]rince|[Pp]rincess|[Gg]eneral|[Cc]olonel|[Mm]ajor|[Ss]ergeant|Monsieur|Madame|Mademoiselle|M\.|Mme\.?|Mlle\.?|Herr|Frau|Fräulein|Signor(?:a|ina)?|Sig\.?|Dott\.?|Dottore|Capitano|Kapitän|König|Königin|Regina|Don|Doña|Dona|Señor|Senor|Señora|Senora|Señorita|Senorita|Sr\.?|Sra\.?|Srta\.?|San|Santa)\s+\p{Lu}\p{Ll}{2,}(?:[’'-]\p{Lu}?\p{Ll}+)*(?:\s+\p{Lu}\p{Ll}{2,}(?:[’'-]\p{Lu}?\p{Ll}+)*)?(?![\p{L}\p{N}])/gu;
+// 西语允许 `de`/`del`/`la`/`y` 连接各段（`Don Quijote de la Mancha`），
+// 通用复合名模式只认空格分隔，所以这套语序要单独写一条。
 export const SPANISH_COMPOUND_NAME_PATTERN = /(?<![\p{L}\p{N}])\p{Lu}\p{Ll}{2,}(?:(?:\s+(?:de|del|la|las|los|y)){1,2}\s+\p{Lu}\p{Ll}{2,}|\s+\p{Lu}\p{Ll}{2,}){1,3}(?![\p{L}\p{N}])/gu;
+// 西语称谓 + 带连接词的复合名（`Señor de la Vega`）。两者必须合起来匹配，
+// 否则先命中的会是最短的 `Señor de`。
 export const SPANISH_TITLED_NAME_PATTERN = /(?<![\p{L}\p{N}])(?:Don|Doña|Dona|Señor|Senor|Señora|Senora|Señorita|Senorita|Sr\.?|Sra\.?|Srta\.?|San|Santa)\s+\p{Lu}\p{Ll}{2,}(?:(?:\s+(?:de|del|la|las|los|y)){1,2}\s+\p{Lu}\p{Ll}{2,}|\s+\p{Lu}\p{Ll}{2,}){0,3}(?![\p{L}\p{N}])/gu;
+// 这些连接词本身不是名字的一部分，切分与归一时要能识别出来。
 export const SPANISH_NAME_PARTICLES = new Set(['de','del','la','las','los','y']);
+// 日文没有词间空格，只能靠后置敬称反推：先匹配敬称前的 2~4 个汉字。
+// 少于 2 字多是普通词（「彼」「私」），多于 4 字基本是短语而非姓名。
 export const JAPANESE_NAME_PATTERN = /(?<![\p{Script=Han}])[\p{Script=Han}]{2,4}(?=(?:さん|様|氏|君|殿|先生))/gu;
+// 片假名写的译名（外来人名），同样靠敬称定位；8 字符上限用于截断整句片假名。
 export const JAPANESE_KATAKANA_NAME_PATTERN = /(?<![\p{L}\p{N}])[\p{Script=Katakana}ー]{2,8}(?=(?:さん|様|氏|君))/gu;

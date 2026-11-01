@@ -14,7 +14,7 @@ export type Segment = { id: string; ordinal: number; text: string; kind: string;
 
 export type Evidence = { segmentId: string; quote: string };
 
-/** Bump only when the persisted graph schema/analysis semantics require a full re-analysis. */
+/** 只有当持久化的图谱结构或分析语义需要整本重新分析时，才动这个版本号。 */
 export const CONTEXT_GRAPH_ANALYSIS_VERSION = 'context-graph-v10-default-adoption';
 
 export const DEFAULT_CONTEXT_GRAPH_SYSTEM_PROMPT = [
@@ -84,7 +84,7 @@ export interface StoredSourceFeatureIndex {
   segments: Map<string, StoredSegmentFeatures>;
 }
 
-/** Persist lexical source features once per immutable source revision. Offsets use source UTF-16 positions. */
+/** 每个不可变源文版本只落一次词面特征索引；偏移用源文的 UTF-16 位置。 */
 export function persistSourceFeatureIndex(db: DatabaseSync, revisionId: string, segments: Segment[], scan: BookScanResult, sourceLang = 'auto'): void {
   ensureSchema(db);
   const entityById = new Map<string, BookScanResult['entityMentions']>();
@@ -143,7 +143,7 @@ export function persistSourceFeatureIndex(db: DatabaseSync, revisionId: string, 
   }
 }
 
-/** Return a complete, version-matched index or null if it is absent/incomplete. */
+/** 返回完整且版本匹配的索引；缺失或不完整则返回 null。 */
 export function readSourceFeatureIndex(db: DatabaseSync, revisionId: string, expectedSourceLang?: string): StoredSourceFeatureIndex | null {
   ensureSchema(db);
   const metaRow = db.prepare('SELECT value FROM context_graph_meta WHERE source_revision_id = ? AND key = ?')
@@ -274,7 +274,7 @@ export function ensureSourceFeatureIndexInDatabase(
     return meta;
   }
 
-  // Upgrade older projects without re-running the expensive book-level LLM analysis.
+  // 升级旧项目，但不重跑那轮昂贵的全书 LLM 分析。
   const rows = db.prepare(
     'SELECT segment_id, ordinal, text, kind, context_path FROM source_segments WHERE source_revision_id = ? ORDER BY ordinal'
   ).all(revisionId) as any[];
@@ -303,7 +303,7 @@ export function ensureSourceFeatureIndexInDatabase(
   return summary;
 }
 
-/** Build/upgrade the deterministic feature index without invoking a model. */
+/** 构建或升级确定性特征索引，不调用模型。 */
 export function ensureSourceFeatureIndex(projectId: string, sourceRevisionId?: string, sourceLang?: string): Record<string, any> {
   const { db, revisionId } = graphContext(projectId, sourceRevisionId);
   return ensureSourceFeatureIndexInDatabase(projectId, db, revisionId, sourceLang);

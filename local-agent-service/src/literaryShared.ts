@@ -44,8 +44,8 @@ export function normalizeEvidenceText(value: string): string {
  * 审校 finding 只有在原文引文与译文引文都能在输入原文/初译中逐字定位时，
  * 才能驱动自动修订；仅凭理由或建议不构成证据。
  *
- * A Reviewer finding may only drive an automatic correction when both excerpts are grounded
- * in the exact input source and draft. A plausible reason or suggestion alone is not evidence.
+ * 审校发现只有在两段摘录都能在确切的输入源文与草稿中落地时，
+ * 才能驱动自动修正。光有一个说得通的理由或建议，不算证据。
  */
 export function isLiteraryReviewFindingGrounded(
   source: string,

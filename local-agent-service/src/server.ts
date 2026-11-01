@@ -42,7 +42,7 @@ export function startLocalAgentServer() {
   // 对外开放只靠 ALLOWED_HOSTS 放行 Host 头，因此必须先确认 token 存在。
   assertExposureIsSafe(ALLOWED_HOSTS, LOCAL_TOKEN);
   initDatabase();
-  // Create/repair the catalog and mark interrupted document runs resumable before serving requests.
+  // 在开始服务请求之前，建好或修好 catalog，并把被中断的文档 run 标成可恢复。
   getDocumentProjectStore();
 
   // 请求日志必须挂在来源校验之前：这样被 CORS/Host 拦掉的请求（浏览器只看到 Failed to fetch）
@@ -79,7 +79,7 @@ export function startLocalAgentServer() {
     next();
   });
 
-  // Run the origin/Host checks before parsing potentially large request bodies.
+  // 先做 origin/Host 校验，再去解析可能很大的请求体。
   app.use((req: Request, res: Response, next: NextFunction) => {
     if (!addCors(req, res)) {
       sendApiError(res, 403, '本机服务不接受普通网页来源；请从浏览器扩展或本机命令行调用');

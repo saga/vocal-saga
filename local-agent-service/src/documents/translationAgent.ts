@@ -1,11 +1,11 @@
 /**
  * Bounded EPUB/PDF translation Agent —— 对外入口。
  *
- * This deliberately follows the agentic-data-architect boundary:
- * - the model proposes translations/reviews;
- * - the host owns workflow state, persistence, retries, identity checks and gates;
- * - candidates are accepted only through the Store's validated transaction, which protects newer manual edits and source hashes;
- * - all long-running progress is persisted as project events, not only sent over HTTP.
+ * 这里刻意遵循 agentic-data-architect 的边界：
+ * - 模型只负责提出译文与审校意见；
+ * - 宿主负责工作流状态、持久化、重试、身份校验与各类闸门；
+ * - 候选译文只能经由 Store 校验过的事务被采纳，那里会保护更新的手工编辑与源文哈希；
+ * - 所有耗时进度都落成项目事件，而不只是走 HTTP 返回。
  *
  * 实现按职责拆在同目录的若干模块里：契约（translationSchema）、并发预算（translationConcurrency）、
  * 批次切分（translationBatchPlan）、审校策略（translationReviewPolicy）、提示与调用

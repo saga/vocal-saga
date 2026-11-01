@@ -9,8 +9,6 @@ import { numericFindings } from './qualityNumeric.ts';
 import { englishResidueFindings } from './qualityResidueFindings.ts';
 import { type TranslationItem } from './translationSchema.ts';
 /**
- * Select only complete style revisions that have a matching, source-grounded style finding.
- * Chinese monolingual edits are intentionally deferred until the following bilingual review.
  * 仅接受带有对应、已验证 style finding 的完整修订；中文单语编辑延后到后续双语审校处理。
  */
 export function selectVerifiedStyleReviewCandidates(
@@ -31,8 +29,6 @@ export function selectVerifiedStyleReviewCandidates(
 }
 
 /**
- * A Chinese-only edit is provisional until the bilingual source comparison covers that segment.
- * Missing, malformed, or failed review results fall back to the original first-pass translation.
  * 中文单语编辑在双语审校明确覆盖并返回完整译文后才可写入候选；未覆盖则恢复初译。
  */
 export function resolveBilingualVerifiedChineseEdits(

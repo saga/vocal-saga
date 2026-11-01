@@ -52,7 +52,6 @@ export function formatCodeBuddyContextWindow(tokens: number): string {
   return tokens.toLocaleString('en-US') + ' tokens';
 }
 
-/** A selector only exists for >=2 valid tiers, all bounded by the model's physical limit. */
 /**
  * 归一化模型的 context window 配置：校验 supportedLengths 全为正整数且 <= maxInputTokens，
  * 至少 2 个档位；defaultLength 不合法时回退到最小档位。不满足则返回 undefined（不提供选择器）。
@@ -264,7 +263,7 @@ function readModelsJson(filePath: string | undefined): CatalogModel[] {
   try {
     return modelsFromConfig(JSON.parse(fs.readFileSync(filePath, 'utf8')));
   } catch {
-    // Missing or malformed optional models.json must not break the model catalog.
+    // models.json 缺失或格式不对，都不能把模型目录搞挂。
     return [];
   }
 }
@@ -276,7 +275,7 @@ function mergeCatalog(base: readonly CatalogModel[], overrides: readonly Catalog
     merged.set(override.id, {
       ...previous,
       ...override,
-      // models.json commonly omits credits; preserve the product-catalog price in that case.
+      // models.json 常常不写 credits；这种情况下沿用产品目录里的价格。
       credits: override.credits ?? previous?.credits ?? null,
     });
   }
@@ -284,9 +283,9 @@ function mergeCatalog(base: readonly CatalogModel[], overrides: readonly Catalog
 }
 
 /**
- * Read the product catalog, then apply models.json in CodeBuddy's documented priority:
- * built-in/product defaults < user ~/.codebuddy/models.json < project .codebuddy/models.json.
- * projectRoot is the cwd passed to the SDK; paths are injectable in tests.
+ * 先读产品目录，再按 CodeBuddy 文档写明的优先级套用 models.json：
+ * 内置/产品默认 < 用户 ~/.codebuddy/models.json < 项目 .codebuddy/models.json。
+ * projectRoot 就是传给 SDK 的 cwd；路径可注入，便于测试。
  */
 export function readModelCatalog(options: {
   localStorageDir?: string;

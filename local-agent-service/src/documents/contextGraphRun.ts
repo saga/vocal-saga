@@ -37,7 +37,7 @@ import {
 import { CONTEXT_GRAPH_ANALYSIS_VERSION, ensureSchema } from './contextGraphSchema.ts';
 import { graphAnalysisPrompt } from './contextGraphPrompts.ts';
 
-// Track the exact live run; a project-level boolean cannot distinguish stale runs from another revision.
+// 记录确切的在跑 run；项目级布尔值分不清是过期 run 还是另一个源文版本的 run。
 export const activeAnalyses = new Map<string, string>();
 
 /**
@@ -182,14 +182,14 @@ export function startContextGraphAnalysis(
     return { accepted: true, alreadyRunning: true, runId: existing.run_id };
   }
   if (existing?.run_id) {
-    // A database row alone is not proof that a live analysis still exists. Heal orphaned
-    // rows before accepting a new request, including force-reanalyze requests.
+    // 数据库里有行，不等于还真的有一次分析在跑。接受新请求之前先修掉孤儿行，
+    // 强制重新分析（force-reanalyze）的请求也一样。
     reconcileOrphanedContextGraphRun(
       projectId, db, existing.run_id,
       '检测到没有对应执行任务的陈旧预处理记录；旧任务已收敛为失败，可重新分析。',
     );
   }
-  // Do not persist a queued run that cannot start while another source revision is being analyzed.
+  // 另一个源文版本正在分析时，不要落一条注定起不来的排队 run。
   if (activeAnalyses.has(projectId)) {
     throw Object.assign(new Error('该项目的上一轮 Context Graph 分析仍在运行，请稍后重试。'), { status: 409 });
   }
@@ -277,8 +277,8 @@ export function startContextGraphAnalysis(
     } catch (persistError) {
       logError('context-graph', 'unable to persist failure · ' + (persistError instanceof Error ? persistError.message : String(persistError)));
     }
-    // context-graph.failed already writes a concise terminal summary with the same error.
-    // Avoid dumping the same Error object/stack a second time for ordinary failures.
+    // context-graph.failed 已经写了同样错误的简明终态摘要。
+    // 普通失败不必把同一个 Error 对象与堆栈再打一遍。
   }).finally(() => { if (activeAnalyses.get(projectId) === runId) activeAnalyses.delete(projectId); });
   return { accepted: true, alreadyRunning: false, runId };
 }

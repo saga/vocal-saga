@@ -38,9 +38,6 @@ export function isSupportedLongTask(req: Request, url: URL): boolean {
 /**
  * 文档会话作用域键：按文档指纹/角色/模型/语言方向/Prompt 签名隔离会话。
  *
- * Document sessions are opt-in and strictly scoped to one stable document fingerprint,
- * task role, model, language direction and prompt profile. Invalid/missing IDs retain the
- * existing one-off/shared behavior instead of creating an unbounded set of arbitrary sessions.
  * 无效或缺失的 documentSessionId 返回 undefined，保留一次性/共享行为。
  */
 function buildDocumentSessionScope(
@@ -52,8 +49,8 @@ function buildDocumentSessionScope(
   const source = metadata || body || {};
   const documentSessionId = typeof source.documentSessionId === 'string' ? source.documentSessionId : '';
   if (!/^[a-zA-Z0-9._:-]{1,100}$/.test(documentSessionId)) return undefined;
-  // Prompt edits must create a new Session. Reusing a previous conversation after the user
-  // changes the system/user template would continue using the old system instructions.
+  // 提示词一改就必须新建 Session。用户改了系统/用户模板之后还复用旧会话，
+  // 会继续用着旧的系统指令。
   const promptSignature = [
     typeof source.systemPromptOverride === 'string' ? source.systemPromptOverride : '',
     typeof source.userPromptTemplate === 'string' ? source.userPromptTemplate : '',
@@ -221,12 +218,12 @@ async function runLiteraryAnalysisRequest(res: Response, url: URL, body: any, re
 /**
  * 独立审校端点。
  *
- * The legacy standalone Reviewer is still used for explicit "re-review this segment"
- * actions. Give it the same deterministic canonical-name protection as Project Runs,
- * without sending unrelated future aliases from the whole-book memory.
- * Standalone re-review is not tied to an immutable server Run. Never trust a client-supplied
- * TranslationBrief/voiceContext; reconstruct both from the current submitted source and
- * the server-filtered, source-grounded literary-memory projection.
+ * 旧的独立 Reviewer 仍服务于「重新审校这个片段」这类显式操作。
+ * 给它和 Project Run 一样的确定性规范名保护，
+ * 但不要把全书记忆里无关的未来别名发过去。
+ * 独立审校不绑定服务端不可变的 Run。绝不要相信客户端给的
+ * TranslationBrief/voiceContext；两者都要用本次提交的源文、
+ * 以及服务端过滤过的、有源文依据的文学记忆投影重建。
  */
 async function runStandaloneReview(res: Response, url: URL, body: any, requestId: string): Promise<LongTaskOutcome> {
   const agent = parseAgentModel(body.model || 'auto', body.runtime || body.provider || '');
@@ -250,8 +247,8 @@ async function runStandaloneReview(res: Response, url: URL, body: any, requestId
   const reviewInput = {
     ...body,
     memory: safeMemory,
-    // Deliberately replace rather than spread the supplied object. No client graph/hash,
-    // chapter summary, recent example or voice context is allowed through this route.
+    // 这里是刻意替换而不是展开客户端对象。客户端传来的图谱/哈希、
+    // 章节摘要、近期示例、声音上下文，一律不许从这个路由穿过去。
     translationBrief: {
       policyVersion: 'standalone-review-v1-source-grounded',
       precedingSegments,
@@ -320,7 +317,7 @@ async function reportLongTaskFailure(input: {
   if (res.headersSent) {
     res.end();
   } else if (url.pathname === '/v1/chat/completions') {
-    // Keep the OpenAI-compatible error envelope stable for SDK clients.
+    // 保持 OpenAI 兼容的错误外壳，别让 SDK 客户端解析失败。
     sendJson(res, status, {
       error: {
         message,

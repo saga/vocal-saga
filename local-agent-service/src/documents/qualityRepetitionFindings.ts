@@ -155,8 +155,8 @@ export function repeatedExpressionFindings(
       let alignedText = '';
       let method: AlignmentGroup['method'] | null = null;
 
-      // Comparing full translations is valid only when the repeated sentence is the whole source
-      // segment. Embedded source sentences must not inherit differences from their surrounding prose.
+      // 只有整段源文就是那句重复句时，才能拿完整译文来比较。
+      // 嵌在段落里的句子，不得把周围文字带来的差异算到自己头上。
       if (phrase.unitType === 'sentence' && normalizedPhrase(source.text) === phrase.normalized) {
         alignedText = translation;
         method = 'whole-segment';
@@ -168,8 +168,8 @@ export function repeatedExpressionFindings(
         } else if (translatedQuotes.length === 0 && quoteUnitsBySegment.get(id) === 1 &&
           /\b(said|asked|replied|answered|whispered|shouted|murmured|called|cried|remarked|added|insisted|told)\b/i.test(source.text) &&
           !/(?:说道|说着|说|问道|答道|低声|大喊|喊道|回答|whispered|said|asked|replied)/i.test(translation)) {
-          // Some translation styles omit quotation marks while omitting source-language speaker
-          // attribution entirely. Only use the entire target as the quote when that structure is clear.
+          // 有些译法会省掉引号，同时完全不写源语言的说话人归属。
+          // 只有这种结构足够清楚时，才把整段译文当作引语。
           alignedText = translation;
           method = 'quoted-span';
         }
@@ -224,8 +224,8 @@ export function repeatedExpressionFindings(
       });
     }
 
-    // Embedded, unquoted phrases cannot be aligned to target text reliably using string heuristics.
-    // Keep them visible as a review task, but do not call whole-paragraph variation a proven drift.
+    // 嵌在段落里、又没有引号的句子，靠字符串启发式对不齐目标文本。
+    // 仍然把它作为审校任务列出来，但不要把整段差异判定成「已证实的漂移」。
     if (!groups.size && unresolvedIds.length >= 2) {
       findings.push({
         findingId: stableFindingId('repeated-expression-alignment-review', unresolvedIds.slice(0, 32), phrase.normalized),

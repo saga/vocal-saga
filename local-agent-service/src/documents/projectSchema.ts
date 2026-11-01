@@ -67,7 +67,6 @@ export function createProjectSchema(db: DatabaseSync): void {
     'event_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, event_type TEXT NOT NULL, payload_json TEXT NOT NULL, created_at TEXT NOT NULL);' +
     'CREATE INDEX IF NOT EXISTS idx_project_events_run ON project_events(run_id, event_id);'
   );
-  // Add columns safely for project DBs created by earlier iterations of this feature.
   // SQLite 项目可能早于独立文学记忆版本表创建；增量迁移不能丢旧的 Run / Prompt / 译文。
   const runColumns = new Set(
     (db.prepare('PRAGMA table_info(translation_runs)').all() as Array<{ name: string }>).map((column) => column.name),

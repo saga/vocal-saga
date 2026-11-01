@@ -41,9 +41,9 @@ export function createQualityRepairRun(
   if (!acceptedSnapshotAtAudit || !effectiveSnapshotAtAudit) {
     fail('该质量报告未记录译文快照，无法安全判断问题是否已被修正。请重新执行全书审计后再返工。', 409);
   }
-  // A run's candidates may be accepted after the audit. That is safe only if the whole accepted
-  // text now equals either the accepted snapshot or the effective text actually audited. Aggregate
-  // hashes keep the report compact; a different third snapshot means the audit is stale.
+  // 审计之后，Run 的候选可能被采纳。只有当整段已采纳文本等于
+  // 审计时的已采纳快照、或等于审计实际用过的有效文本时，这才安全。
+  // 聚合哈希让报告保持紧凑；若出现第三种快照，说明审计已过期。
   if (currentAcceptedSnapshotHash !== acceptedSnapshotAtAudit &&
       currentAcceptedSnapshotHash !== effectiveSnapshotAtAudit) {
     fail('审计后已有译文被修改；旧质量报告不能用于返工，请重新执行全书审计。', 409);
@@ -52,10 +52,9 @@ export function createQualityRepairRun(
   const selectedFindings = (report.findings || []).filter((finding: any) => wantedFindings.has(finding.findingId));
   const parentRunId = options.parentRunId || report.runId || undefined;
 
-  // Automatic repair is deliberately narrower than manual repair: it may only apply
-  // deterministic missing-translation findings, and only to segments that belonged to
-  // the completed parent Run. A book-level audit must never turn a partial Run into a
-  // background whole-book translation request.
+  // 自动修复刻意比手工修复更窄：只应用确定性的「缺译文」发现，
+  // 且只针对原本属于那个已完成父 Run 的片段。
+  // 全书级审计绝不能把一个部分 Run 变成后台的整本翻译请求。
   const automaticFindingSegmentIds = new Set<string>();
   if (options.automatic) {
     if (!parentRunId) fail('自动返工必须关联已完成的父运行。', 400);
@@ -89,8 +88,8 @@ export function createQualityRepairRun(
     }
   }
 
-  // Explicit segment IDs mean a genuinely narrow manual repair. They must not expand to
-  // every segment in a repeated-expression group simply because it belongs to one finding.
+  // 显式给出片段 ID 才算是真正的窄范围手工修复。不能因为某个片段
+  // 属于某条重复表达发现，就扩成那一组里的所有片段。
   const segments = new Set<string>(requestedSegmentIds.map(String).filter(Boolean));
   if (!requestedSegmentIds.length) {
     for (const finding of selectedFindings) {

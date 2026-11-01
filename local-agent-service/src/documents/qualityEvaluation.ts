@@ -56,8 +56,8 @@ function assertEvaluationComparable(
 /**
  * 盲评抽样：先按等距章节各取一条，再用等距的剩余变化片段补满。
  * 这样长篇小说不会只抽到前 40 章。
- * Reserve one sample per evenly spaced chapter first, then use evenly spaced remaining
- * changed segments. This prevents long novels from sampling only the first 40 chapters.
+ * 先按章节均匀留一个样本，再用均匀分布的剩余变更片段填满。
+ * 这样长篇小说不会只在最前 40 章里抽样。
  */
 function selectBlindSampleIds(
   before: ReturnType<typeof runComparisonData>,

@@ -102,8 +102,8 @@ export async function completeStyleGuide(input: {
   let styleRepairUsed = false;
   if (missingStyleDimensions.length) {
     styleRepairUsed = true;
-    // Some providers treat a JSON schema as shape guidance and still emit empty strings.
-    // Repair only these fields rather than falsely completing a run with an empty style guide.
+    // 有些提供方把 JSON schema 当成形状建议，仍然会输出空串。
+    // 只补这些字段，而不是拿一份空文风指南假装这轮完成了。
     logWarn('context-graph', '文风字段为空，启动定向补全 · strategy=' + strategy + ' · fields=' + missingStyleDimensions.join(','));
     const repairStartedAt = Date.now();
     const repairRun = await runAgentStructured(

@@ -7,7 +7,7 @@
 import { createHash } from 'node:crypto';
 import { hasCompoundCanonicalSyntax, isWorthCanonicalEntityMapping, normalizeCanonicalEntityKind, validateCanonicalTarget } from './canonicalEntityPolicy.ts';
 
-// Persistence safety ceiling, not a prompt budget. Keep enough room for long-book memory.
+// 持久化安全上限，不是提示词预算。要给长篇记忆留够空间。
 export const MAX_MEMORY_BYTES = 5 * 1024 * 1024;
 export const MAX_RELATION_RULES = 160;
 export const MAX_ANCHORS = 240;
@@ -86,8 +86,8 @@ export function containsEntityName(sourceText: string, candidateName: string): b
   if (/^[a-z0-9 ]+$/.test(name)) {
     const latinSource = source.replace(/[^a-z0-9]+/g, ' ').trim();
     const latinName = name.replace(/[^a-z0-9]+/g, ' ').trim();
-    // A one-letter alias such as "A." is too ambiguous to retrieve a profile:
-    // otherwise every article "a" could inject that character's voice rules.
+    // 像 "A." 这样的单字母别名太含糊，不足以检索到档案：
+    // 否则每篇文章里的冠词 "a" 都能把那个角色的声音规则注进来。
     if (latinName.length < 2) return false;
     return (' ' + latinSource + ' ').includes(' ' + latinName + ' ');
   }

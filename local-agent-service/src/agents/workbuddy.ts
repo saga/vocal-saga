@@ -31,10 +31,6 @@ export function buildCombinedPrompt(prompt: string, systemPrompt: string): strin
 }
 
 /**
- * query() exposes the documented Options contract (thinking/effort/fallbackModel).
- * V2 SessionOptions currently documents a narrower contract, so task profiles use query()
- * rather than silently passing unsupported fields to unstable_v2_createSession().
- *
  * 构造 CodeBuddy SDK 的调用选项：无 schema 时禁用工具、maxTurns=1；有 schema 时启用 StructuredOutput 工具
  * 并通过 json_schema 约束输出。canUseTool 仅允许 StructuredOutput，拒绝其余工具。
  */
@@ -118,7 +114,7 @@ async function queryWorkbuddyRaw(
   let iterator: AsyncIterator<unknown> | undefined;
 
   try {
-    // Start the deadline before the dynamic SDK import so a stalled initialization also fails visibly.
+    // 先开始计时，再动态导入 SDK：这样初始化卡住也能显式失败。
     const sdk = await Promise.race([import('@tencent-ai/agent-sdk'), timeoutPromise]);
     if (contextWindow !== undefined) {
       const catalog = readModelCatalog({ projectRoot: WORK_DIR });
@@ -133,7 +129,7 @@ async function queryWorkbuddyRaw(
       effectiveOptions = {
         ...options,
         cwd: contextWorkspace.cwd,
-        // Only the temporary project seed is loaded. Host settings/Skills/MCP remain disabled.
+        // 只加载临时的项目级种子配置。宿主的设置、Skills、MCP 全部保持关闭。
         settingSources: ['project'],
       };
     }
@@ -145,13 +141,13 @@ async function queryWorkbuddyRaw(
     const consume = (async () => {
       try {
         for (;;) {
-          // Interrupt alone may not end stream(); the race makes the request deadline authoritative.
+          // 光靠 Interrupt 未必能让 stream() 结束；这个竞速让请求截止时间说了算。
           const next = await Promise.race([iterator!.next(), timeoutPromise]);
           if (next.done) break;
           const message = next.value;
           const raw: any = message && typeof message === 'object' ? message : {};
           messageCount += 1;
-          // SDK init events carry the durable session_id needed to resume a later workflow stage.
+          // SDK 的 init 事件带着持久的 session_id，后续工作流阶段要靠它续聊。
           const observedSessionId = [raw.session_id, raw.sessionId, raw.session?.id, raw.message?.session_id]
             .find((value) => typeof value === 'string' && value.trim());
           if (typeof observedSessionId === 'string' && observedSessionId !== sessionId) {
@@ -174,14 +170,14 @@ async function queryWorkbuddyRaw(
           }
         }
       } finally {
-        // Stop local consumption after timeout; late messages must not mutate the host run.
+        // 超时之后停止本地消费；迟到的消息不得再改动宿主 Run。
         if (timedOut && iterator?.return) {
           void Promise.resolve(iterator.return()).catch(() => {});
         }
       }
     })();
 
-    // Long tasks may be quiet for minutes; heartbeats are telemetry, not a progress guarantee.
+    // 长任务可能几分钟没动静；心跳是遥测，不构成进度承诺。
     if (timeoutMs > 60_000) {
       heartbeat = setInterval(() => {
         logInfo('agent', '调用仍在进行 · 已等待 ' + ((Date.now() - startedAt) / 1000).toFixed(0) + 's'
@@ -200,7 +196,7 @@ async function queryWorkbuddyRaw(
       if (iterator?.return) void Promise.resolve(iterator.return()).catch(() => {});
       throw new Error('Workbuddy Agent SDK 调用失败：' + (error instanceof Error ? error.message : String(error)));
     }
-    // Keep configuration/input validation errors readable when no SDK query was created.
+    // 一个 SDK query 都没建起来时，配置或入参校验错误也要保持可读。
     throw error;
   } finally {
     if (timer) clearTimeout(timer);
@@ -218,8 +214,8 @@ function createCodeBuddyContextWindowWorkspace(contextWindow: number): { cwd: st
   try {
     const configDir = path.join(cwd, '.codebuddy');
     mkdirSync(configDir, { recursive: true });
-    // Preserve only project-level model definitions. The file may contain an API key,
-    // so the temporary copy is owner-readable only and removed with the workspace.
+    // 只保留项目级的模型定义。这个文件可能含 API key，
+    // 所以临时副本仅属主可读，并随工作区一起删除。
     const sourceModels = path.join(WORK_DIR, '.codebuddy', 'models.json');
     if (existsSync(sourceModels)) {
       writeFileSync(path.join(configDir, 'models.json'), readFileSync(sourceModels), { mode: 0o600 });
@@ -248,7 +244,7 @@ export async function runWorkbuddy(
   sessionScope?: string,
   taskProfile?: CodeBuddyTaskProfile,
 ): Promise<{ text: string; usage: TurnUsage | null }> {
-  // Task profiles must go through query() so thinking/effort/fallbackModel are honored.
+  // 任务档案必须走 query()，thinking/effort/fallbackModel 才会被采纳。
   if (taskProfile) {
     const result = await queryWorkbuddyRaw(
       agent, prompt, systemPrompt, buildWorkbuddyOptions(agent, undefined, taskProfile), requestId,
@@ -317,8 +313,8 @@ export async function runWorkbuddyStructured(
   // 长任务（全书预处理）显式放宽上限；普通翻译批次沿用 REQUEST_TIMEOUT_MS。
   const timeoutMs = options.timeoutMs ?? REQUEST_TIMEOUT_MS;
   if (taskProfile || options.persistSession || options.sessionId) {
-    // Persistent workflow turns must bypass the shared pool so they can resume their exact SDK Session.
-    // Query Options formally supports reasoning settings; SessionOptions does not expose them.
+    // 持久化工作流的轮次必须绕过共享池，才能续上它那个确切的 SDK 会话。
+    // Query Options 正式支持推理相关设置；SessionOptions 不暴露它们。
     result = await queryWorkbuddyRaw(
       agent, prompt, systemPrompt,
       buildWorkbuddyOptions(agent, schema, taskProfile, options),

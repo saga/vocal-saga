@@ -110,8 +110,6 @@ function handleModelCatalog(req: Request, res: Response, url: URL): boolean {
     });
     return true;
   }
-  // Context-window tiers are config options, not model-list metadata. Clients should refresh
-  // this endpoint whenever the selected model changes and display a selector only when one exists.
   // CodeBuddy 上下文窗口档位：按所选模型返回可选配置，前端仅在存在时展示选择器。
   if (url.pathname === '/api/codebuddy/config-options') {
     const catalog = readModelCatalog({ projectRoot: WORK_DIR });
@@ -171,7 +169,7 @@ function handleTranslationCacheRoutes(req: Request, res: Response, url: URL, db:
     }
     const defaultTtlMs = 7 * 24 * 60 * 60 * 1000;
     const ttlMs = req.body.ttlMs === undefined ? defaultTtlMs : req.body.ttlMs;
-    // Keep cache lifetime bounded: zero expires immediately; negative/non-numeric values are invalid.
+    // 让缓存时长有界：0 表示立即过期；负数或非数字都算非法。
     if (typeof ttlMs !== 'number' || !Number.isSafeInteger(ttlMs) || ttlMs < 0 || ttlMs > 365 * 24 * 60 * 60 * 1000) {
       sendApiError(res, 400, 'ttlMs 必须是 0 到 365 天之间的整数'); return true;
     }

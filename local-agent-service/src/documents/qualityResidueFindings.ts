@@ -9,8 +9,8 @@
 import { MAX_BULK_REPAIR_SEGMENTS, normalized, stableFindingId } from './qualityShared.ts';
 import { normalizeAuditLanguage } from './qualityNumeric.ts';
 
-// Catch likely source-language residue in Chinese translations. This is deliberately a review hint:
-// Latin names, short isolated tokens not in the watchlist, and all stylistic decisions remain untouched.
+// 抓中文译文里可能残留的源语言词。这刻意只作为审校提示：
+// 拉丁人名、不在关注列表里的孤立短词、以及一切文风决定都不动。
 const ENGLISH_RESIDUE_WORDS = new Set([
   'again','although','already','anyway','because','before','behind','between','beyond','could','during',
   'ever','however','indeed','instead','later','maybe','might','must','never','nothing','perhaps','rather',
@@ -131,8 +131,8 @@ export function translationContextDeltaFindings(db: any, runId: string | undefin
         const canonicalIndex = matchingIndexes[0]!;
         group = groups[canonicalIndex]!;
         for (const name of names) group.names.add(name);
-        // Explicit alias bridges can connect prior groups. Merge them without fuzzy substring
-        // matching, retaining source-order target proposals and their exact evidence locations.
+        // 显式的别名桥接可以把先前几组合到一起。合并时不做模糊子串匹配，
+        // 保留按源文顺序的目标提议及其精确证据位置。
         for (const index of matchingIndexes.slice(1).reverse()) {
           const bridged = groups[index]!;
           for (const name of bridged.names) group.names.add(name);
@@ -278,16 +278,16 @@ export function entityMentionDriftFindings(
         group = groups.find((candidate) => candidate.names.has(name));
       }
       if (!group) continue;
-      // Keep evidence local to a real source segment; validation at audit time is deliberate in
-      // case stored data was migrated or imported from an older implementation.
+      // 证据要落在真实的源文片段上；审计时再做一次校验是有意为之，
+      // 以防数据是迁移来的、或从旧实现导入的。
       group.mentions.push({ segmentId, sourceQuote, targetSurface, batchIndex: Number(row.batch_index) });
     }
   }
 
   const findings: any[] = [];
   for (const group of groups) {
-    // If candidate targets themselves disagree, the separate context-delta conflict finding is
-    // more accurate than conflating canonical target choice with actual surface rendering.
+    // 候选目标译名本身就互相矛盾时，单独的「上下文增量冲突」发现
+    // 比把规范译名选择与实际译文呈现混为一谈更准确。
     if (group.targets.size > 1) continue;
     const bySurface = new Map<string, Mention[]>();
     for (const mention of group.mentions) {

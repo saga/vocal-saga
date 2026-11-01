@@ -68,7 +68,11 @@ export const QUANTITY_UNITS: Array<{ pattern: RegExp; unit: string; family: stri
 ];
 
 // 英文数字词 + 单位（带 g 标志，调用前重置 lastIndex）。
+// 数字部分允许连续组合，才能吃下 `three hundred thirty` 与 `twenty-one` 这种写法；
+// 单位只收常见度量与时间词，避免把 `sides` 之外的普通名词误判成量。
 export const ENGLISH_QUANTITY_PATTERN = /\b(?:\d+(?:[,.]\d+)*|zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|million|billion)(?:[\s-]+(?:and[\s-]+)?(?:\d+(?:[,.]\d+)*|zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|million|billion))*[\s-]+(inches?|feet|foot|miles?|hours?|minutes?|seconds?|days?|weeks?|months?|years?|degrees?|meters?|metres?|centimeters?|centimetres?|millimeters?|millimetres?|kilometers?|kilometres?|pounds?|kilograms?|ounces?|liters?|litres?|sides?)\b/giu;
+// 中文数量：阿拉伯数字或中文数字 + 单位。中文没有词间空格，因此不加 \b，
+// 单位必须落在已知集合里，单位到规范名的映射见下方 CHINESE_UNIT_MAP。
 export const CHINESE_QUANTITY_PATTERN = /(?:\d+(?:[,.]\d+)*|[零〇一二两三四五六七八九十百千万亿]+)(英寸|寸|英尺|尺|英里|公里|千米|厘米|毫米|米|小时|分钟|秒钟|秒|天|周|星期|个月|月|年|岁|公斤|千克|克|升|毫升|度|边)/gu;
 
 // 中文数字 + 单位，单位再经 CHINESE_UNIT_MAP 归一。

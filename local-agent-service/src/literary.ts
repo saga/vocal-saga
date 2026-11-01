@@ -29,7 +29,6 @@ export {
 } from './literaryPrompts.ts';
 export { runLiteraryReview } from './literaryReviewRun.ts';
 
-/** Actual built-in reviewer/analysis prompts used by the service; exposed read-only for the extension UI. */
 /**
  * 生成内置审校/分析 Prompt 的只读预览，供扩展 UI 展示。
  * 使用占位符片段构造示例 Prompt，不执行模型调用。

@@ -46,6 +46,12 @@ export function publicPrompt(store: DocumentProjectStore, row: any): any {
   };
 }
 
+/**
+ * 保存一版文学记忆，按内容指纹幂等：内容不变就不再产生新版本。
+ *
+ * 写入前必须先过 validateLiteraryMemoryAgainstProject——记忆里引用的实体、片段、
+ * 源文版本都要能对上当前项目，否则一旦落库，后续检索会拿着悬空引用去查。
+ */
 export function saveLiteraryMemory(store: DocumentProjectStore, projectId: string, input: unknown): any {
   const db = store.openProjectDb(projectId);
   const memory = store.validateLiteraryMemoryAgainstProject(projectId, input);
