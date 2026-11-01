@@ -4,7 +4,7 @@
  * while model execution is owned by translationAgent. This keeps UI and CLI on one contract.
  */
 import type { Request, Response } from 'express';
-import { getDocumentProjectStore } from './projectStore.ts';
+import { getDocumentProjectStore, type DocumentProjectStore } from './projectStore.ts';
 import { MAX_DOCUMENT_SOURCE_BYTES } from './documentStrategy.ts';
 import { startProjectTranslationRun, isProjectRunActive } from './translationAgent.ts';
 import { applyChineseEditorialProfileReview, scheduleChineseEditorialProfileRefresh } from './chineseEditorialProfile.ts';
@@ -58,55 +58,43 @@ function decoded(segment: string): string {
 }
 
 /**
+ * 路由只认「方法 + 路径段」，项目相关分支额外拿到 store 与已校验的 projectId。
+ * 把这两者分开，是为了让「集合级」路由（列表/创建/解析/导入）不必伪造一个 projectId。
+ */
+interface ProjectApiRequest {
+  req: Request;
+  res: Response;
+  url: URL;
+  method: string;
+  pathParts: string[];
+}
+
+interface ProjectRouteContext extends ProjectApiRequest {
+  store: DocumentProjectStore;
+  projectId: string;
+}
+
+/**
  * 处理 /api/documents/projects 路由族。
  *
  * 返回 true 表示该请求已由此模块处理（包括已返回的错误响应），false 表示路径不属于该路由族。
  * 本模块应保持为薄 HTTP adapter：参数校验后委托 Store/Agent/ContextGraph/QualityAudit，
  * 不在路由中另造一套 Run 状态或持久化规则。
+ *
+ * 分发按路径第 5 段（资源名）分组，每组一个 handler；资源内部仍按「段数 + 方法」匹配，
+ * 因为同一资源下的端点差异主要是路径形状，而不是资源语义。
  */
 export async function handleDocumentProjectRequest(req: Request, res: Response, url: URL): Promise<boolean> {
   if (!url.pathname.startsWith('/api/documents/projects')) return false;
+  const method = req.method.toUpperCase();
+  const pathParts = url.pathname.split('/').filter(Boolean).map(decoded);
   try {
-    const method = req.method.toUpperCase();
-    const pathParts = url.pathname.split('/').filter(Boolean).map(decoded);
-    // api / documents / projects
-    if (pathParts.length === 3 && method === 'GET') {
-      sendJson(res, 200, { projects: getDocumentProjectStore().listProjects() });
+    const request: ProjectApiRequest = { req, res, url, method, pathParts };
+    if (pathParts.length === 3) {
+      if (await handleProjectCollection(request)) return true;
+      sendApiError(res, 404, '未知文档项目端点：' + method + ' ' + url.pathname);
       return true;
     }
-    if (pathParts.length === 3 && method === 'POST') {
-      const body = bodyObject(req.body);
-      const store = getDocumentProjectStore();
-      const input = {
-        title: String(body.title || body.fileName || '未命名文档'),
-        format: String(body.format || ''),
-        sourceFileName: typeof body.sourceFileName === 'string' ? body.sourceFileName : body.fileName,
-        segments: body.segments,
-        prompt: body.prompt && typeof body.prompt === 'object' ? body.prompt : undefined,
-      };
-
-      // Make concurrent auto-initialization idempotent. The explicit "separate project" action
-      // opts out; every ordinary creation first reuses an exact source match or rejects a
-      // same-name/source-changed candidate so the client can ask for an explicit decision.
-      if (body.allowDuplicate !== true) {
-        const resolution = store.resolveProjectForSource(input);
-        if (resolution.exactProject) {
-          sendJson(res, 200, { project: resolution.exactProject, reusedExisting: true });
-          return true;
-        }
-        if (resolution.relatedProject) {
-          throw Object.assign(
-            new Error('已存在来源不同的同名文档项目。请明确更新现有来源版本或选择另建项目。'),
-            { status: 409 },
-          );
-        }
-      }
-
-      const project = store.createProject(input);
-      sendJson(res, 201, { project, reusedExisting: false });
-      return true;
-    }
-
     if (pathParts.length < 4) {
       sendApiError(res, 404, '未知文档项目端点');
       return true;
@@ -114,111 +102,12 @@ export async function handleDocumentProjectRequest(req: Request, res: Response, 
     const store = getDocumentProjectStore();
     // Resolve from the service catalog so extension IndexedDB/session loss cannot create duplicate projects.
     if (pathParts.length === 4 && pathParts[3] === 'resolve' && method === 'POST') {
-      const body = bodyObject(req.body);
-      const resolution = store.resolveProjectForSource({
-        title: String(body.title || ''),
-        format: String(body.format || ''),
-        sourceFileName: typeof body.sourceFileName === 'string' ? body.sourceFileName : undefined,
-        segments: body.segments,
-      });
-      sendJson(res, 200, resolution);
-      return true;
+      return await handleProjectResolve(request, store);
     }
-    // Import raw files within the local service. The extension does not parse or split documents.
     if (pathParts.length === 4 && pathParts[3] === 'import-file' && method === 'POST') {
-      const contentType = String(req.headers['content-type'] || '').split(';')[0]!.trim().toLowerCase();
-      if (!['application/octet-stream', 'application/epub+zip', 'application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'text/plain', 'text/markdown', 'text/html'].includes(contentType)) {
-        sendApiError(res, 415, '文件导入需要使用 application/octet-stream 或与文件格式匹配的 Content-Type', '文件导入需要使用 application/octet-stream 或与文件格式匹配的 Content-Type');
-        return true;
-      }
-      const encodedName = String(req.headers['x-source-file-name'] || '');
-      let fileName = encodedName;
-      try { if (encodedName) fileName = decodeURIComponent(encodedName); }
-      catch { throw Object.assign(new Error('X-Source-File-Name 编码无效'), { status: 400 }); }
-      if (!fileName || fileName.includes('/') || fileName.includes('\\')) throw Object.assign(new Error('X-Source-File-Name 必须是文件名，不得包含路径'), { status: 400 });
-      const bytes = await readRawSourceBody(req, MAX_DOCUMENT_SOURCE_BYTES);
-      if (req.headers['x-import-mode'] !== 'separate') {
-        const sameSourceProject = store.listProjects()
-          .filter((candidate) => candidate.sourceFileSaved &&
-            candidate.sourceFileName.toLocaleLowerCase() === fileName.toLocaleLowerCase() &&
-            candidate.sourceFileSize === bytes.byteLength)
-          .find((candidate) => store.matchesStoredSourceFile(candidate.projectId, bytes));
-        if (sameSourceProject) {
-          sendJson(res, 200, {
-            project: store.getProject(sameSourceProject.projectId),
-            reusedExisting: true,
-            sourceFileHashMatched: true,
-          });
-          return true;
-        }
-      }
-      const parsed = await parseDocumentFile(fileName, bytes);
-      const encodedTitle = String(req.headers['x-project-title'] || '');
-      let title = parsed.title;
-      try { if (encodedTitle) title = decodeURIComponent(encodedTitle).trim().slice(0, 500) || title; }
-      catch { throw Object.assign(new Error('X-Project-Title 编码无效'), { status: 400 }); }
-      const sourceInput = {
-        title, format: parsed.format, sourceFileName: fileName, segments: parsed.segments,
-      };
-      const resolution = req.headers['x-import-mode'] === 'separate'
-        ? { exactProject: null, relatedProject: null }
-        : store.resolveProjectForSource({ ...sourceInput, prompt: { translationMode: 'literary' } });
-
-      if (resolution.exactProject) {
-        const sourceFile = resolution.exactProject.sourceFileSaved
-          ? undefined
-          : await store.storeSourceFile(resolution.exactProject.projectId, fileName, bytes);
-        sendJson(res, 200, {
-          project: store.getProject(resolution.exactProject.projectId),
-          ...(sourceFile ? { sourceFile } : {}),
-          reusedExisting: true,
-        });
-        return true;
-      }
-
-      // A legacy project may have been segmented by an older extension parser. If its immutable
-      // original file matches exactly, reuse its SQLite segments rather than misclassifying the
-      // new server parser's different segmentation as a user-edited source.
-      if (resolution.relatedProject?.sourceFileSaved &&
-          store.matchesStoredSourceFile(resolution.relatedProject.projectId, bytes)) {
-        sendJson(res, 200, {
-          project: store.getProject(resolution.relatedProject.projectId),
-          reusedExisting: true,
-          parserVersionMigrationSuggested: false,
-        });
-        return true;
-      }
-
-      // Never silently create a second project for a same-name book with different content.
-      // The server parsed this file already, so return the parsed preview for the existing
-      // source-change confirmation workflow instead of asking the extension to parse the binary.
-      if (resolution.relatedProject) {
-        sendJson(res, 200, {
-          sourceChanged: true,
-          relatedProject: resolution.relatedProject,
-          document: {
-            title: parsed.title || title,
-            format: parsed.format,
-            segments: parsed.segments,
-          },
-        });
-        return true;
-      }
-
-      const project = store.createProject({
-        ...sourceInput, prompt: { translationMode: 'literary' },
-      });
-      try {
-        const sourceFile = await store.storeSourceFile(project.projectId, fileName, bytes);
-        // Opening/importing a book must not automatically start a long analysis. The explicit
-        // UI action or a persisted literary Run owns Context Graph preprocessing.
-        sendJson(res, 201, { project, sourceFile, reusedExisting: false });
-      } catch (error) {
-        try { store.archiveProject(project.projectId); } catch { /* preserve the original error */ }
-        throw error;
-      }
-      return true;
+      return await handleProjectImportFile(request, store);
     }
+
     const projectId = pathParts[3]!;
     // Every nested route, including run resume/accept/cancel, must reject archived projects.
     // The per-process SQLite connection cache must not turn an archived project into a live one.
@@ -226,361 +115,594 @@ export async function handleDocumentProjectRequest(req: Request, res: Response, 
       sendApiError(res, 404, '找不到文档项目或项目已归档');
       return true;
     }
-
-    if (pathParts.length === 4 && method === 'GET') {
-      const project = store.getProject(projectId);
-      if (!project) { sendApiError(res, 404, '找不到文档项目'); return true; }
-      sendJson(res, 200, { project, verification: store.verifyProject(projectId), runs: store.listRuns(projectId, 10) });
-      return true;
-    }
-    if (pathParts.length === 4 && method === 'DELETE') {
-      store.archiveProject(projectId);
-      sendJson(res, 200, { archived: true, projectId });
-      return true;
-    }
-    if (pathParts.length === 5 && pathParts[4] === 'source-file' && method === 'POST') {
-      const contentType = String(req.headers['content-type'] || '').split(';')[0]!.trim().toLowerCase();
-      if (!['application/octet-stream', 'application/pdf', 'application/epub+zip', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'].includes(contentType)) {
-        sendApiError(res, 415, '原始文档上传需要使用二进制 Content-Type', '原始文档上传需要使用二进制 Content-Type');
-        return true;
+    const context: ProjectRouteContext = { ...request, store, projectId };
+    const resource = pathParts[4];
+    if (!resource) {
+      if (await handleProjectDetail(context)) return true;
+    } else {
+      switch (resource) {
+        case 'source-file':
+        case 'source':
+        case 'translations':
+        case 'segments':
+        case 'prompts':
+          if (await handleProjectSourceRoutes(context)) return true;
+          break;
+        case 'context-graph':
+          if (await handleContextGraphRoutes(context)) return true;
+          break;
+        case 'literary-memory':
+          if (await handleLiteraryMemoryRoutes(context)) return true;
+          break;
+        case 'runs':
+          if (await handleRunRoutes(context)) return true;
+          break;
+        case 'quality-audit':
+        case 'quality-evaluations':
+          if (await handleQualityRoutes(context)) return true;
+          break;
+        case 'verify':
+        case 'events':
+          if (await handleProjectEventRoutes(context)) return true;
+          break;
+        default:
+          break;
       }
-      const encodedName = String(req.headers['x-source-file-name'] || '');
-      let fileName = encodedName;
-      try { if (encodedName) fileName = decodeURIComponent(encodedName); }
-      catch { throw Object.assign(new Error('X-Source-File-Name 编码无效'), { status: 400 }); }
-      if (!fileName || fileName.includes('/') || fileName.includes('\\')) throw Object.assign(new Error('X-Source-File-Name 必须是文件名，不得包含路径'), { status: 400 });
-      const bytes = await readRawSourceBody(req, MAX_DOCUMENT_SOURCE_BYTES);
-      if (req.headers['x-source-action'] === 'update-revision') {
-        const parsed = await parseDocumentFile(fileName, bytes);
-        const result = await store.createSourceRevisionWithFile(projectId, {
-          title: parsed.title || store.getProject(projectId)!.title,
-          format: parsed.format,
-          sourceFileName: fileName,
-          segments: parsed.segments,
-        }, fileName, bytes);
-        sendJson(res, 201, result);
-        return true;
-      }
-      const saved = await store.storeSourceFile(projectId, fileName, bytes);
-      sendJson(res, 200, saved);
-      return true;
     }
-    if (pathParts.length === 5 && pathParts[4] === 'source' && method === 'POST') {
-      const body = bodyObject(req.body);
-      const project = store.createSourceRevision(projectId, {
-        title: String(body.title || ''),
-        format: String(body.format || ''),
-        sourceFileName: typeof body.sourceFileName === 'string' ? body.sourceFileName : undefined,
-        segments: body.segments,
-      });
-      sendJson(res, 201, { project });
-      return true;
-    }
-    if (pathParts.length === 6 && pathParts[4] === 'translations' && pathParts[5] === 'import' && method === 'POST') {
-      const body = bodyObject(req.body);
-      const result = store.importAcceptedTranslations(projectId, body.items);
-      sendJson(res, 200, result);
-      return true;
-    }
-    if (pathParts.length === 5 && pathParts[4] === 'segments' && method === 'GET') {
-      const rawLimit = url.searchParams.get('limit');
-      const rawOffset = url.searchParams.get('offset');
-      const parsedLimit = rawLimit === null ? 250 : Number(rawLimit);
-      const parsedOffset = rawOffset === null ? 0 : Number(rawOffset);
-      if (!Number.isSafeInteger(parsedLimit) || parsedLimit < 1 || parsedLimit > 1000) {
-        throw Object.assign(new Error('limit 必须是 1-1000 的整数'), { status: 400 });
-      }
-      if (!Number.isSafeInteger(parsedOffset) || parsedOffset < 0) {
-        throw Object.assign(new Error('offset 必须是非负整数'), { status: 400 });
-      }
-      const runId = url.searchParams.get('runId') || undefined;
-      sendJson(res, 200, {
-        project: store.getProject(projectId),
-        segments: store.getSegments(projectId, { limit: parsedLimit, offset: parsedOffset, runId }),
-        limit: parsedLimit,
-        offset: parsedOffset,
-      });
-      return true;
-    }
-    if (pathParts.length === 7 && pathParts[4] === 'segments' && pathParts[6] === 'translation' && method === 'PUT') {
-      const body = bodyObject(req.body);
-      if (typeof body.text !== 'string') {
-        throw Object.assign(new Error('text 必须是字符串；如需清空译文，请显式传入空字符串'), { status: 400 });
-      }
-      const saved = store.saveManualEdit(projectId, pathParts[5]!, body.text);
-      sendJson(res, 200, saved);
-      return true;
-    }
-    if (pathParts.length === 5 && pathParts[4] === 'prompts' && method === 'GET') {
-      sendJson(res, 200, { prompts: store.listPrompts(projectId) });
-      return true;
-    }
-    if (pathParts.length === 5 && pathParts[4] === 'prompts' && method === 'POST') {
-      const body = bodyObject(req.body);
-      const prompt = store.savePrompt(projectId, {
-        name: typeof body.name === 'string' ? body.name : undefined,
-        systemPrompt: typeof body.systemPrompt === 'string' ? body.systemPrompt : undefined,
-        userPromptTemplate: typeof body.userPromptTemplate === 'string' ? body.userPromptTemplate : undefined,
-        sourceLang: typeof body.sourceLang === 'string' ? body.sourceLang : undefined,
-        targetLang: typeof body.targetLang === 'string' ? body.targetLang : undefined,
-        provider: typeof body.provider === 'string' ? body.provider : undefined,
-        model: typeof body.model === 'string' ? body.model : undefined,
-        translationMode: body.translationMode === 'literary' ? 'literary' : 'technical',
-        literaryReview: body.literaryReview === true,
-        glossary: body.glossary,
-        translationStrategy: body.translationStrategy && typeof body.translationStrategy === 'object'
-          ? body.translationStrategy : undefined,
-        taskProfiles: body.taskProfiles && typeof body.taskProfiles === 'object' ? body.taskProfiles : undefined,
-        literaryMemory: body.literaryMemory,
-      });
-      sendJson(res, 201, { prompt, literaryMemory: store.getCurrentLiteraryMemory(projectId) });
-      return true;
-    }
-    if (pathParts.length === 6 && pathParts[4] === 'context-graph' && pathParts[5] === 'status' && method === 'GET') {
-      sendJson(res, 200, { contextGraph: getContextGraphStatus(projectId) });
-      return true;
-    }
-    if (pathParts.length === 5 && pathParts[4] === 'context-graph' && method === 'GET') {
-      sendJson(res, 200, { contextGraph: getContextGraph(projectId) });
-      return true;
-    }
-    if (pathParts.length === 6 && pathParts[4] === 'context-graph' && pathParts[5] === 'analyze' && method === 'POST') {
-      sendJson(res, 202, { preprocessing: startContextGraphAnalysis(projectId) });
-      return true;
-    }
-    if (pathParts.length === 6 && pathParts[4] === 'context-graph' && pathParts[5] === 'review' && method === 'POST') {
-      const body = bodyObject(req.body);
-      if (Array.isArray(body.items)) {
-        const reviews = reviewContextGraphItems(projectId, body.items, body.memory);
-        sendJson(res, 200, {
-          reviews,
-          ...(body.memory !== undefined ? { current: store.getCurrentLiteraryMemory(projectId) } : {}),
-        });
-        return true;
-      }
-      if (!['node', 'edge'].includes(body.type) || typeof body.id !== 'string' ||
-          !['candidate', 'confirmed', 'rejected'].includes(body.status)) {
-        throw Object.assign(new Error('review 需要单条 type=node|edge、id、status，或批量 items 数组'), { status: 400 });
-      }
-      sendJson(res, 200, { review: reviewContextGraphItem(projectId, body.type, body.id, body.status) });
-      return true;
-    }
-    if (pathParts.length === 5 && pathParts[4] === 'literary-memory' && method === 'GET') {
-      sendJson(res, 200, {
-        current: store.getCurrentLiteraryMemory(projectId),
-        revisions: store.listLiteraryMemoryRevisions(projectId),
-      });
-      return true;
-    }
-    if (pathParts.length === 5 && pathParts[4] === 'literary-memory' && method === 'POST') {
-      const body = bodyObject(req.body);
-      const saved = store.saveLiteraryMemory(projectId, body.memory);
-      sendJson(res, 201, { ...saved, current: store.getCurrentLiteraryMemory(projectId) });
-      return true;
-    }
-    if (pathParts.length === 7 && pathParts[4] === 'literary-memory' &&
-        pathParts[5] === 'chinese-editorial-profile' && pathParts[6] === 'review' && method === 'POST') {
-      const body = bodyObject(req.body || {});
-      const action = String(body.action || '');
-      if (action !== 'reject') {
-        throw Object.assign(new Error('中文文学编辑档案默认启用；仅支持明确停用/拒绝。'), { status: 400 });
-      }
-      const current = store.getCurrentLiteraryMemory(projectId);
-      const profile = current.memory.chineseEditorialProfile;
-      const projectContext = store.getProjectContext(projectId);
-      const nextProfile = applyChineseEditorialProfileReview(
-        profile,
-        action as 'reject',
-        projectContext.currentSourceRevisionId,
-      );
-      const nextMemory = {
-        ...current.memory,
-        chineseEditorialProfile: nextProfile,
-      };
-      const saved = store.saveLiteraryMemory(projectId, nextMemory);
-      store.appendEvent(projectId, null,
-        'chinese-editorial-profile.user-rejected',
-        {
-          action,
-          memoryRevisionId: saved.memoryRevisionId,
-          sourceRevisionId: profile?.sourceRevisionId || null,
-          previousFingerprint: profile?.sampleFingerprint || null,
-          updateFingerprint: profile?.pendingUpdate?.sampleFingerprint || null,
-          profileVersion: nextProfile.profileVersion || 1,
-        });
-      sendJson(res, 200, { ...saved, current: store.getCurrentLiteraryMemory(projectId) });
-      return true;
-    }
-    if (pathParts.length === 7 && pathParts[4] === 'runs' && pathParts[6] === 'translation-briefs' && method === 'GET') {
-      const runId = pathParts[5]!;
-      // includeContent is explicit here because the API user is requesting this run's auditable retrieval snapshot.
-      sendJson(res, 200, { runId, translationBriefs: store.listTranslationBriefSnapshots(projectId, runId, true) });
-      return true;
-    }
-    if (pathParts.length === 5 && pathParts[4] === 'runs' && method === 'GET') {
-      const rawLimit = url.searchParams.get('limit');
-      const limit = rawLimit === null ? 50 : Number(rawLimit);
-      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200) {
-        throw Object.assign(new Error('limit 必须是 1-200 的整数'), { status: 400 });
-      }
-      sendJson(res, 200, { runs: store.listRuns(projectId, limit) });
-      return true;
-    }
-    if (pathParts.length === 5 && pathParts[4] === 'runs' && method === 'POST') {
-      const body = bodyObject(req.body);
-      const run = store.createRun(projectId, {
-        promptRevisionId: typeof body.promptRevisionId === 'string' ? body.promptRevisionId : undefined,
-        prompt: body.prompt && typeof body.prompt === 'object' ? body.prompt : undefined,
-        scope: body.scope && typeof body.scope === 'object' ? body.scope : { type: 'stale' },
-      });
-      if (run.counts.total > 0) startProjectTranslationRun(projectId, run.runId);
-      sendJson(res, 202, { run, started: run.counts.total > 0 });
-      return true;
-    }
-    if (pathParts.length === 7 && pathParts[4] === 'runs' && pathParts[6] === 'resume' && method === 'POST') {
-      const runId = pathParts[5]!;
-      const run = store.getRun(projectId, runId);
-      const currentSourceRevisionId = store.getProjectContext(projectId).currentSourceRevisionId;
-      if (run.sourceRevisionId !== currentSourceRevisionId) {
-        sendApiError(
-          res, 409,
-          '这次运行使用的是旧原文版本，不能恢复到当前文档。请基于当前原文创建新的运行。',
-          '这次运行使用的是旧原文版本，不能恢复到当前文档。请基于当前原文创建新的运行。',
-          { run },
-        );
-        return true;
-      }
-      if (!['paused', 'queued', 'failed', 'partial'].includes(run.status)) {
-        sendApiError(res, 409, '当前运行状态不允许恢复：' + run.status, '当前运行状态不允许恢复：' + run.status, { run });
-        return true;
-      }
-      if (isProjectRunActive(runId)) {
-        sendJson(res, 200, { run, alreadyRunning: true });
-        return true;
-      }
-      if (!store.setRunStatus(projectId, runId, 'queued', null)) {
-        sendApiError(res, 409, '运行已结束，不能继续恢复：' + store.getRunStatus(projectId, runId), '运行已结束，不能继续恢复：' + store.getRunStatus(projectId, runId), { run: store.getRun(projectId, runId) });
-        return true;
-      }
-      const started = startProjectTranslationRun(projectId, runId);
-      sendJson(res, 202, { run: store.getRun(projectId, runId), ...started });
-      return true;
-    }
-    if (pathParts.length === 7 && pathParts[4] === 'runs' && pathParts[6] === 'cancel' && method === 'POST') {
-      const runId = pathParts[5]!;
-      const run = store.getRun(projectId, runId);
-      if (['completed', 'cancelled', 'failed'].includes(run.status)) {
-        sendApiError(res, 409, '运行已经结束：' + run.status, '运行已经结束：' + run.status, { run });
-        return true;
-      }
-      if (!store.setRunStatus(projectId, runId, 'cancelled', '用户请求停止')) {
-        const latest = store.getRun(projectId, runId);
-        sendApiError(res, 409, '运行已结束，不能取消：' + latest.status, '运行已结束，不能取消：' + latest.status, { run: latest });
-        return true;
-      }
-      store.markRunSegments(projectId, runId, run.segments.filter((item: any) => ['pending', 'running'].includes(item.status)).map((item: any) => item.id), 'cancelled');
-      sendJson(res, 200, { run: store.getRun(projectId, runId) });
-      return true;
-    }
-    if (pathParts.length === 7 && pathParts[4] === 'runs' && pathParts[6] === 'accept' && method === 'POST') {
-      const body = bodyObject(req.body || {});
-      const run = store.acceptCandidates(projectId, pathParts[5]!, Array.isArray(body.segmentIds) ? body.segmentIds.map(String) : undefined);
-      scheduleChineseEditorialProfileRefresh(projectId, pathParts[5]!);
-      sendJson(res, 200, { run });
-      return true;
-    }
-    if (pathParts.length === 8 && pathParts[4] === 'runs' && pathParts[6] === 'findings' && method === 'POST') {
-      const body = bodyObject(req.body);
-      if (body.action !== 'apply' && body.action !== 'dismiss') {
-        throw Object.assign(new Error('action 必须是 apply 或 dismiss'), { status: 400 });
-      }
-      const findingId = Number(pathParts[7]);
-      if (!Number.isSafeInteger(findingId) || findingId < 1) {
-        throw Object.assign(new Error('findingId 必须是正整数'), { status: 400 });
-      }
-      const result = store.setReviewFindingDisposition(projectId, pathParts[5]!, findingId, body.action);
-      if (body.action === 'apply') scheduleChineseEditorialProfileRefresh(projectId, pathParts[5]!);
-      sendJson(res, 200, { result, run: store.getRun(projectId, pathParts[5]!) });
-      return true;
-    }
-
-    if (pathParts.length === 5 && pathParts[4] === 'quality-audit' && method === 'GET') {
-      const auditId = url.searchParams.get('auditId') || undefined;
-      const report = store.getQualityAudit(projectId, auditId);
-      if (!report) { sendApiError(res, 404, '尚无质量审计报告，请先执行 POST /quality-audit'); return true; }
-      sendJson(res, 200, { report });
-      return true;
-    }
-    if (pathParts.length === 5 && pathParts[4] === 'quality-audit' && method === 'POST') {
-      const body = req.body == null ? {} : bodyObject(req.body);
-      const report = runProjectQualityAudit(projectId, typeof body.runId === 'string' ? body.runId : undefined);
-      sendJson(res, 200, { report });
-      return true;
-    }
-    if (pathParts.length === 6 && pathParts[4] === 'quality-audit' && pathParts[5] === 'repair' && method === 'POST') {
-      const body = bodyObject(req.body);
-      const repair = createQualityRepairRun(
-        projectId,
-        String(body.auditId || ''),
-        Array.isArray(body.findingIds) ? body.findingIds.map(String) : [],
-        Array.isArray(body.segmentIds) ? body.segmentIds.map(String) : [],
-      );
-      if (repair.run.counts.total > 0) startProjectTranslationRun(projectId, repair.run.runId);
-      sendJson(res, 202, { repair, started: repair.run.counts.total > 0 });
-      return true;
-    }
-    if (pathParts.length === 5 && pathParts[4] === 'quality-evaluations' && method === 'POST') {
-      const body = bodyObject(req.body);
-      if (typeof body.beforeRunId !== 'string' || !body.beforeRunId.trim() ||
-          typeof body.afterRunId !== 'string' || !body.afterRunId.trim()) {
-        throw Object.assign(new Error('beforeRunId 和 afterRunId 必须是非空字符串'), { status: 400 });
-      }
-      const evaluation = createProjectQualityEvaluation(projectId, body.beforeRunId.trim(), body.afterRunId.trim());
-      sendJson(res, 201, { evaluation });
-      return true;
-    }
-    if (pathParts.length === 6 && pathParts[4] === 'quality-evaluations' && method === 'GET') {
-      sendJson(res, 200, getProjectQualityEvaluation(projectId, pathParts[5]!));
-      return true;
-    }
-    if (pathParts.length === 7 && pathParts[4] === 'quality-evaluations' && pathParts[6] === 'reviews' && method === 'POST') {
-      const body = bodyObject(req.body);
-      const result = submitProjectQualityEvaluationReviews(projectId, pathParts[5]!, body.reviews);
-      sendJson(res, 200, result);
-      return true;
-    }
-    if (pathParts.length === 5 && pathParts[4] === 'verify' && method === 'GET') {
-      sendJson(res, 200, store.verifyProject(projectId));
-      return true;
-    }
-    if (pathParts.length === 5 && pathParts[4] === 'events' && method === 'GET') {
-      const rawAfter = url.searchParams.get('after');
-      const rawLimit = url.searchParams.get('limit');
-      const after = rawAfter === null ? 0 : Number(rawAfter);
-      const limit = rawLimit === null ? 200 : Number(rawLimit);
-      const latest = url.searchParams.get('latest') === 'true';
-      if (!Number.isSafeInteger(after) || after < 0) {
-        throw Object.assign(new Error('after 必须是非负整数'), { status: 400 });
-      }
-      // Initial trajectory hydration needs the newest window, not the first 5,000 historical rows.
-      // Keep incremental polling bounded, while allowing a larger latest-only snapshot.
-      const maxLimit = latest && after === 0 ? 5000 : 1000;
-      if (!Number.isSafeInteger(limit) || limit < 1 || limit > maxLimit) {
-        throw Object.assign(new Error('limit 必须是 1-' + maxLimit + ' 的整数'), { status: 400 });
-      }
-      const runId = url.searchParams.get('runId') || undefined;
-      sendJson(res, 200, { events: store.getEvents(projectId, runId, after, limit, latest) });
-      return true;
-    }
-    if (pathParts.length === 6 && pathParts[4] === 'runs' && method === 'GET') {
-      sendJson(res, 200, { run: store.getRun(projectId, pathParts[5]!) });
-      return true;
-    }
-
     sendApiError(res, 404, '未知文档项目端点：' + method + ' ' + url.pathname);
     return true;
   } catch (error) {
-    routeError(res, error, { method: req.method.toUpperCase(), path: url.pathname });
+    routeError(res, error, { method, path: url.pathname });
     return true;
   }
+}
+
+/** 集合级路由：GET 列表、POST 创建（含同名同源的幂等复用）。 */
+async function handleProjectCollection(request: ProjectApiRequest): Promise<boolean> {
+  const { req, res, method, pathParts } = request;
+  if (pathParts.length === 3 && method === 'GET') {
+    sendJson(res, 200, { projects: getDocumentProjectStore().listProjects() });
+    return true;
+  }
+  if (pathParts.length === 3 && method === 'POST') {
+    const body = bodyObject(req.body);
+    const store = getDocumentProjectStore();
+    const input = {
+      title: String(body.title || body.fileName || '未命名文档'),
+      format: String(body.format || ''),
+      sourceFileName: typeof body.sourceFileName === 'string' ? body.sourceFileName : body.fileName,
+      segments: body.segments,
+      prompt: body.prompt && typeof body.prompt === 'object' ? body.prompt : undefined,
+    };
+
+    // Make concurrent auto-initialization idempotent. The explicit "separate project" action
+    // opts out; every ordinary creation first reuses an exact source match or rejects a
+    // same-name/source-changed candidate so the client can ask for an explicit decision.
+    if (body.allowDuplicate !== true) {
+      const resolution = store.resolveProjectForSource(input);
+      if (resolution.exactProject) {
+        sendJson(res, 200, { project: resolution.exactProject, reusedExisting: true });
+        return true;
+      }
+      if (resolution.relatedProject) {
+        throw Object.assign(
+          new Error('已存在来源不同的同名文档项目。请明确更新现有来源版本或选择另建项目。'),
+          { status: 409 },
+        );
+      }
+    }
+
+    const project = store.createProject(input);
+    sendJson(res, 201, { project, reusedExisting: false });
+    return true;
+  }
+  return false;
+}
+
+/** 只解析来源是否已存在，不创建任何东西。 */
+async function handleProjectResolve(request: ProjectApiRequest, store: DocumentProjectStore): Promise<boolean> {
+  const { req, res, method, pathParts } = request;
+  if (pathParts.length === 4 && pathParts[3] === 'resolve' && method === 'POST') {
+    const body = bodyObject(req.body);
+    const resolution = store.resolveProjectForSource({
+      title: String(body.title || ''),
+      format: String(body.format || ''),
+      sourceFileName: typeof body.sourceFileName === 'string' ? body.sourceFileName : undefined,
+      segments: body.segments,
+    });
+    sendJson(res, 200, resolution);
+    return true;
+  }
+  // Import raw files within the local service. The extension does not parse or split documents.
+  return false;
+}
+
+/** 二进制上传：直接存文件，或以新版本方式替换原文。不在这里触发解析后的长任务。 */
+async function handleProjectImportFile(request: ProjectApiRequest, store: DocumentProjectStore): Promise<boolean> {
+  const { req, res, url, method, pathParts } = request;
+  if (pathParts.length === 4 && pathParts[3] === 'import-file' && method === 'POST') {
+    const contentType = String(req.headers['content-type'] || '').split(';')[0]!.trim().toLowerCase();
+    if (!['application/octet-stream', 'application/epub+zip', 'application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'text/plain', 'text/markdown', 'text/html'].includes(contentType)) {
+      sendApiError(res, 415, '文件导入需要使用 application/octet-stream 或与文件格式匹配的 Content-Type', '文件导入需要使用 application/octet-stream 或与文件格式匹配的 Content-Type');
+      return true;
+    }
+    const encodedName = String(req.headers['x-source-file-name'] || '');
+    let fileName = encodedName;
+    try { if (encodedName) fileName = decodeURIComponent(encodedName); }
+    catch { throw Object.assign(new Error('X-Source-File-Name 编码无效'), { status: 400 }); }
+    if (!fileName || fileName.includes('/') || fileName.includes('\\')) throw Object.assign(new Error('X-Source-File-Name 必须是文件名，不得包含路径'), { status: 400 });
+    const bytes = await readRawSourceBody(req, MAX_DOCUMENT_SOURCE_BYTES);
+    if (req.headers['x-import-mode'] !== 'separate') {
+      const sameSourceProject = store.listProjects()
+        .filter((candidate) => candidate.sourceFileSaved &&
+          candidate.sourceFileName.toLocaleLowerCase() === fileName.toLocaleLowerCase() &&
+          candidate.sourceFileSize === bytes.byteLength)
+        .find((candidate) => store.matchesStoredSourceFile(candidate.projectId, bytes));
+      if (sameSourceProject) {
+        sendJson(res, 200, {
+          project: store.getProject(sameSourceProject.projectId),
+          reusedExisting: true,
+          sourceFileHashMatched: true,
+        });
+        return true;
+      }
+    }
+    const parsed = await parseDocumentFile(fileName, bytes);
+    const encodedTitle = String(req.headers['x-project-title'] || '');
+    let title = parsed.title;
+    try { if (encodedTitle) title = decodeURIComponent(encodedTitle).trim().slice(0, 500) || title; }
+    catch { throw Object.assign(new Error('X-Project-Title 编码无效'), { status: 400 }); }
+    const sourceInput = {
+      title, format: parsed.format, sourceFileName: fileName, segments: parsed.segments,
+    };
+    const resolution = req.headers['x-import-mode'] === 'separate'
+      ? { exactProject: null, relatedProject: null }
+      : store.resolveProjectForSource({ ...sourceInput, prompt: { translationMode: 'literary' } });
+
+    if (resolution.exactProject) {
+      const sourceFile = resolution.exactProject.sourceFileSaved
+        ? undefined
+        : await store.storeSourceFile(resolution.exactProject.projectId, fileName, bytes);
+      sendJson(res, 200, {
+        project: store.getProject(resolution.exactProject.projectId),
+        ...(sourceFile ? { sourceFile } : {}),
+        reusedExisting: true,
+      });
+      return true;
+    }
+
+    // A legacy project may have been segmented by an older extension parser. If its immutable
+    // original file matches exactly, reuse its SQLite segments rather than misclassifying the
+    // new server parser's different segmentation as a user-edited source.
+    if (resolution.relatedProject?.sourceFileSaved &&
+        store.matchesStoredSourceFile(resolution.relatedProject.projectId, bytes)) {
+      sendJson(res, 200, {
+        project: store.getProject(resolution.relatedProject.projectId),
+        reusedExisting: true,
+        parserVersionMigrationSuggested: false,
+      });
+      return true;
+    }
+
+    // Never silently create a second project for a same-name book with different content.
+    // The server parsed this file already, so return the parsed preview for the existing
+    // source-change confirmation workflow instead of asking the extension to parse the binary.
+    if (resolution.relatedProject) {
+      sendJson(res, 200, {
+        sourceChanged: true,
+        relatedProject: resolution.relatedProject,
+        document: {
+          title: parsed.title || title,
+          format: parsed.format,
+          segments: parsed.segments,
+        },
+      });
+      return true;
+    }
+
+    const project = store.createProject({
+      ...sourceInput, prompt: { translationMode: 'literary' },
+    });
+    try {
+      const sourceFile = await store.storeSourceFile(project.projectId, fileName, bytes);
+      // Opening/importing a book must not automatically start a long analysis. The explicit
+      // UI action or a persisted literary Run owns Context Graph preprocessing.
+      sendJson(res, 201, { project, sourceFile, reusedExisting: false });
+    } catch (error) {
+      try { store.archiveProject(project.projectId); } catch { /* preserve the original error */ }
+      throw error;
+    }
+    return true;
+  }
+  return false;
+}
+
+/** 项目自身的读取与归档。 */
+async function handleProjectDetail(context: ProjectRouteContext): Promise<boolean> {
+  const { res, method, pathParts, store, projectId } = context;
+  if (pathParts.length === 4 && method === 'GET') {
+    const project = store.getProject(projectId);
+    if (!project) { sendApiError(res, 404, '找不到文档项目'); return true; }
+    sendJson(res, 200, { project, verification: store.verifyProject(projectId), runs: store.listRuns(projectId, 10) });
+    return true;
+  }
+  if (pathParts.length === 4 && method === 'DELETE') {
+    store.archiveProject(projectId);
+    sendJson(res, 200, { archived: true, projectId });
+    return true;
+  }
+  return false;
+}
+
+/** 原文与译文相关的端点：上传原文、替换版本、导入已采纳译文、分页读取片段、保存人工修改、Prompt 存取。 */
+async function handleProjectSourceRoutes(context: ProjectRouteContext): Promise<boolean> {
+  const { req, res, url, method, pathParts, store, projectId } = context;
+  if (pathParts.length === 5 && pathParts[4] === 'source-file' && method === 'POST') {
+    const contentType = String(req.headers['content-type'] || '').split(';')[0]!.trim().toLowerCase();
+    if (!['application/octet-stream', 'application/pdf', 'application/epub+zip', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'].includes(contentType)) {
+      sendApiError(res, 415, '原始文档上传需要使用二进制 Content-Type', '原始文档上传需要使用二进制 Content-Type');
+      return true;
+    }
+    const encodedName = String(req.headers['x-source-file-name'] || '');
+    let fileName = encodedName;
+    try { if (encodedName) fileName = decodeURIComponent(encodedName); }
+    catch { throw Object.assign(new Error('X-Source-File-Name 编码无效'), { status: 400 }); }
+    if (!fileName || fileName.includes('/') || fileName.includes('\\')) throw Object.assign(new Error('X-Source-File-Name 必须是文件名，不得包含路径'), { status: 400 });
+    const bytes = await readRawSourceBody(req, MAX_DOCUMENT_SOURCE_BYTES);
+    if (req.headers['x-source-action'] === 'update-revision') {
+      const parsed = await parseDocumentFile(fileName, bytes);
+      const result = await store.createSourceRevisionWithFile(projectId, {
+        title: parsed.title || store.getProject(projectId)!.title,
+        format: parsed.format,
+        sourceFileName: fileName,
+        segments: parsed.segments,
+      }, fileName, bytes);
+      sendJson(res, 201, result);
+      return true;
+    }
+    const saved = await store.storeSourceFile(projectId, fileName, bytes);
+    sendJson(res, 200, saved);
+    return true;
+  }
+  if (pathParts.length === 5 && pathParts[4] === 'source' && method === 'POST') {
+    const body = bodyObject(req.body);
+    const project = store.createSourceRevision(projectId, {
+      title: String(body.title || ''),
+      format: String(body.format || ''),
+      sourceFileName: typeof body.sourceFileName === 'string' ? body.sourceFileName : undefined,
+      segments: body.segments,
+    });
+    sendJson(res, 201, { project });
+    return true;
+  }
+  if (pathParts.length === 6 && pathParts[4] === 'translations' && pathParts[5] === 'import' && method === 'POST') {
+    const body = bodyObject(req.body);
+    const result = store.importAcceptedTranslations(projectId, body.items);
+    sendJson(res, 200, result);
+    return true;
+  }
+  if (pathParts.length === 5 && pathParts[4] === 'segments' && method === 'GET') {
+    const rawLimit = url.searchParams.get('limit');
+    const rawOffset = url.searchParams.get('offset');
+    const parsedLimit = rawLimit === null ? 250 : Number(rawLimit);
+    const parsedOffset = rawOffset === null ? 0 : Number(rawOffset);
+    if (!Number.isSafeInteger(parsedLimit) || parsedLimit < 1 || parsedLimit > 1000) {
+      throw Object.assign(new Error('limit 必须是 1-1000 的整数'), { status: 400 });
+    }
+    if (!Number.isSafeInteger(parsedOffset) || parsedOffset < 0) {
+      throw Object.assign(new Error('offset 必须是非负整数'), { status: 400 });
+    }
+    const runId = url.searchParams.get('runId') || undefined;
+    sendJson(res, 200, {
+      project: store.getProject(projectId),
+      segments: store.getSegments(projectId, { limit: parsedLimit, offset: parsedOffset, runId }),
+      limit: parsedLimit,
+      offset: parsedOffset,
+    });
+    return true;
+  }
+  if (pathParts.length === 7 && pathParts[4] === 'segments' && pathParts[6] === 'translation' && method === 'PUT') {
+    const body = bodyObject(req.body);
+    if (typeof body.text !== 'string') {
+      throw Object.assign(new Error('text 必须是字符串；如需清空译文，请显式传入空字符串'), { status: 400 });
+    }
+    const saved = store.saveManualEdit(projectId, pathParts[5]!, body.text);
+    sendJson(res, 200, saved);
+    return true;
+  }
+  if (pathParts.length === 5 && pathParts[4] === 'prompts' && method === 'GET') {
+    sendJson(res, 200, { prompts: store.listPrompts(projectId) });
+    return true;
+  }
+  if (pathParts.length === 5 && pathParts[4] === 'prompts' && method === 'POST') {
+    const body = bodyObject(req.body);
+    const prompt = store.savePrompt(projectId, {
+      name: typeof body.name === 'string' ? body.name : undefined,
+      systemPrompt: typeof body.systemPrompt === 'string' ? body.systemPrompt : undefined,
+      userPromptTemplate: typeof body.userPromptTemplate === 'string' ? body.userPromptTemplate : undefined,
+      sourceLang: typeof body.sourceLang === 'string' ? body.sourceLang : undefined,
+      targetLang: typeof body.targetLang === 'string' ? body.targetLang : undefined,
+      provider: typeof body.provider === 'string' ? body.provider : undefined,
+      model: typeof body.model === 'string' ? body.model : undefined,
+      translationMode: body.translationMode === 'literary' ? 'literary' : 'technical',
+      literaryReview: body.literaryReview === true,
+      glossary: body.glossary,
+      translationStrategy: body.translationStrategy && typeof body.translationStrategy === 'object'
+        ? body.translationStrategy : undefined,
+      taskProfiles: body.taskProfiles && typeof body.taskProfiles === 'object' ? body.taskProfiles : undefined,
+      literaryMemory: body.literaryMemory,
+    });
+    sendJson(res, 201, { prompt, literaryMemory: store.getCurrentLiteraryMemory(projectId) });
+    return true;
+  }
+  return false;
+}
+
+/** 全书预处理（Context Graph）的读取、启动与审阅。 */
+async function handleContextGraphRoutes(context: ProjectRouteContext): Promise<boolean> {
+  const { req, res, method, pathParts, store, projectId } = context;
+  if (pathParts.length === 6 && pathParts[4] === 'context-graph' && pathParts[5] === 'status' && method === 'GET') {
+    sendJson(res, 200, { contextGraph: getContextGraphStatus(projectId) });
+    return true;
+  }
+  if (pathParts.length === 5 && pathParts[4] === 'context-graph' && method === 'GET') {
+    sendJson(res, 200, { contextGraph: getContextGraph(projectId) });
+    return true;
+  }
+  if (pathParts.length === 6 && pathParts[4] === 'context-graph' && pathParts[5] === 'analyze' && method === 'POST') {
+    sendJson(res, 202, { preprocessing: startContextGraphAnalysis(projectId) });
+    return true;
+  }
+  if (pathParts.length === 6 && pathParts[4] === 'context-graph' && pathParts[5] === 'review' && method === 'POST') {
+    const body = bodyObject(req.body);
+    if (Array.isArray(body.items)) {
+      const reviews = reviewContextGraphItems(projectId, body.items, body.memory);
+      sendJson(res, 200, {
+        reviews,
+        ...(body.memory !== undefined ? { current: store.getCurrentLiteraryMemory(projectId) } : {}),
+      });
+      return true;
+    }
+    if (!['node', 'edge'].includes(body.type) || typeof body.id !== 'string' ||
+        !['candidate', 'confirmed', 'rejected'].includes(body.status)) {
+      throw Object.assign(new Error('review 需要单条 type=node|edge、id、status，或批量 items 数组'), { status: 400 });
+    }
+    sendJson(res, 200, { review: reviewContextGraphItem(projectId, body.type, body.id, body.status) });
+    return true;
+  }
+  return false;
+}
+
+/** 文学记忆的读写，以及中文编辑档案的人工停用。 */
+async function handleLiteraryMemoryRoutes(context: ProjectRouteContext): Promise<boolean> {
+  const { req, res, method, pathParts, store, projectId } = context;
+  if (pathParts.length === 5 && pathParts[4] === 'literary-memory' && method === 'GET') {
+    sendJson(res, 200, {
+      current: store.getCurrentLiteraryMemory(projectId),
+      revisions: store.listLiteraryMemoryRevisions(projectId),
+    });
+    return true;
+  }
+  if (pathParts.length === 5 && pathParts[4] === 'literary-memory' && method === 'POST') {
+    const body = bodyObject(req.body);
+    const saved = store.saveLiteraryMemory(projectId, body.memory);
+    sendJson(res, 201, { ...saved, current: store.getCurrentLiteraryMemory(projectId) });
+    return true;
+  }
+  if (pathParts.length === 7 && pathParts[4] === 'literary-memory' &&
+      pathParts[5] === 'chinese-editorial-profile' && pathParts[6] === 'review' && method === 'POST') {
+    const body = bodyObject(req.body || {});
+    const action = String(body.action || '');
+    if (action !== 'reject') {
+      throw Object.assign(new Error('中文文学编辑档案默认启用；仅支持明确停用/拒绝。'), { status: 400 });
+    }
+    const current = store.getCurrentLiteraryMemory(projectId);
+    const profile = current.memory.chineseEditorialProfile;
+    const projectContext = store.getProjectContext(projectId);
+    const nextProfile = applyChineseEditorialProfileReview(
+      profile,
+      action as 'reject',
+      projectContext.currentSourceRevisionId,
+    );
+    const nextMemory = {
+      ...current.memory,
+      chineseEditorialProfile: nextProfile,
+    };
+    const saved = store.saveLiteraryMemory(projectId, nextMemory);
+    store.appendEvent(projectId, null,
+      'chinese-editorial-profile.user-rejected',
+      {
+        action,
+        memoryRevisionId: saved.memoryRevisionId,
+        sourceRevisionId: profile?.sourceRevisionId || null,
+        previousFingerprint: profile?.sampleFingerprint || null,
+        updateFingerprint: profile?.pendingUpdate?.sampleFingerprint || null,
+        profileVersion: nextProfile.profileVersion || 1,
+      });
+    sendJson(res, 200, { ...saved, current: store.getCurrentLiteraryMemory(projectId) });
+    return true;
+  }
+  return false;
+}
+
+/** Run 生命周期：列表、创建、快照、恢复、取消、采纳、审校结论处置。 */
+async function handleRunRoutes(context: ProjectRouteContext): Promise<boolean> {
+  const { req, res, url, method, pathParts, store, projectId } = context;
+  if (pathParts.length === 7 && pathParts[4] === 'runs' && pathParts[6] === 'translation-briefs' && method === 'GET') {
+    const runId = pathParts[5]!;
+    // includeContent is explicit here because the API user is requesting this run's auditable retrieval snapshot.
+    sendJson(res, 200, { runId, translationBriefs: store.listTranslationBriefSnapshots(projectId, runId, true) });
+    return true;
+  }
+  if (pathParts.length === 5 && pathParts[4] === 'runs' && method === 'GET') {
+    const rawLimit = url.searchParams.get('limit');
+    const limit = rawLimit === null ? 50 : Number(rawLimit);
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200) {
+      throw Object.assign(new Error('limit 必须是 1-200 的整数'), { status: 400 });
+    }
+    sendJson(res, 200, { runs: store.listRuns(projectId, limit) });
+    return true;
+  }
+  if (pathParts.length === 5 && pathParts[4] === 'runs' && method === 'POST') {
+    const body = bodyObject(req.body);
+    const run = store.createRun(projectId, {
+      promptRevisionId: typeof body.promptRevisionId === 'string' ? body.promptRevisionId : undefined,
+      prompt: body.prompt && typeof body.prompt === 'object' ? body.prompt : undefined,
+      scope: body.scope && typeof body.scope === 'object' ? body.scope : { type: 'stale' },
+    });
+    if (run.counts.total > 0) startProjectTranslationRun(projectId, run.runId);
+    sendJson(res, 202, { run, started: run.counts.total > 0 });
+    return true;
+  }
+  if (pathParts.length === 7 && pathParts[4] === 'runs' && pathParts[6] === 'resume' && method === 'POST') {
+    const runId = pathParts[5]!;
+    const run = store.getRun(projectId, runId);
+    const currentSourceRevisionId = store.getProjectContext(projectId).currentSourceRevisionId;
+    if (run.sourceRevisionId !== currentSourceRevisionId) {
+      sendApiError(
+        res, 409,
+        '这次运行使用的是旧原文版本，不能恢复到当前文档。请基于当前原文创建新的运行。',
+        '这次运行使用的是旧原文版本，不能恢复到当前文档。请基于当前原文创建新的运行。',
+        { run },
+      );
+      return true;
+    }
+    if (!['paused', 'queued', 'failed', 'partial'].includes(run.status)) {
+      sendApiError(res, 409, '当前运行状态不允许恢复：' + run.status, '当前运行状态不允许恢复：' + run.status, { run });
+      return true;
+    }
+    if (isProjectRunActive(runId)) {
+      sendJson(res, 200, { run, alreadyRunning: true });
+      return true;
+    }
+    if (!store.setRunStatus(projectId, runId, 'queued', null)) {
+      sendApiError(res, 409, '运行已结束，不能继续恢复：' + store.getRunStatus(projectId, runId), '运行已结束，不能继续恢复：' + store.getRunStatus(projectId, runId), { run: store.getRun(projectId, runId) });
+      return true;
+    }
+    const started = startProjectTranslationRun(projectId, runId);
+    sendJson(res, 202, { run: store.getRun(projectId, runId), ...started });
+    return true;
+  }
+  if (pathParts.length === 7 && pathParts[4] === 'runs' && pathParts[6] === 'cancel' && method === 'POST') {
+    const runId = pathParts[5]!;
+    const run = store.getRun(projectId, runId);
+    if (['completed', 'cancelled', 'failed'].includes(run.status)) {
+      sendApiError(res, 409, '运行已经结束：' + run.status, '运行已经结束：' + run.status, { run });
+      return true;
+    }
+    if (!store.setRunStatus(projectId, runId, 'cancelled', '用户请求停止')) {
+      const latest = store.getRun(projectId, runId);
+      sendApiError(res, 409, '运行已结束，不能取消：' + latest.status, '运行已结束，不能取消：' + latest.status, { run: latest });
+      return true;
+    }
+    store.markRunSegments(projectId, runId, run.segments.filter((item: any) => ['pending', 'running'].includes(item.status)).map((item: any) => item.id), 'cancelled');
+    sendJson(res, 200, { run: store.getRun(projectId, runId) });
+    return true;
+  }
+  if (pathParts.length === 7 && pathParts[4] === 'runs' && pathParts[6] === 'accept' && method === 'POST') {
+    const body = bodyObject(req.body || {});
+    const run = store.acceptCandidates(projectId, pathParts[5]!, Array.isArray(body.segmentIds) ? body.segmentIds.map(String) : undefined);
+    scheduleChineseEditorialProfileRefresh(projectId, pathParts[5]!);
+    sendJson(res, 200, { run });
+    return true;
+  }
+  if (pathParts.length === 8 && pathParts[4] === 'runs' && pathParts[6] === 'findings' && method === 'POST') {
+    const body = bodyObject(req.body);
+    if (body.action !== 'apply' && body.action !== 'dismiss') {
+      throw Object.assign(new Error('action 必须是 apply 或 dismiss'), { status: 400 });
+    }
+    const findingId = Number(pathParts[7]);
+    if (!Number.isSafeInteger(findingId) || findingId < 1) {
+      throw Object.assign(new Error('findingId 必须是正整数'), { status: 400 });
+    }
+    const result = store.setReviewFindingDisposition(projectId, pathParts[5]!, findingId, body.action);
+    if (body.action === 'apply') scheduleChineseEditorialProfileRefresh(projectId, pathParts[5]!);
+    sendJson(res, 200, { result, run: store.getRun(projectId, pathParts[5]!) });
+    return true;
+  }
+  if (pathParts.length === 6 && pathParts[4] === 'runs' && method === 'GET') {
+    sendJson(res, 200, { run: store.getRun(projectId, pathParts[5]!) });
+    return true;
+  }
+  return false;
+}
+
+/** 质量审计与成对运行盲评。 */
+async function handleQualityRoutes(context: ProjectRouteContext): Promise<boolean> {
+  const { req, res, url, method, pathParts, store, projectId } = context;
+  if (pathParts.length === 5 && pathParts[4] === 'quality-audit' && method === 'GET') {
+    const auditId = url.searchParams.get('auditId') || undefined;
+    const report = store.getQualityAudit(projectId, auditId);
+    if (!report) { sendApiError(res, 404, '尚无质量审计报告，请先执行 POST /quality-audit'); return true; }
+    sendJson(res, 200, { report });
+    return true;
+  }
+  if (pathParts.length === 5 && pathParts[4] === 'quality-audit' && method === 'POST') {
+    const body = req.body == null ? {} : bodyObject(req.body);
+    const report = runProjectQualityAudit(projectId, typeof body.runId === 'string' ? body.runId : undefined);
+    sendJson(res, 200, { report });
+    return true;
+  }
+  if (pathParts.length === 6 && pathParts[4] === 'quality-audit' && pathParts[5] === 'repair' && method === 'POST') {
+    const body = bodyObject(req.body);
+    const repair = createQualityRepairRun(
+      projectId,
+      String(body.auditId || ''),
+      Array.isArray(body.findingIds) ? body.findingIds.map(String) : [],
+      Array.isArray(body.segmentIds) ? body.segmentIds.map(String) : [],
+    );
+    if (repair.run.counts.total > 0) startProjectTranslationRun(projectId, repair.run.runId);
+    sendJson(res, 202, { repair, started: repair.run.counts.total > 0 });
+    return true;
+  }
+  if (pathParts.length === 5 && pathParts[4] === 'quality-evaluations' && method === 'POST') {
+    const body = bodyObject(req.body);
+    if (typeof body.beforeRunId !== 'string' || !body.beforeRunId.trim() ||
+        typeof body.afterRunId !== 'string' || !body.afterRunId.trim()) {
+      throw Object.assign(new Error('beforeRunId 和 afterRunId 必须是非空字符串'), { status: 400 });
+    }
+    const evaluation = createProjectQualityEvaluation(projectId, body.beforeRunId.trim(), body.afterRunId.trim());
+    sendJson(res, 201, { evaluation });
+    return true;
+  }
+  if (pathParts.length === 6 && pathParts[4] === 'quality-evaluations' && method === 'GET') {
+    sendJson(res, 200, getProjectQualityEvaluation(projectId, pathParts[5]!));
+    return true;
+  }
+  if (pathParts.length === 7 && pathParts[4] === 'quality-evaluations' && pathParts[6] === 'reviews' && method === 'POST') {
+    const body = bodyObject(req.body);
+    const result = submitProjectQualityEvaluationReviews(projectId, pathParts[5]!, body.reviews);
+    sendJson(res, 200, result);
+    return true;
+  }
+  return false;
+}
+
+/** 项目校验与事件流。 */
+async function handleProjectEventRoutes(context: ProjectRouteContext): Promise<boolean> {
+  const { res, url, method, pathParts, store, projectId } = context;
+  if (pathParts.length === 5 && pathParts[4] === 'verify' && method === 'GET') {
+    sendJson(res, 200, store.verifyProject(projectId));
+    return true;
+  }
+  if (pathParts.length === 5 && pathParts[4] === 'events' && method === 'GET') {
+    const rawAfter = url.searchParams.get('after');
+    const rawLimit = url.searchParams.get('limit');
+    const after = rawAfter === null ? 0 : Number(rawAfter);
+    const limit = rawLimit === null ? 200 : Number(rawLimit);
+    const latest = url.searchParams.get('latest') === 'true';
+    if (!Number.isSafeInteger(after) || after < 0) {
+      throw Object.assign(new Error('after 必须是非负整数'), { status: 400 });
+    }
+    // Initial trajectory hydration needs the newest window, not the first 5,000 historical rows.
+    // Keep incremental polling bounded, while allowing a larger latest-only snapshot.
+    const maxLimit = latest && after === 0 ? 5000 : 1000;
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > maxLimit) {
+      throw Object.assign(new Error('limit 必须是 1-' + maxLimit + ' 的整数'), { status: 400 });
+    }
+    const runId = url.searchParams.get('runId') || undefined;
+    sendJson(res, 200, { events: store.getEvents(projectId, runId, after, limit, latest) });
+    return true;
+  }
+  return false;
 }
