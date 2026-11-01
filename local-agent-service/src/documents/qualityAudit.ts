@@ -229,8 +229,11 @@ function chineseEditorialMetrics(db: any, revisionId: string, runId?: string) {
   const stage = chineseEditorialStageMetrics(db, revisionId, runId);
   const findings = chineseEditorialFindingsForRun(db, revisionId, stage.runId);
   const applied = findings.filter((finding: any) => finding.applicationStatus === 'applied').length;
+  // 自动应用有两条来路：双语复核通过后的 confirmed 结果，以及审校候选被直接采用时
+  // 随附生效的文风建议。两者都不该算进「用户决定率」。
   const autoApplied = findings.filter((finding: any) =>
-    finding.applicationStatus === 'applied' && finding.applicationMethod === 'automatic-bilingual-verification').length;
+    finding.applicationStatus === 'applied' &&
+    String(finding.applicationMethod || '').startsWith('automatic-')).length;
   const userApplied = applied - autoApplied;
   const dismissed = findings.filter((finding: any) => finding.applicationStatus === 'dismissed').length;
   const pending = findings.filter((finding: any) => !['applied', 'dismissed'].includes(finding.applicationStatus)).length;

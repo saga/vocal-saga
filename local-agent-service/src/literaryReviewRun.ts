@@ -148,8 +148,11 @@ function prepareReviewInputs(body: any): PreparedReview {
 /**
  * 逐片段决定最终译文。三种情况才允许替换初译：可核对的 must_fix、有据的中文单语编辑、
  * 有据的文风修订；其余一律保留初译，避免无依据改写。
+ *
+ * 返回值里的 findings 已经回写应用状态：凡是被这批候选译文带着生效的文风建议，
+ * 出来时就是 applied，调用方直接落库即可。
  */
-function collectReviewResults(
+export function collectReviewResults(
   parsed: Record<string, any>,
   segments: Array<Record<string, any>>,
   reviewFocus: ReviewFocus,
@@ -171,11 +174,6 @@ function collectReviewResults(
       raw, original, candidateText, candidateUsable, reviewFocus, chineseMonolingualEdit,
     });
     const hasMustFixFinding = candidateFindings.some((finding) => finding.priority === 'must_fix');
-    if (hasMustFixFinding) {
-      for (const finding of candidateFindings) {
-        if (finding.category === 'style') finding.applicationStatus = 'applied';
-      }
-    }
     findings.push(...candidateFindings);
     // 已通过原文/译文证据校验的 Reviewer 文风修订默认应用；机器建议不是用户确认，
     // 用户仍可在译文中事后修改。中文单语编辑同样先产出候选，随后由双语审校验证。
@@ -184,9 +182,20 @@ function collectReviewResults(
     const hasGroundedStyleEdit = reviewFocus !== 'accuracy' && candidateUsable &&
       candidateText !== original.draft && candidateFindings.some((finding) => finding.category === 'style');
     // 有 must_fix 时采用候选译文；否则仅在有 grounded 文风/中文编辑时才替换，避免无依据改写。
-    translations[raw.id] = hasMustFixFinding && candidateUsable
-      ? candidateText
-      : hasGroundedChineseEdit || hasGroundedStyleEdit ? candidateText : original.draft;
+    const usesCandidate = (hasMustFixFinding && candidateUsable) ||
+      hasGroundedChineseEdit || hasGroundedStyleEdit;
+    // 候选译文一旦被采用，随附的文风建议就已经在正文里生效，必须当场记为已应用。
+    // 否则纯文风片段（没有 must_fix 带路）落库时仍是 pending，界面会把已经写进正文的
+    // 建议重新列成待处理，用户只能再处理一遍——而二次采纳还会被「已有译文被采纳」拦下。
+    if (usesCandidate) {
+      for (const finding of candidateFindings) {
+        if (finding.category === 'style' && finding.applicationStatus === 'pending') {
+          finding.applicationStatus = 'applied';
+          finding.applicationMethod = 'automatic-review-adoption';
+        }
+      }
+    }
+    translations[raw.id] = usesCandidate ? candidateText : original.draft;
   }
   return { translations, findings };
 }

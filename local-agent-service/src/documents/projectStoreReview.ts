@@ -283,28 +283,46 @@ export function setReviewFindingDisposition(store: DocumentProjectStore, project
         throw Object.assign(new Error('原文片段已变化，拒绝应用基于旧文本生成的文风建议'), { status: 409 });
       }
 
-      // 这条发现创建之后被采纳的任何译文都要拒绝，不只是手工编辑。
-      // 这样能同时拦住另一个标签页里之后跑完的 Agent 结果，以及用户后来的修正。
+      // 放不放行取决于这次应用会不会改写正文，而不是单纯比时间戳。
+      // 审校必然发生在采纳之前，accepted_at 晚于 finding 的创建时刻属于正常顺序；
+      // 只要当前正文正是这条建议的文本，应用它就是一次幂等确认，不存在覆盖问题。
       const latestAccepted = db.prepare(
-        'SELECT origin, COALESCE(accepted_at, created_at) AS accepted_at FROM translation_results ' +
+        'SELECT result_id, translation_text, COALESCE(accepted_at, created_at) AS accepted_at ' +
+        'FROM translation_results ' +
         'WHERE source_revision_id = ? AND segment_id = ? AND source_hash = ? AND accepted = 1 ' +
         'ORDER BY COALESCE(accepted_at, created_at) DESC, rowid DESC LIMIT 1',
-      ).get(currentSourceRevisionId, row.segment_id, source.source_hash) as { origin?: string; accepted_at?: string } | undefined;
-      if (latestAccepted?.accepted_at && String(latestAccepted.accepted_at) >= String(row.finding_created_at || '')) {
+      ).get(currentSourceRevisionId, row.segment_id, source.source_hash) as {
+        result_id?: string; translation_text?: string; accepted_at?: string;
+      } | undefined;
+      const alreadyInPlace = Boolean(latestAccepted?.result_id) &&
+        String(latestAccepted?.translation_text || '').trim() === proposed;
+      // 正文与建议不同、且这份正文是建议生成之后才定下的，才说明它已被更新版本覆盖。
+      const superseded = !alreadyInPlace && Boolean(
+        latestAccepted?.accepted_at &&
+        String(latestAccepted.accepted_at) >= String(row.finding_created_at || ''),
+      );
+      if (superseded) {
         throw Object.assign(
           new Error('该片段在生成建议后已有译文被采纳或人工修改；为避免覆盖最新版本，请先核对正文，再手工决定是否采用此建议。'),
           { status: 409 },
         );
       }
 
-      const latestPrompt = db.prepare(
-        'SELECT prompt_revision_id FROM prompt_revisions ORDER BY created_at DESC, rowid DESC LIMIT 1',
-      ).get() as { prompt_revision_id?: string } | undefined;
-      const resultId = randomUUID();
-      db.prepare(
-        'INSERT INTO translation_results(result_id, run_id, source_revision_id, prompt_revision_id, segment_id, source_hash, run_fingerprint, translation_text, origin, accepted, created_at, accepted_at) ' +
-        "VALUES (?, NULL, ?, ?, ?, ?, 'manual', ?, 'manual', 1, ?, ?)",
-      ).run(resultId, currentSourceRevisionId, latestPrompt?.prompt_revision_id || null, row.segment_id, source.source_hash, proposed, now, now);
+      // 建议文本已经落在正文里就只补记账，不再插入一条内容相同的手工译文，
+      // 否则这次自动生效会被记成用户改写。
+      let resultId: string;
+      if (alreadyInPlace && latestAccepted?.result_id) {
+        resultId = String(latestAccepted.result_id);
+      } else {
+        const latestPrompt = db.prepare(
+          'SELECT prompt_revision_id FROM prompt_revisions ORDER BY created_at DESC, rowid DESC LIMIT 1',
+        ).get() as { prompt_revision_id?: string } | undefined;
+        resultId = randomUUID();
+        db.prepare(
+          'INSERT INTO translation_results(result_id, run_id, source_revision_id, prompt_revision_id, segment_id, source_hash, run_fingerprint, translation_text, origin, accepted, created_at, accepted_at) ' +
+          "VALUES (?, NULL, ?, ?, ?, ?, 'manual', ?, 'manual', 1, ?, ?)",
+        ).run(resultId, currentSourceRevisionId, latestPrompt?.prompt_revision_id || null, row.segment_id, source.source_hash, proposed, now, now);
+      }
       finding.applicationStatus = 'applied';
       finding.appliedResultId = resultId;
       const findingUpdate = db.prepare(
@@ -313,10 +331,18 @@ export function setReviewFindingDisposition(store: DocumentProjectStore, project
       if (Number(findingUpdate.changes || 0) !== 1) {
         throw Object.assign(new Error('这条文风建议刚刚被另一个操作处理；请刷新后重试。'), { status: 409 });
       }
-      db.prepare(
-        "UPDATE run_segments SET status = 'accepted', candidate_result_id = ?, error = NULL, updated_at = ? " +
-        'WHERE run_id = ? AND segment_id = ?',
-      ).run(resultId, now, runId, row.segment_id);
+      // 复用的既有结果未必属于本次运行，因此只在真正插入新译文时才改写 candidate_result_id，
+      // 避免把本次运行的片段指向别处的记录。
+      if (alreadyInPlace && latestAccepted?.result_id) {
+        db.prepare(
+          "UPDATE run_segments SET status = 'accepted', error = NULL, updated_at = ? WHERE run_id = ? AND segment_id = ?",
+        ).run(now, runId, row.segment_id);
+      } else {
+        db.prepare(
+          "UPDATE run_segments SET status = 'accepted', candidate_result_id = ?, error = NULL, updated_at = ? " +
+          'WHERE run_id = ? AND segment_id = ?',
+        ).run(resultId, now, runId, row.segment_id);
+      }
 
       const currentRun = db.prepare('SELECT status FROM translation_runs WHERE run_id = ?').get(runId) as { status?: string } | undefined;
       if (currentRun && !['cancelled', 'paused'].includes(String(currentRun.status))) {
