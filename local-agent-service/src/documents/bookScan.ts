@@ -1,5 +1,15 @@
 import { availableParallelism } from 'node:os';
 import { Worker } from 'node:worker_threads';
+import {
+  ARTICLE_PREFIX_WORDS, COMPOUND_NAME_PATTERN, JAPANESE_KATAKANA_NAME_PATTERN, JAPANESE_NAME_PATTERN,
+  NAME_PATTERN, NAME_STOP_WORDS, SPANISH_COMPOUND_NAME_PATTERN, SPANISH_NAME_PARTICLES,
+  SPANISH_TITLED_NAME_PATTERN, TITLE_PREFIX_WORDS, TITLED_NAME_PATTERN,
+} from './bookScanNameLexicon.ts';
+import { SPEECH_VERBS_BY_LANGUAGE } from './bookScanSpeechLexicon.ts';
+import {
+  CHINESE_QUANTITY_PATTERN, CHINESE_UNIT_MAP, ENGLISH_QUANTITY_PATTERN, LOCALIZED_QUANTITY_PATTERNS, QUANTITY_UNITS,
+} from './bookScanQuantityLexicon.ts';
+import { LANGUAGE_ALIASES, LANGUAGE_DETECTION_WORDS } from './bookScanLanguageLexicon.ts';
 
 /**
  * Deterministic, dependency-free source feature indexing for literary pre-analysis.
@@ -70,170 +80,30 @@ const MAX_ENTITY_MENTIONS = 100_000;
 const MAX_TEXT_UNITS = 160_000;
 const MAX_QUANTITY_MENTIONS = 40_000;
 
-const NAME_STOP_WORDS = new Set([
-  'a','an','and','as','at','after','although','around','before','behind','below','between','both','but','by',
-  'can','did','do','does','down','during','each','even','every','for','from','get','got','had','has','have',
-  'he','her','here','hers','him','his','how','i','if','in','into','is','it','its','just','keep','like','may',
-  'me','might','more','most','must','my','near','no','nor','not','now','of','off','on','once','one','only','or',
-  'other','our','out','over','own','said','same','she','should','so','some','such','than','that','the','their',
-  'them','then','there','these','they','this','those','through','thus','to','too','under','until','up','upon',
-  'us','very','was','we','were','what','when','where','which','while','who','why','will','with','would','yes',
-  'you','your','suddenly','however','perhaps','indeed','well','still','yet','finally','mr','mrs','ms','miss',
-  'dr','prof','captain','capt','sir','lord','lady','warden','archivist',
-  'le','la','les','un','une','des','du','de','et','à','au','aux','en','dans','sur','avec','pour','par','pas',
-  'ne','que','qui','dont','je','tu','il','elle','nous','vous','ils','elles','est','sont','était','été','mais',
-  'donc','alors','ainsi','bonjour','bonsoir','merci','monsieur','madame','mademoiselle','oui','non',
-  'der','die','das','den','dem','des','ein','eine','einer','eines','einem','und','oder','aber','auch','nicht',
-  'doch','mit','für','von','zu','zum','zur','im','am','auf','aus','bei','nach','vor','über','unter','zwischen',
-  'ist','war','sind','waren','wird','werden','hat','haben','ich','du','er','es','wir','ihr','man','wie','was',
-  'wer','wann','wo','wenn','weil','dass','denn','sagte','fragte','hallo','danke','nein','ja','ach','so','guten','gute','morgen','abend',
-  'frau','mann','stadt','zeit','haus','weg','hand','auge','tag','nacht','welt','zimmer','straße','strasse','kind','kinder','leute','mensch',
-  'il','lo','i','gli','uno','una','di','da','del','della','dei','degli','delle','e','o','ma','anche',
-  'non','che','chi','cui','per','con','su','tra','fra','è','era','sono','sei','ha','hanno','io','tu',
-  'lui','lei','noi','voi','loro','questo','quella','quello','ciao','grazie','buongiorno','buonasera','salve','bene','signore','signora','sì',
-  '彼女','彼ら','私達','自分','先生','友人','男性','女性','人物','家族','父親','母親','少年','少女','子供',
-  '老人','警察','会社','学校','時間','場所','部屋','人々',
-  'el','la','los','las','un','una','unos','unas','y','o','pero','porque','por','para','con','sin','de','del','al','en','sobre','entre',
-  'que','quien','quién','quienes','quiénes','como','cómo','cuando','cuándo','donde','dónde','no','sí','si','es','son','era','fue','ser','estar','está','están',
-  'soy','eres','yo','tú','él','ella','ellos','ellas','nosotros','nosotras','ustedes','vosotros','vosotras','mi','mis','su','sus','lo','le','les','se','me','te','nos','os',
-  'muy','más','menos','también','todavía','aún','ya','aquí','allí','hola','adiós','gracias','buenos','buenas','días','tardes','noches','señor','señora','señorita','don','doña',
-]);
-const ARTICLE_PREFIX_WORDS = new Set([
-  'the','a','an','le','la','les','un','une','der','die','das','den','dem','ein','eine',
-  'il','lo','i','gli','uno','una','el','los','las','unos','unas',
-]);
-const TITLE_PREFIX_WORDS = new Set([
-  'mr','mrs','ms','miss','dr','prof','sir','lord','lady','captain','capt',
-  'm','mme','mlle','monsieur','madame','mademoiselle','herr','frau','fräulein',
-  'sig','signor','signora','signorina','dott','dottore','capitano','kapitän','könig','königin',
-  'don','doña','dona','señor','senor','señora','senora','señorita','senorita','sr','sra','srta','san','santa','padre','madre',
-]);
-const SPEECH_VERBS_BY_LANGUAGE: Record<string, RegExp> = {
-  en: /\b(said|asked|replied|answered|whispered|shouted|murmured|called|cried|snapped|remarked|wondered|added|insisted|began|continued|laughed|sighed|told)\b/iu,
-  fr: /(?<![\p{L}])(?:dit|demanda|répondit|répliqua|murmura|chuchota|cria|s'écria|ajouta|poursuivit|continua|insista|soupira|raconta)(?![\p{L}])/iu,
-  de: /(?<![\p{L}])(?:sagte|fragte|antwortete|erwiderte|flüsterte|rief|schrie|murmelte|meinte|fügte|erklärte|lachte|seufzte|erzählte)(?![\p{L}])/iu,
-  it: /(?<![\p{L}])(?:disse|chiese|rispose|sussurrò|urlò|gridò|mormorò|esclamò|aggiunse|continuò|insistette|sospirò|raccontò|replicò)(?![\p{L}])/iu,
-  es: /(?<![\p{L}])(?:dijo|dijeron|preguntó|pregunto|preguntaron|respondió|respondio|respondieron|replicó|replico|susurró|susurro|gritó|grito|murmuró|murmuro|exclamó|exclamo|añadió|anadio|continuó|continuo|insistió|insistio|suspiró|suspiro|contó|conto|explicó|explico|comentó|comento|contestó|contesto)(?![\p{L}])/iu,
-  ja: /(?:言った|尋ねた|答えた|話した|叫んだ|囁いた|つぶやいた|聞いた|続けた|返した|問いかけた|説明した)/u,
-};
-const NAME_PATTERN = /(?<![\p{L}\p{N}])\p{Lu}\p{Ll}{2,}(?:[’'-]\p{Lu}?\p{Ll}+)*(?![\p{L}\p{N}])/gu;
-const COMPOUND_NAME_PATTERN = /(?<![\p{L}\p{N}])\p{Lu}\p{Ll}{2,}(?:[’'-]\p{Lu}?\p{Ll}+)*(?:\s+\p{Lu}\p{Ll}{2,}(?:[’'-]\p{Lu}?\p{Ll}+)*){1,2}(?![\p{L}\p{N}])/gu;
-const TITLED_NAME_PATTERN = /(?<![\p{L}\p{N}])(?:[Tt]he|[Aa]|[Aa]n|[Mm]r\.?|[Mm]rs\.?|[Mm]s\.?|[Mm]iss|[Dd]r\.?|[Pp]rof\.?|[Ss]ir|[Ll]ord|[Ll]ady|[Cc]aptain|[Cc]apt\.?|[Kk]ing|[Qq]ueen|[Pp]rince|[Pp]rincess|[Gg]eneral|[Cc]olonel|[Mm]ajor|[Ss]ergeant|Monsieur|Madame|Mademoiselle|M\.|Mme\.?|Mlle\.?|Herr|Frau|Fräulein|Signor(?:a|ina)?|Sig\.?|Dott\.?|Dottore|Capitano|Kapitän|König|Königin|Regina|Don|Doña|Dona|Señor|Senor|Señora|Senora|Señorita|Senorita|Sr\.?|Sra\.?|Srta\.?|San|Santa)\s+\p{Lu}\p{Ll}{2,}(?:[’'-]\p{Lu}?\p{Ll}+)*(?:\s+\p{Lu}\p{Ll}{2,}(?:[’'-]\p{Lu}?\p{Ll}+)*)?(?![\p{L}\p{N}])/gu;
-const SPANISH_COMPOUND_NAME_PATTERN = /(?<![\p{L}\p{N}])\p{Lu}\p{Ll}{2,}(?:(?:\s+(?:de|del|la|las|los|y)){1,2}\s+\p{Lu}\p{Ll}{2,}|\s+\p{Lu}\p{Ll}{2,}){1,3}(?![\p{L}\p{N}])/gu;
-const SPANISH_TITLED_NAME_PATTERN = /(?<![\p{L}\p{N}])(?:Don|Doña|Dona|Señor|Senor|Señora|Senora|Señorita|Senorita|Sr\.?|Sra\.?|Srta\.?|San|Santa)\s+\p{Lu}\p{Ll}{2,}(?:(?:\s+(?:de|del|la|las|los|y)){1,2}\s+\p{Lu}\p{Ll}{2,}|\s+\p{Lu}\p{Ll}{2,}){0,3}(?![\p{L}\p{N}])/gu;
-const SPANISH_NAME_PARTICLES = new Set(['de','del','la','las','los','y']);
-const JAPANESE_NAME_PATTERN = /(?<![\p{Script=Han}])[\p{Script=Han}]{2,4}(?=(?:さん|様|氏|君|殿|先生))/gu;
-const JAPANESE_KATAKANA_NAME_PATTERN = /(?<![\p{L}\p{N}])[\p{Script=Katakana}ー]{2,8}(?=(?:さん|様|氏|君))/gu;
+/**
+ * 归一化源语言代码。显式代码走别名表；未声明（或 auto/unknown/und）时按原文推断：
+ * 假名 → ja，ñ/¿/¡ → es，否则按功能词命中数投票，平票再退到变音符号。
+ */
 function sourceLanguageCode(value: string | undefined, text = ''): string {
   const raw = String(value || '').trim().toLocaleLowerCase();
   const primary = raw.split(/[-_]/u)[0] || 'en';
-  const aliases: Record<string, string> = {
-    english:'en',eng:'en',french:'fr',français:'fr',fra:'fr',fre:'fr',
-    german:'de',deutsch:'de',deu:'de',ger:'de',italian:'it',italiano:'it',ita:'it',spanish:'es',español:'es',espanol:'es',castellano:'es',spa:'es',
-    japanese:'ja',日本語:'ja',jpn:'ja',chinese:'zh',中文:'zh',zho:'zh',
-  };
-  if (!raw || ['auto','unknown','und'].includes(raw)) {
+  if (!raw || ['auto', 'unknown', 'und'].includes(raw)) {
     if (/[\p{Script=Hiragana}\p{Script=Katakana}]/u.test(text)) return 'ja';
     const sample = text.toLocaleLowerCase();
     if (/[ñ¿¡]/u.test(sample)) return 'es';
-    const scores: Record<string, number> = {
-      es: (sample.match(/\b(?:el|los|las|una|unos|unas|y|que|con|para|por|pero|porque|del|al|se|es|son|está|están|fue|dijo|ella|ellos|nosotros|usted)\b/gu) || []).length,
-      fr: (sample.match(/\b(?:le|la|les|une|des|est|et|que|qui|avec|dans|pour|pas|mais|je|elle|vous|nous)\b/gu) || []).length,
-      de: (sample.match(/\b(?:der|die|das|ein|eine|und|ist|mit|nicht|ich|war|hat|zu|von|dem|den|er|sie|drei|zwei|vier|fünf)\b/gu) || []).length,
-      it: (sample.match(/\b(?:il|lo|gli|sono|che|non|una|per|con|della|era|dove|ma|voi|noi)\b/gu) || []).length,
-    };
-    const ranked = Object.entries(scores).sort((a,b)=>b[1]-a[1]);
+    const scores: Record<string, number> = {};
+    for (const [language, pattern] of Object.entries(LANGUAGE_DETECTION_WORDS)) {
+      scores[language] = (sample.match(pattern) || []).length;
+    }
+    const ranked = Object.entries(scores).sort((a, b) => b[1] - a[1]);
     if (ranked[0] && ranked[0][1] >= 2 && ranked[0][1] > (ranked[1]?.[1] || 0)) return ranked[0][0]!;
     if (/[ßäöü]/u.test(sample)) return 'de';
     if (/[çœéèêëàâîïôùûüÿ]/u.test(sample)) return 'fr';
     if (/[òì]/u.test(sample)) return 'it';
     return 'en';
   }
-  return aliases[raw] || aliases[primary] || primary;
+  return LANGUAGE_ALIASES[raw] || LANGUAGE_ALIASES[primary] || primary;
 }
-const QUANTITY_UNITS: Array<{ pattern: RegExp; unit: string; family: string }> = [
-  { pattern: /^inches?$/i, unit: 'inch', family: 'length' }, { pattern: /^(feet|foot)$/i, unit: 'foot', family: 'length' },
-  { pattern: /^miles?$/i, unit: 'mile', family: 'length' }, { pattern: /^centimeters?$/i, unit: 'centimeter', family: 'length' },
-  { pattern: /^centimetres?$/i, unit: 'centimeter', family: 'length' }, { pattern: /^millimeters?$/i, unit: 'millimeter', family: 'length' },
-  { pattern: /^millimetres?$/i, unit: 'millimeter', family: 'length' }, { pattern: /^kilometers?$/i, unit: 'kilometer', family: 'length' },
-  { pattern: /^kilometres?$/i, unit: 'kilometer', family: 'length' }, { pattern: /^meters?$/i, unit: 'meter', family: 'length' },
-  { pattern: /^metres?$/i, unit: 'meter', family: 'length' }, { pattern: /^seconds?$/i, unit: 'second', family: 'time' },
-  { pattern: /^minutes?$/i, unit: 'minute', family: 'time' }, { pattern: /^hours?$/i, unit: 'hour', family: 'time' },
-  { pattern: /^days?$/i, unit: 'day', family: 'time' }, { pattern: /^weeks?$/i, unit: 'week', family: 'time' },
-  { pattern: /^months?$/i, unit: 'month', family: 'time' }, { pattern: /^years?$/i, unit: 'year', family: 'time' },
-  { pattern: /^degrees?$/i, unit: 'degree', family: 'angle' }, { pattern: /^pounds?$/i, unit: 'pound', family: 'weight' },
-  { pattern: /^kilograms?$/i, unit: 'kilogram', family: 'weight' }, { pattern: /^ounces?$/i, unit: 'ounce', family: 'weight' },
-  { pattern: /^grams?$/i, unit: 'gram', family: 'weight' }, { pattern: /^liters?$/i, unit: 'liter', family: 'volume' },
-  { pattern: /^litres?$/i, unit: 'liter', family: 'volume' }, { pattern: /^sides?$/i, unit: 'side', family: 'count' },
-  { pattern: /^pouces?$/i, unit: 'inch', family: 'length' }, { pattern: /^pieds?$/i, unit: 'foot', family: 'length' },
-  { pattern: /^milles?$/i, unit: 'mile', family: 'length' }, { pattern: /^centimètres?$/i, unit: 'centimeter', family: 'length' },
-  { pattern: /^millimètres?$/i, unit: 'millimeter', family: 'length' }, { pattern: /^kilomètres?$/i, unit: 'kilometer', family: 'length' },
-  { pattern: /^mètres?$/i, unit: 'meter', family: 'length' }, { pattern: /^secondes?$/i, unit: 'second', family: 'time' },
-  { pattern: /^minutes?$/i, unit: 'minute', family: 'time' }, { pattern: /^heures?$/i, unit: 'hour', family: 'time' },
-  { pattern: /^jours?$/i, unit: 'day', family: 'time' }, { pattern: /^semaines?$/i, unit: 'week', family: 'time' },
-  { pattern: /^mois$/i, unit: 'month', family: 'time' }, { pattern: /^(ans?|années?)$/i, unit: 'year', family: 'time' },
-  { pattern: /^degrés?$/i, unit: 'degree', family: 'angle' }, { pattern: /^livres?$/i, unit: 'pound', family: 'weight' },
-  { pattern: /^kilogrammes?$/i, unit: 'kilogram', family: 'weight' }, { pattern: /^grammes?$/i, unit: 'gram', family: 'weight' },
-  { pattern: /^litres?$/i, unit: 'liter', family: 'volume' },
-  { pattern: /^zoll$/i, unit: 'inch', family: 'length' }, { pattern: /^fuß$/i, unit: 'foot', family: 'length' },
-  { pattern: /^meilen?$/i, unit: 'mile', family: 'length' }, { pattern: /^zentimeter$/i, unit: 'centimeter', family: 'length' },
-  { pattern: /^millimeter$/i, unit: 'millimeter', family: 'length' }, { pattern: /^kilometer$/i, unit: 'kilometer', family: 'length' },
-  { pattern: /^metern?$/i, unit: 'meter', family: 'length' }, { pattern: /^sekunden?$/i, unit: 'second', family: 'time' },
-  { pattern: /^minuten?$/i, unit: 'minute', family: 'time' }, { pattern: /^stunden?$/i, unit: 'hour', family: 'time' },
-  { pattern: /^tage?$/i, unit: 'day', family: 'time' }, { pattern: /^wochen?$/i, unit: 'week', family: 'time' },
-  { pattern: /^monate?$/i, unit: 'month', family: 'time' }, { pattern: /^jahre?$/i, unit: 'year', family: 'time' },
-  { pattern: /^grad$/i, unit: 'degree', family: 'angle' }, { pattern: /^pfund$/i, unit: 'pound', family: 'weight' },
-  { pattern: /^kilogramm$/i, unit: 'kilogram', family: 'weight' }, { pattern: /^gramm$/i, unit: 'gram', family: 'weight' },
-  { pattern: /^liter$/i, unit: 'liter', family: 'volume' },
-  { pattern: /^pollici?$/i, unit: 'inch', family: 'length' }, { pattern: /^piedi$/i, unit: 'foot', family: 'length' },
-  { pattern: /^miglia?$/i, unit: 'mile', family: 'length' }, { pattern: /^centimetri?$/i, unit: 'centimeter', family: 'length' },
-  { pattern: /^millimetri?$/i, unit: 'millimeter', family: 'length' }, { pattern: /^chilometri?$/i, unit: 'kilometer', family: 'length' },
-  { pattern: /^metri?$/i, unit: 'meter', family: 'length' }, { pattern: /^secondi?$/i, unit: 'second', family: 'time' },
-  { pattern: /^minuti?$/i, unit: 'minute', family: 'time' }, { pattern: /^ore$/i, unit: 'hour', family: 'time' },
-  { pattern: /^giorni?$/i, unit: 'day', family: 'time' }, { pattern: /^settimane?$/i, unit: 'week', family: 'time' },
-  { pattern: /^mesi$/i, unit: 'month', family: 'time' }, { pattern: /^anni$/i, unit: 'year', family: 'time' },
-  { pattern: /^gradi$/i, unit: 'degree', family: 'angle' }, { pattern: /^libbre?$/i, unit: 'pound', family: 'weight' },
-  { pattern: /^chilogrammi?$/i, unit: 'kilogram', family: 'weight' }, { pattern: /^grammi?$/i, unit: 'gram', family: 'weight' },
-  { pattern: /^litri?$/i, unit: 'liter', family: 'volume' },
-  { pattern: /^pulgadas?$/i, unit: 'inch', family: 'length' }, { pattern: /^pies?$/i, unit: 'foot', family: 'length' },
-  { pattern: /^millas?$/i, unit: 'mile', family: 'length' }, { pattern: /^centímetros?$/i, unit: 'centimeter', family: 'length' },
-  { pattern: /^milímetros?$/i, unit: 'millimeter', family: 'length' }, { pattern: /^kilómetros?$/i, unit: 'kilometer', family: 'length' },
-  { pattern: /^metros?$/i, unit: 'meter', family: 'length' }, { pattern: /^segundos?$/i, unit: 'second', family: 'time' },
-  { pattern: /^minutos?$/i, unit: 'minute', family: 'time' }, { pattern: /^horas?$/i, unit: 'hour', family: 'time' },
-  { pattern: /^días?$/i, unit: 'day', family: 'time' }, { pattern: /^semanas?$/i, unit: 'week', family: 'time' },
-  { pattern: /^meses?$/i, unit: 'month', family: 'time' }, { pattern: /^años?$/i, unit: 'year', family: 'time' },
-  { pattern: /^grados?$/i, unit: 'degree', family: 'angle' }, { pattern: /^libras?$/i, unit: 'pound', family: 'weight' },
-  { pattern: /^kilogramos?$/i, unit: 'kilogram', family: 'weight' }, { pattern: /^gramos?$/i, unit: 'gram', family: 'weight' },
-  { pattern: /^litros?$/i, unit: 'liter', family: 'volume' },
-  { pattern: /^インチ$/u, unit: 'inch', family: 'length' }, { pattern: /^フィート$/u, unit: 'foot', family: 'length' },
-  { pattern: /^マイル$/u, unit: 'mile', family: 'length' }, { pattern: /^センチメートル$/u, unit: 'centimeter', family: 'length' },
-  { pattern: /^ミリメートル$/u, unit: 'millimeter', family: 'length' }, { pattern: /^キロメートル$/u, unit: 'kilometer', family: 'length' },
-  { pattern: /^メートル$/u, unit: 'meter', family: 'length' }, { pattern: /^秒$/u, unit: 'second', family: 'time' },
-  { pattern: /^分$/u, unit: 'minute', family: 'time' }, { pattern: /^時間$/u, unit: 'hour', family: 'time' },
-  { pattern: /^日$/u, unit: 'day', family: 'time' }, { pattern: /^(?:週|週間)$/u, unit: 'week', family: 'time' },
-  { pattern: /^(?:月|ヶ月|か月)$/u, unit: 'month', family: 'time' }, { pattern: /^年$/u, unit: 'year', family: 'time' },
-  { pattern: /^度$/u, unit: 'degree', family: 'angle' }, { pattern: /^キログラム$/u, unit: 'kilogram', family: 'weight' },
-  { pattern: /^グラム$/u, unit: 'gram', family: 'weight' }, { pattern: /^リットル$/u, unit: 'liter', family: 'volume' },
-];
-const ENGLISH_QUANTITY_PATTERN = /\b(?:\d+(?:[,.]\d+)*|zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|million|billion)(?:[\s-]+(?:and[\s-]+)?(?:\d+(?:[,.]\d+)*|zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|million|billion))*[\s-]+(inches?|feet|foot|miles?|hours?|minutes?|seconds?|days?|weeks?|months?|years?|degrees?|meters?|metres?|centimeters?|centimetres?|millimeters?|millimetres?|kilometers?|kilometres?|pounds?|kilograms?|ounces?|liters?|litres?|sides?)\b/giu;
-const CHINESE_QUANTITY_PATTERN = /(?:\d+(?:[,.]\d+)*|[零〇一二两三四五六七八九十百千万亿]+)(英寸|寸|英尺|尺|英里|公里|千米|厘米|毫米|米|小时|分钟|秒钟|秒|天|周|星期|个月|月|年|岁|公斤|千克|克|升|毫升|度|边)/gu;
-const CHINESE_UNIT_MAP: Record<string, { unit: string; family: string }> = {
-  英寸:{unit:'inch',family:'length'},寸:{unit:'inch',family:'length'},英尺:{unit:'foot',family:'length'},尺:{unit:'foot',family:'length'},
-  英里:{unit:'mile',family:'length'},公里:{unit:'kilometer',family:'length'},千米:{unit:'kilometer',family:'length'},米:{unit:'meter',family:'length'},
-  厘米:{unit:'centimeter',family:'length'},毫米:{unit:'millimeter',family:'length'},小时:{unit:'hour',family:'time'},分钟:{unit:'minute',family:'time'},
-  秒钟:{unit:'second',family:'time'},秒:{unit:'second',family:'time'},天:{unit:'day',family:'time'},周:{unit:'week',family:'time'},
-  星期:{unit:'week',family:'time'},个月:{unit:'month',family:'time'},月:{unit:'month',family:'time'},年:{unit:'year',family:'time'},
-  岁:{unit:'year',family:'time'},公斤:{unit:'kilogram',family:'weight'},千克:{unit:'kilogram',family:'weight'},克:{unit:'gram',family:'weight'},
-  升:{unit:'liter',family:'volume'},毫升:{unit:'milliliter',family:'volume'},度:{unit:'degree',family:'angle'},边:{unit:'side',family:'count'},
-};
-
-const LOCALIZED_QUANTITY_PATTERNS: Record<string, RegExp> = {
-  fr: /(?:\d+(?:[,.]\d+)*|zéro|un|une|deux|trois|quatre|cinq|six|sept|huit|neuf|dix|onze|douze|treize|quatorze|quinze|seize|vingt|trente|quarante|cinquante|soixante|cent|mille)(?:[\s-]+(?:et[\s-]+)?(?:un|une|deux|trois|quatre|cinq|six|sept|huit|neuf|dix|onze|douze|treize|quatorze|quinze|seize|vingt|trente|cent|mille))*[\s-]+(pouces?|pieds?|milles?|centimètres?|millimètres?|kilomètres?|mètres?|secondes?|minutes?|heures?|jours?|semaines?|mois|ans?|années?|degrés?|livres?|kilogrammes?|grammes?|litres?)/giu,
-  de: /(?:\d+(?:[,.]\d+)*|null|ein|eine|eins|zwei|drei|vier|fünf|sechs|sieben|acht|neun|zehn|elf|zwölf|zwanzig|dreißig|vierzig|fünfzig|sechzig|siebzig|achtzig|neunzig|hundert|tausend)(?:[\s-]+(?:und[\s-]+)?(?:ein|eine|eins|zwei|drei|vier|fünf|sechs|sieben|acht|neun|zehn|elf|zwölf|zwanzig|hundert|tausend))*[\s-]+(Zoll|Fuß|Meilen?|Zentimeter|Millimeter|Kilometer|Meter|Metern|Sekunden?|Minuten?|Stunden?|Tage?|Wochen?|Monate?|Jahre?|Grad|Pfund|Kilogramm|Gramm|Liter)/giu,
-  it: /(?:\d+(?:[,.]\d+)*|zero|uno|una|un|due|tre|quattro|cinque|sei|sette|otto|nove|dieci|undici|dodici|tredici|quattordici|quindici|sedici|venti|trenta|quaranta|cinquanta|sessanta|settanta|ottanta|novanta|cento|mille)(?:[\s-]+(?:e[\s-]+)?(?:uno|una|due|tre|quattro|cinque|sei|sette|otto|nove|dieci|venti|trenta|cento|mille))*[\s-]+(pollici?|piedi|miglia?|centimetri?|millimetri?|chilometri?|metri?|secondi?|minuti?|ore|giorni?|settimane?|mesi|anni|gradi|libbre?|chilogrammi?|grammi?|litri?)/giu,
-  es: /(?:\d+(?:[,.]\d+)*|cero|un|uno|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce|trece|catorce|quince|dieciséis|dieciseis|diecisiete|dieciocho|diecinueve|veinte|veintiuno|veintiún|veintiuna|veintidós|veintidos|veintitrés|veintitres|veinticuatro|veinticinco|veintiséis|veintiseis|veintisiete|veintiocho|veintinueve|treinta|cuarenta|cincuenta|sesenta|setenta|ochenta|noventa|cien|ciento|mil|millón|millones)(?:[\s-]+(?:y[\s-]+)?(?:un|uno|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce|trece|catorce|quince|dieciséis|dieciseis|diecisiete|dieciocho|diecinueve|veinte|veintiuno|veintiún|veintiuna|veintidós|veintidos|veintitrés|veintitres|veinticuatro|veinticinco|treinta|cuarenta|cincuenta|sesenta|setenta|ochenta|noventa|cien|ciento|mil|millón|millones))*[\s-]+(pulgadas?|pies?|millas?|centímetros?|milímetros?|kilómetros?|metros?|segundos?|minutos?|horas?|días?|semanas?|meses?|años?|grados?|libras?|kilogramos?|gramos?|litros?)/giu,
-  ja: /(?:\d+(?:[,.]\d+)*|[零〇一二两三四五六七八九十百千万億]+)\s*(インチ|フィート|マイル|センチメートル|ミリメートル|キロメートル|メートル|秒|分|時間|日|週間|週|ヶ月|か月|月|年|度|キログラム|グラム|リットル)/gu,
-};
 
 function normalizeText(value: string): string {
   return value.normalize('NFKC').toLocaleLowerCase().replace(/\s+/g, ' ').trim();
