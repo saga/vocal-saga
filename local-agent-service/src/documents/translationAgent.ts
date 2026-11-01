@@ -426,6 +426,14 @@ export function buildBatches(
   return batches;
 }
 
+/** Split translation items into bounded groups for callers that explicitly need chunking. */
+export function chunkMissingTranslationItems<T>(items: readonly T[], chunkSize = 4): T[][] {
+  const size = Math.max(1, Math.floor(chunkSize) || 1);
+  const groups: T[][] = [];
+  for (let offset = 0; offset < items.length; offset += size) groups.push(items.slice(offset, offset + size));
+  return groups;
+}
+
 export interface CanonicalTermProtection {
   marker: string;
   sourceForm: string;
