@@ -1,0 +1,614 @@
+/**
+ * 时间可见记忆：把整本书级别的 LiteraryMemory 裁剪成「当前批次可知道」的那一部分。
+ *
+ * 从 translationBrief 抽出：剧透防线全部集中在这里——实体、关系、角色声音、译例
+ * 都要按源文 ordinal 边界过滤，任何一个字段漏过滤都会把后文剧情泄漏到前文。
+ */
+import { getDocumentProjectStore } from './projectStore.ts';
+import {
+  MAX_ACCEPTED_EXAMPLES, MAX_ACCEPTED_EXAMPLE_CHARS, type BriefSegment,
+} from './briefContract.ts';
+import {
+  firstMatchingSourceOrdinal, normalizedSourceText, sourceNameMatches, sourceQuoteMatches,
+} from './briefSourceContext.ts';
+
+/**
+ * 时间边界：当前批次「允许知道到哪里」的全部依据。
+ *
+ * 批次之前出现过的名字、引文与片段才能进入上下文；谓词与索引都挂在这个对象上，
+ * 各个过滤阶段只读它，不各自去查库，保证所有字段用的是同一条边界。
+ */
+interface TemporalBoundary {
+  db: any;
+  revisionId: string;
+  /** 当前批次第一个源段的 ordinal。 */
+  firstOrdinal: number;
+  items: BriefSegment[];
+  precedingSegments: BriefSegment[];
+  sourceById: Map<string, { ordinal: number; text: string; contextPath: string }>;
+  /** 已采纳译文的最后版本，用于判断译名证据是否被后续人工修改推翻。 */
+  latestAcceptedTranslationBySegment: Map<string, string>;
+  /** 名字在批次边界之前出现过。 */
+  appearedBefore(name: unknown): boolean;
+  /** 该源段早于批次边界。 */
+  isPrior(id: unknown): boolean;
+  /** 这段引文在批次边界之前出现过（用于没有 segment 证据的旧版实体）。 */
+  appearsAsEarlierEvidence(quote: unknown): boolean;
+}
+
+interface AcceptedExample {
+  segmentId: string;
+  source: string;
+  target: string;
+  chapter: string;
+  origin: string;
+}
+
+interface AcceptedExampleRetrieval {
+  retrievedExamples: AcceptedExample[];
+  scoredExamples: Array<Record<string, any>>;
+  acceptedExampleRows: Array<Record<string, any>>;
+  currentChapters: Set<string>;
+  currentTokens: Set<string>;
+  candidateTerms: string[];
+  recentOrdinalBoundary: number;
+  retrievedExampleChars: number;
+  acceptedExamplesExcludedAsPreceding: number;
+  acceptedExamplesTrimmedByBudget: number;
+}
+
+export function buildTemporallyVisibleMemory(
+  context: any,
+  items: BriefSegment[],
+  precedingSegments: BriefSegment[],
+  exampleBudgetChars = MAX_ACCEPTED_EXAMPLE_CHARS,
+): Record<string, any> {
+  const projectId = String(context?.project?.projectId || '');
+  const revisionId = String(context?.run?.sourceRevisionId || '');
+  const store = getDocumentProjectStore();
+  const projectContext = store.getProjectContext(projectId);
+  const empty: Record<string, any> = {
+    version: 2, entities: [], relationships: [], styleGuide: {}, styleGuideStatus: 'candidate',
+    chapterSummaries: [], recentExamples: [], characterVoices: [],
+    relationshipVoiceRules: [], voiceAnchors: [], openQuestions: [],
+  };
+  const sourceRevisionExists = !!revisionId && !!projectContext.db.prepare(
+    'SELECT 1 FROM source_revisions WHERE revision_id = ?'
+  ).get(revisionId);
+  // 中文：缺少项目/来源版本/批次时，无法建立时间边界，直接返回空记忆，避免泄漏。
+  if (!projectId || !sourceRevisionExists || !items.length) return empty;
+
+  const rows = projectContext.db.prepare(
+    'SELECT segment_id, ordinal, text, context_path FROM source_segments ' +
+    'WHERE source_revision_id = ? AND segment_id IN (' + items.map(() => '?').join(',') + ') ' +
+    'ORDER BY ordinal'
+  ).all(revisionId, ...items.map((item) => item.id)) as any[];
+  const itemOrdinals = rows.map((row) => Number(row.ordinal)).filter(Number.isFinite);
+  if (!itemOrdinals.length) return empty;
+  const firstOrdinal = Math.min(...itemOrdinals);
+  // 中文：firstOrdinal 是当前批次第一个源段的 ordinal，作为时间边界基准。
+
+  const rawMemory = context?.memory && typeof context.memory === 'object'
+    ? JSON.parse(JSON.stringify(context.memory)) as Record<string, any>
+    : empty;
+
+  const editorialProfile = rawMemory.chineseEditorialProfile;
+  // 中文：编辑画像仅在来源版本匹配且未被拒绝时启用；机器默认采纳，证据仅作元数据。
+  if (!editorialProfile || editorialProfile.status === 'rejected' ||
+      editorialProfile.sourceRevisionId !== revisionId) {
+    rawMemory.chineseEditorialProfile = null;
+  } else {
+    // Machine-generated editorial profiles are default-adopted. Evidence remains metadata;
+    // it does not create a human approval gate. This profile is style-only, not plot memory.
+    editorialProfile.status = 'confirmed';
+    editorialProfile.confirmationSource = editorialProfile.confirmationSource || 'model-default';
+  }
+  const initialMemoryCounts = {
+    entities: Array.isArray(rawMemory.entities) ? rawMemory.entities.length : 0,
+    relationships: Array.isArray(rawMemory.relationships) ? rawMemory.relationships.length : 0,
+    characterVoices: Array.isArray(rawMemory.characterVoices) ? rawMemory.characterVoices.length : 0,
+  };
+  const exclusionDiagnostics = {
+    memoryEntityExcludedFutureAlias: 0,
+    memoryEntityExcludedNameNotVisible: 0,
+    memoryEntityExcludedEvidenceNotVisible: 0,
+    memoryRelationshipExcludedNameNotVisible: 0,
+    memoryRelationshipExcludedEvidenceNotVisible: 0,
+    characterVoiceExcludedFutureEvidence: 0,
+    characterVoiceExcludedIncompleteEvidence: 0,
+    characterVoiceExcludedNameNotVisible: 0,
+    characterVoiceExcludedFutureAlias: 0,
+    targetEvidenceExcludedAfterAcceptedCorrection: 0,
+  };
+
+  const referencedIds = new Set<string>();
+  for (const entity of Array.isArray(rawMemory.entities) ? rawMemory.entities : []) {
+    for (const evidence of Array.isArray(entity?.evidenceRefs) ? entity.evidenceRefs : []) {
+      if (typeof evidence?.segmentId === 'string') referencedIds.add(evidence.segmentId);
+    }
+    for (const evidence of Array.isArray(entity?.targetEvidenceRefs) ? entity.targetEvidenceRefs : []) {
+      if (typeof evidence?.segmentId === 'string') referencedIds.add(evidence.segmentId);
+    }
+  }
+  for (const relation of Array.isArray(rawMemory.relationships) ? rawMemory.relationships : []) {
+    for (const evidence of Array.isArray(relation?.evidenceRefs) ? relation.evidenceRefs : []) {
+      if (typeof evidence?.segmentId === 'string') referencedIds.add(evidence.segmentId);
+    }
+  }
+  for (const profile of Array.isArray(rawMemory.characterVoices) ? rawMemory.characterVoices : []) {
+    for (const evidence of Array.isArray(profile.evidence) ? profile.evidence : []) {
+      if (typeof evidence?.segmentId === 'string') referencedIds.add(evidence.segmentId);
+    }
+    for (const rule of Array.isArray(profile.contrastRules) ? profile.contrastRules : []) {
+      for (const id of Array.isArray(rule?.evidenceSegmentIds) ? rule.evidenceSegmentIds : []) {
+        if (typeof id === 'string') referencedIds.add(id);
+      }
+    }
+  }
+  for (const rule of Array.isArray(rawMemory.relationshipVoiceRules) ? rawMemory.relationshipVoiceRules : []) {
+    for (const id of Array.isArray(rule?.evidenceSegmentIds) ? rule.evidenceSegmentIds : []) {
+      if (typeof id === 'string') referencedIds.add(id);
+    }
+  }
+  for (const anchor of Array.isArray(rawMemory.voiceAnchors) ? rawMemory.voiceAnchors : []) {
+    if (typeof anchor?.segmentId === 'string') referencedIds.add(anchor.segmentId);
+  }
+  for (const segment of precedingSegments) referencedIds.add(segment.id);
+
+  const ids = Array.from(referencedIds);
+  const sourceById = new Map<string, { ordinal: number; text: string; contextPath: string }>();
+  for (let offset = 0; offset < ids.length; offset += 400) {
+    const chunk = ids.slice(offset, offset + 400);
+    const refRows = projectContext.db.prepare(
+      'SELECT segment_id, ordinal, text, context_path FROM source_segments ' +
+      'WHERE source_revision_id = ? AND segment_id IN (' + chunk.map(() => '?').join(',') + ')'
+    ).all(revisionId, ...chunk) as any[];
+    for (const row of refRows) sourceById.set(String(row.segment_id), {
+      ordinal: Number(row.ordinal), text: String(row.text || ''), contextPath: String(row.context_path || ''),
+    });
+  }
+  for (const row of rows) sourceById.set(String(row.segment_id), {
+    ordinal: Number(row.ordinal), text: String(row.text || ''), contextPath: String(row.context_path || ''),
+  });
+  const targetEvidenceSegmentIds = Array.from(new Set(
+    (Array.isArray(rawMemory.entities) ? rawMemory.entities : []).flatMap((entity: any) =>
+      (Array.isArray(entity?.targetEvidenceRefs) ? entity.targetEvidenceRefs : [])
+        .map((ref: any) => typeof ref?.segmentId === 'string' ? ref.segmentId : ''))
+      .filter(Boolean)
+  ));
+  const latestAcceptedTranslationBySegment = new Map<string, string>();
+  for (let offset = 0; offset < targetEvidenceSegmentIds.length; offset += 400) {
+    const chunk = targetEvidenceSegmentIds.slice(offset, offset + 400);
+    const acceptedRows = projectContext.db.prepare(
+      'SELECT s.segment_id AS segmentId, tr.translation_text AS translatedText ' +
+      'FROM source_segments s JOIN translation_results tr ' +
+        'ON tr.source_revision_id = s.source_revision_id AND tr.segment_id = s.segment_id ' +
+      'WHERE s.source_revision_id = ? AND s.segment_id IN (' + chunk.map(() => '?').join(',') + ') ' +
+        'AND tr.accepted = 1 AND tr.source_hash = s.source_hash AND tr.rowid = (' +
+          'SELECT latest.rowid FROM translation_results latest ' +
+          'WHERE latest.source_revision_id = s.source_revision_id AND latest.segment_id = s.segment_id ' +
+            'AND latest.accepted = 1 AND latest.source_hash = s.source_hash ' +
+          'ORDER BY COALESCE(latest.accepted_at, latest.created_at) DESC, latest.created_at DESC, latest.rowid DESC LIMIT 1)'
+    ).all(revisionId, ...chunk) as Array<{ segmentId: string; translatedText: string }>;
+    for (const row of acceptedRows) latestAcceptedTranslationBySegment.set(String(row.segmentId), String(row.translatedText || ''));
+  }
+  const isPrior = (id: unknown) => {
+    const source = typeof id === 'string' ? sourceById.get(id) : undefined;
+    return !!source && Number.isFinite(source.ordinal) && source.ordinal < firstOrdinal;
+  };
+  const appearedBefore = (nameInput: unknown): boolean =>
+    firstMatchingSourceOrdinal(projectContext.db, revisionId, nameInput, 'name') < firstOrdinal;
+  const appearsAsEarlierEvidence = (quoteInput: unknown): boolean =>
+    firstMatchingSourceOrdinal(projectContext.db, revisionId, quoteInput, 'quote') < firstOrdinal;
+
+  const boundary: TemporalBoundary = {
+    db: projectContext.db, revisionId, firstOrdinal, items, precedingSegments,
+    sourceById, latestAcceptedTranslationBySegment, appearedBefore, isPrior, appearsAsEarlierEvidence,
+  };
+  const acceptedExamples = retrieveAcceptedExamples(boundary, rawMemory, exampleBudgetChars);
+  rawMemory.entities = filterVisibleEntities(boundary, rawMemory.entities, exclusionDiagnostics);
+  rawMemory.relationships = filterVisibleRelationships(boundary, rawMemory.relationships, exclusionDiagnostics);
+  rawMemory.characterVoices = filterVisibleCharacterVoices(boundary, rawMemory.characterVoices, exclusionDiagnostics);
+
+  const visibleCharacterIds = new Set(rawMemory.characterVoices.map((profile: any) => profile.characterId));
+  rawMemory.relationshipVoiceRules = (Array.isArray(rawMemory.relationshipVoiceRules) ? rawMemory.relationshipVoiceRules : [])
+    .filter((rule: any) => {
+      const evidenceIds = Array.isArray(rule.evidenceSegmentIds) ? rule.evidenceSegmentIds : [];
+      return evidenceIds.every(isPrior) &&
+        visibleCharacterIds.has(rule.speakerId) && visibleCharacterIds.has(rule.addresseeId) &&
+        rule.status !== 'rejected';
+    })
+    .map((rule: any) => ({
+      ...rule,
+      status: 'confirmed',
+      confirmationSource: rule.confirmationSource || 'model-default',
+      evidenceSegmentIds: (Array.isArray(rule.evidenceSegmentIds) ? rule.evidenceSegmentIds : []).filter(isPrior),
+      addressTerms: (Array.isArray(rule.addressTerms) ? rule.addressTerms : [])
+        .filter((term: unknown) => appearedBefore(term)),
+      // Scene-dependent register changes often summarize a later arc without segment-level quotes.
+      sceneDependentShift: '',
+    }));
+  rawMemory.voiceAnchors = (Array.isArray(rawMemory.voiceAnchors) ? rawMemory.voiceAnchors : []).filter((voiceAnchor: any) => {
+    const source = sourceById.get(String(voiceAnchor?.segmentId || ''));
+    return !!source && source.ordinal < firstOrdinal &&
+      visibleCharacterIds.has(voiceAnchor.speakerId) && sourceQuoteMatches(source.text, voiceAnchor.source) &&
+      sourceNameMatches(source.text, voiceAnchor.source);
+  });
+
+  // These book-level strings lack source-positioned citations. Do not let whole-book analysis
+  // leak a future plot fact through a field labelled "style", "example", or "summary".
+  // Whole-book summaries/examples remain excluded to protect temporal plot boundaries. Style-only
+  // guides are default-adopted; a user can explicitly disable the generated guide.
+  const styleGuideEnabled = rawMemory.styleGuideAutoDisabled !== true &&
+    ['context-graph', 'user-edited', 'user-confirmed'].includes(String(rawMemory.styleGuideOrigin || ''));
+  rawMemory.styleGuide = styleGuideEnabled ? rawMemory.styleGuide : {};
+  rawMemory.styleGuideStatus = styleGuideEnabled ? 'confirmed' : 'candidate';
+  rawMemory.styleGuideConfirmationSource = styleGuideEnabled
+    ? rawMemory.styleGuideConfirmationSource || 'model-default' : undefined;
+  rawMemory.chapterSummaries = [];
+  rawMemory.recentExamples = acceptedExamples.retrievedExamples;
+  rawMemory.openQuestions = [];
+  // The voice-context sanitizer intentionally ignores these counters; TranslationBrief copies
+  // them into its durable diagnostic summary so zero-injection and boundary exclusions are visible.
+  rawMemory.__translationBriefDiagnostics = {
+    ...exclusionDiagnostics,
+    memoryEntityCandidates: initialMemoryCounts.entities,
+    temporallyVisibleMemoryEntities: rawMemory.entities.length,
+    memoryEntityExcludedByBoundary: Math.max(0, initialMemoryCounts.entities - rawMemory.entities.length),
+    memoryRelationshipCandidates: initialMemoryCounts.relationships,
+    temporallyVisibleMemoryRelationships: rawMemory.relationships.length,
+    memoryRelationshipExcludedByBoundary: Math.max(0, initialMemoryCounts.relationships - rawMemory.relationships.length),
+    characterVoiceCandidates: initialMemoryCounts.characterVoices,
+    temporallyVisibleCharacterVoices: rawMemory.characterVoices.length,
+    characterVoicesExcludedByBoundary: Math.max(0, initialMemoryCounts.characterVoices - rawMemory.characterVoices.length),
+    acceptedExampleCandidates: acceptedExamples.scoredExamples.length,
+    acceptedExampleRowsRetrieved: acceptedExamples.acceptedExampleRows.length,
+    acceptedExampleManualCandidates: acceptedExamples.acceptedExampleRows.filter((row) => row.origin === 'manual').length,
+    acceptedExampleSameChapterCandidates: acceptedExamples.acceptedExampleRows.filter((row) => acceptedExamples.currentChapters.has(String(row.chapter || ''))).length,
+    acceptedExampleRecentWindowCandidates: acceptedExamples.acceptedExampleRows.filter((row) => Number(row.ordinal) >= acceptedExamples.recentOrdinalBoundary).length,
+    acceptedExampleCandidateTermCount: acceptedExamples.candidateTerms.length,
+    acceptedExampleSourceTokenCount: acceptedExamples.currentTokens.size,
+    selectedAcceptedExamples: acceptedExamples.retrievedExamples.length,
+    acceptedExamplesInjected: acceptedExamples.retrievedExamples.length,
+    acceptedExamplesExcludedAsPreceding: acceptedExamples.acceptedExamplesExcludedAsPreceding,
+    acceptedExamplesTrimmedByBudget: acceptedExamples.acceptedExamplesTrimmedByBudget,
+    acceptedExampleChars: acceptedExamples.retrievedExampleChars,
+    acceptedExampleBudgetChars: Math.max(0, exampleBudgetChars),
+  };
+  return rawMemory;
+}
+
+/**
+ * 检索可用的历史译例：只从「同一来源版本、已采纳、且早于批次」的记录里挑，
+ * 再按词面重合度、同名实体、同章节、人工采纳与临近程度打分，最后做去重与字数预算裁剪。
+ */
+function retrieveAcceptedExamples(
+  boundary: TemporalBoundary,
+  rawMemory: Record<string, any>,
+  exampleBudgetChars: number,
+): AcceptedExampleRetrieval {
+  const { db, revisionId, firstOrdinal, items, precedingSegments, appearedBefore } = boundary;
+  // Never trust book-level recentExamples: retrieve examples from the accepted translation
+  // ledger, pinned to this source revision and strictly before the current batch.
+  const currentExampleSource = [...precedingSegments, ...items].map((item) => String(item.text || '')).join(' ');
+  const stopWords = new Set([
+    'about','after','again','against','almost','also','among','another','around','because','before','being',
+    'between','could','does','during','each','every','from','have','hers','himself','into','just','more',
+    'most','other','over','same','should','some','such','than','that','their','them','then','there','these',
+    'they','this','those','through','under','very','were','what','when','where','which','while','with','would',
+    'your','you','the','and','for','are','was','were','but','not','you','his','her','she','him','our','out',
+    'who','how','why','can','did','had','has','its','let','may','now','off','once','one','only','own','say',
+    'said','see','too','two','all','any','day','get','got','new','old','way'
+  ]);
+  const sourceTokens = (value: unknown) => new Set(
+    (normalizedSourceText(value).match(/[\p{L}\p{N}]{2,}/gu) || [])
+      .filter((token) => !stopWords.has(token))
+  );
+  const currentTokens = sourceTokens(currentExampleSource);
+  const currentKinds = new Set(items.map((item) => String(item.kind || '')).filter(Boolean));
+  const currentChapters = new Set(items.map((item) => String(item.contextPath || '')).filter(Boolean));
+  const visibleReferenceNames = [
+    ...(Array.isArray(rawMemory.entities) ? rawMemory.entities.flatMap((entity: any) =>
+      [entity?.source, ...(Array.isArray(entity?.aliases) ? entity.aliases : [])]) : []),
+    ...(Array.isArray(rawMemory.characterVoices) ? rawMemory.characterVoices.flatMap((profile: any) =>
+      [profile?.canonicalSourceName, ...(Array.isArray(profile?.aliases) ? profile.aliases : [])]) : []),
+  ].filter((name: unknown) => typeof name === 'string' && appearedBefore(name));
+
+  // Keep retrieval bounded without relying on a fixed "last N examples" window alone:
+  // include recent accepted work, the current chapter, manually accepted examples, and rows
+  // matching a small set of distinctive current-source tokens. Scoring/ranking below remains
+  // authoritative. Query results are pinned to the immutable source revision and accepted row.
+  const currentChapterParams = Array.from(currentChapters);
+  const candidateTerms = Array.from(currentTokens)
+    .filter((token) => token.length >= 3)
+    .sort((a, b) => b.length - a.length || a.localeCompare(b))
+    .slice(0, 12);
+  const candidateClauses = [
+    's.ordinal >= ?',
+    ...(currentChapterParams.length ? ['s.context_path IN (' + currentChapterParams.map(() => '?').join(',') + ')'] : []),
+    "tr.origin = 'manual'",
+    ...candidateTerms.map(() => 'instr(lower(s.text), lower(?)) > 0'),
+  ];
+  const recentOrdinalBoundary = Math.max(0, firstOrdinal - 250);
+  const acceptedExampleRows = db.prepare(
+    'SELECT s.segment_id AS segmentId, s.ordinal, s.text AS source, s.context_path AS chapter, ' +
+      's.kind, tr.translation_text AS target, tr.origin, COALESCE(tr.accepted_at, tr.created_at) AS acceptedAt ' +
+    'FROM translation_results tr JOIN source_segments s ' +
+      'ON s.source_revision_id = tr.source_revision_id AND s.segment_id = tr.segment_id ' +
+    'WHERE tr.source_revision_id = ? AND tr.accepted = 1 AND tr.source_hash = s.source_hash AND s.ordinal < ? ' +
+      'AND tr.rowid = (SELECT latest.rowid FROM translation_results latest ' +
+        'WHERE latest.source_revision_id = s.source_revision_id AND latest.segment_id = s.segment_id ' +
+          'AND latest.accepted = 1 AND latest.source_hash = s.source_hash ' +
+        'ORDER BY COALESCE(latest.accepted_at, latest.created_at) DESC, latest.created_at DESC, latest.rowid DESC LIMIT 1) ' +
+      'AND (' + candidateClauses.join(' OR ') + ') ' +
+    "ORDER BY CASE WHEN tr.origin = 'manual' THEN 0 " +
+      (currentChapterParams.length ? 'WHEN s.context_path IN (' + currentChapterParams.map(() => '?').join(',') + ') THEN 1 ' : '') +
+      'ELSE 2 END, s.ordinal DESC LIMIT 1200'
+  ).all(
+    revisionId, firstOrdinal,
+    recentOrdinalBoundary,
+    ...(currentChapterParams.length ? currentChapterParams : []),
+    ...candidateTerms,
+    ...(currentChapterParams.length ? currentChapterParams : []),
+  ) as Array<{
+    segmentId: string; ordinal: number; source: string; chapter: string; kind: string;
+    target: string; origin: string; acceptedAt: string;
+  }>;
+
+  const scoredExamples = acceptedExampleRows.map((row) => {
+    const tokens = sourceTokens(row.source);
+    const shared = Array.from(tokens).filter((token) => currentTokens.has(token)).length;
+    const overlap = shared / Math.max(1, Math.min(currentTokens.size, 12));
+    const normalizedRowSource = normalizedSourceText(row.source);
+    const normalizedCurrentSource = normalizedSourceText(currentExampleSource);
+    const exactPhrase = normalizedRowSource.length >= 12 &&
+      normalizedCurrentSource.includes(normalizedRowSource) ? 1 : 0;
+    const sharedNamedEntity = visibleReferenceNames.some((name: unknown) =>
+      sourceNameMatches(currentExampleSource, name) && sourceNameMatches(row.source, name)) ? 1 : 0;
+    const sameChapter = currentChapters.has(String(row.chapter || '')) ? 0.8 : 0;
+    const sameKind = currentKinds.has(String(row.kind || '')) ? 0.25 : 0;
+    const manual = row.origin === 'manual' ? 1.2 : 0;
+    const recency = 0.5 / (1 + Math.max(0, firstOrdinal - Number(row.ordinal)) / 40);
+    const score = overlap * 6 + Math.min(shared, 3) * 0.15 + exactPhrase * 2 +
+      sharedNamedEntity * 3.2 + sameChapter + sameKind + manual + recency;
+    return { ...row, score, shared, exactPhrase, sharedNamedEntity, tokens };
+  }).filter((row) => row.shared >= 2 || row.exactPhrase > 0 || row.sharedNamedEntity > 0)
+    .sort((a, b) => b.score - a.score || Number(b.origin === 'manual') - Number(a.origin === 'manual') ||
+      Number(b.ordinal) - Number(a.ordinal));
+
+  // Select a compact, diverse set rather than injecting every historical match. Highly
+  // overlapping examples usually repeat the same evidence and displace useful style variety.
+  const retrievedExamples: Array<{ segmentId: string; source: string; target: string; chapter: string; origin: string }> = [];
+  const selectedExampleTokens: Set<string>[] = [];
+  const selectedPrecedingIds = new Set(precedingSegments.map((segment) => segment.id));
+  let retrievedExampleChars = 0;
+  let acceptedExamplesExcludedAsPreceding = 0;
+  let acceptedExamplesTrimmedByBudget = 0;
+  for (const row of scoredExamples) {
+    const source = String(row.source || '');
+    const target = String(row.target || '');
+    if (!source || !target) continue;
+    if (selectedPrecedingIds.has(String(row.segmentId))) {
+      acceptedExamplesExcludedAsPreceding++;
+      continue;
+    }
+    const tokens = row.tokens as Set<string>;
+    const redundant = selectedExampleTokens.some((selected) => {
+      if (!tokens.size || !selected.size) return false;
+      const intersection = Array.from(tokens).filter((token) => selected.has(token)).length;
+      const union = tokens.size + selected.size - intersection;
+      return intersection / Math.max(1, union) >= 0.85;
+    });
+    if (redundant && row.sharedNamedEntity === 0 && row.exactPhrase === 0) continue;
+    const example = {
+      segmentId: String(row.segmentId), source, target,
+      chapter: String(row.chapter || '').slice(0, 120),
+      origin: ['manual', 'agent', 'imported'].includes(String(row.origin)) ? String(row.origin) : 'imported',
+    };
+    const exampleChars = JSON.stringify(example).length;
+    if (retrievedExamples.length >= MAX_ACCEPTED_EXAMPLES ||
+        retrievedExampleChars + exampleChars + (retrievedExamples.length ? 1 : 2) > Math.max(0, exampleBudgetChars)) {
+      acceptedExamplesTrimmedByBudget++;
+      continue;
+    }
+    retrievedExamples.push(example);
+    retrievedExampleChars += exampleChars;
+    selectedExampleTokens.push(tokens);
+  }
+  rawMemory.recentExamples = retrievedExamples;
+  rawMemory.__translationBriefDiagnostics = {
+    ...(rawMemory.__translationBriefDiagnostics || {}),
+    acceptedExamplesRetrieved: scoredExamples.length,
+    acceptedExamplesInjected: retrievedExamples.length,
+    acceptedExamplesExcludedAsPreceding,
+    acceptedExamplesTrimmedByBudget,
+    acceptedExampleChars: retrievedExampleChars,
+    acceptedExampleBudgetChars: Math.max(0, exampleBudgetChars),
+  };
+
+  return {
+    retrievedExamples, scoredExamples, acceptedExampleRows, currentChapters, currentTokens,
+    candidateTerms, recentOrdinalBoundary, retrievedExampleChars,
+    acceptedExamplesExcludedAsPreceding, acceptedExamplesTrimmedByBudget,
+  };
+}
+
+/**
+ * 过滤实体：名称或别名尚未在批次边界前出现、且证据早于/晚于边界的，一律丢弃。
+ * 用户确认过的人名映射是例外——它在人物管理里是权威条目，只裁掉后文才出现的别名。
+ */
+function filterVisibleEntities(
+  boundary: TemporalBoundary,
+  entities: unknown,
+  exclusionDiagnostics: Record<string, number>,
+): any[] {
+  const { isPrior, appearedBefore, appearsAsEarlierEvidence, items, sourceById, latestAcceptedTranslationBySegment, firstOrdinal } = boundary;
+  return (Array.isArray(entities) ? entities : []).flatMap((entity: any) => {
+    // A durable user rejection must remove the entity from every downstream TranslationBrief
+    // projection, not merely from the visible voiceContext field.
+    if (!entity || entity.reviewStatus === 'rejected') return [];
+    const aliases = Array.isArray(entity?.aliases) ? entity.aliases : [];
+    const evidenceRefs = Array.isArray(entity.evidenceRefs) ? entity.evidenceRefs : [];
+    const userConfirmedMapping = entity?.reviewStatus === 'confirmed' && ['user-confirmed', 'user-modified'].includes(String(entity?.confirmationSource || ''));
+    const confirmedPersonMapping = entity?.kind === 'person' && userConfirmedMapping;
+    // Inferred identities still fail closed when a later-only alias appears. A confirmed person
+    // translation, however, is the canonical entry in 人物管理: keep it when its source name is
+    // already visible, and omit only aliases first revealed in later chapters.
+    if (!confirmedPersonMapping && aliases.some((alias: unknown) =>
+      !appearedBefore(alias) && !items.some((item) => sourceNameMatches(item.text, alias)))) {
+      exclusionDiagnostics.memoryEntityExcludedFutureAlias++;
+      return [];
+    }
+    const explicitCanonicalMapping = userConfirmedMapping;
+    const canonicalSourceVisibleNow = items.some((item) => sourceNameMatches(item.text, entity?.source));
+    const visibleInCurrentBatch = canonicalSourceVisibleNow || items.some((item) =>
+      aliases.some((alias: unknown) => sourceNameMatches(item.text, alias)));
+    if (!entity || (!appearedBefore(entity.source) &&
+        !(explicitCanonicalMapping && (visibleInCurrentBatch)))) {
+      exclusionDiagnostics.memoryEntityExcludedNameNotVisible++;
+      return [];
+    }
+    const priorEvidenceRefs = evidenceRefs.filter((ref: any) => {
+      if (!ref || !isPrior(ref.segmentId)) return false;
+      const source = sourceById.get(ref.segmentId);
+      return !!source && sourceQuoteMatches(source.text, ref.sourceQuote) &&
+        [entity.source, ...aliases].some((name: unknown) => sourceNameMatches(ref.sourceQuote, name));
+    });
+    const rawTargetEvidence = Array.isArray(entity.targetEvidenceRefs) ? entity.targetEvidenceRefs : [];
+    const visibleTargetEvidence = rawTargetEvidence.filter((ref: any) => {
+      if (!ref || !isPrior(ref.segmentId) ||
+          normalizedSourceText(ref.targetSurface) !== normalizedSourceText(entity.target)) return false;
+      const source = sourceById.get(ref.segmentId);
+      if (!source || !sourceQuoteMatches(source.text, ref.sourceQuote) ||
+          ![entity.source, ...aliases].some((name: unknown) => sourceNameMatches(ref.sourceQuote, name))) return false;
+      const latestAcceptedTranslation = latestAcceptedTranslationBySegment.get(String(ref.segmentId));
+      // If this source segment has since been accepted/edited, an older candidate surface must
+      // not keep a corrected target promoted. When no accepted result exists yet, retain the
+      // validated in-run surface as provisional rather than treating it as human-reviewed.
+      if (latestAcceptedTranslation !== undefined &&
+          !normalizedSourceText(latestAcceptedTranslation).includes(normalizedSourceText(ref.targetSurface))) {
+        exclusionDiagnostics.targetEvidenceExcludedAfterAcceptedCorrection++;
+        return false;
+      }
+      return true;
+    });
+    const independentTargetEvidenceCount = new Set(visibleTargetEvidence.map((ref: any) => ref.segmentId)).size;
+    const targetConfidence = independentTargetEvidenceCount >= 2 ? 'corroborated' : 'candidate';
+    // Dynamic candidates retain exact source and target evidence segments; source-name
+    // recognition alone is not enough to make the proposed target a forced canonical mapping.
+    const evidenceVisible = explicitCanonicalMapping || (evidenceRefs.length
+      ? priorEvidenceRefs.length > 0
+      : sourceNameMatches(entity.evidence, entity.source) && appearsAsEarlierEvidence(entity.evidence));
+    if (!evidenceVisible) {
+      const hasFutureEvidence = evidenceRefs.some((ref: any) => {
+        const source = typeof ref?.segmentId === 'string' ? sourceById.get(ref.segmentId) : undefined;
+        return !!source && Number(source.ordinal) >= firstOrdinal;
+      });
+      exclusionDiagnostics.memoryEntityExcludedEvidenceNotVisible++;
+      if (hasFutureEvidence) (exclusionDiagnostics as any).memoryEntityExcludedFutureEvidence =
+        Number((exclusionDiagnostics as any).memoryEntityExcludedFutureEvidence || 0) + 1;
+      return [];
+    }
+    const visibleAliases = aliases.filter((alias: unknown) =>
+      appearedBefore(alias) || items.some((item) => sourceNameMatches(item.text, alias)));
+    return [{
+      ...entity,
+      aliases: visibleAliases,
+      ...(evidenceRefs.length ? { evidenceRefs: priorEvidenceRefs } : {}),
+      targetEvidenceRefs: visibleTargetEvidence,
+      targetConfidence,
+    }];
+  });
+}
+
+/** 过滤关系：两端名称都必须在边界前出现过，证据同样要早于边界。 */
+function filterVisibleRelationships(
+  boundary: TemporalBoundary,
+  relations: unknown,
+  exclusionDiagnostics: Record<string, number>,
+): any[] {
+  const { isPrior, appearedBefore, sourceById } = boundary;
+  return (Array.isArray(relations) ? relations : []).flatMap((relation: any) => {
+    if (!relation || !appearedBefore(relation.subject) || !appearedBefore(relation.object)) {
+      exclusionDiagnostics.memoryRelationshipExcludedNameNotVisible++;
+      return [];
+    }
+    const evidenceRefs = Array.isArray(relation.evidenceRefs) ? relation.evidenceRefs : [];
+    const priorEvidenceRefs = evidenceRefs.filter((ref: any) => {
+      if (!ref || !isPrior(ref.segmentId)) return false;
+      const source = sourceById.get(ref.segmentId);
+      return !!source && sourceQuoteMatches(source.text, ref.sourceQuote) &&
+        sourceNameMatches(ref.sourceQuote, relation.subject) && sourceNameMatches(ref.sourceQuote, relation.object);
+    });
+    // Relationship analysis is default-adopted. Keep only names already visible before this
+    // batch; evidence quality is retained as metadata and never asks the reader to approve it.
+    return [{
+      ...relation,
+      reviewStatus: relation.reviewStatus === 'rejected' ? 'rejected' : 'confirmed',
+      ...(evidenceRefs.length ? { evidenceRefs: priorEvidenceRefs } : {}),
+    }].filter((item: any) => item.reviewStatus !== 'rejected');
+  });
+}
+
+/**
+ * 过滤角色声音：证据被截断、含后文证据、名字或别名尚未出现的画像整体丢弃；
+ * 保留下来的画像只留边界前的证据与对照规则。
+ */
+function filterVisibleCharacterVoices(
+  boundary: TemporalBoundary,
+  profiles: any[],
+  exclusionDiagnostics: Record<string, number>,
+): any[] {
+  const { isPrior, appearedBefore, sourceById, firstOrdinal } = boundary;
+  return (Array.isArray(profiles) ? profiles : []).flatMap((profile: any) => {
+    const rawEvidence = Array.isArray(profile.evidence) ? profile.evidence : [];
+    // Legacy capped profiles may have lost the future-dated rows that contributed to voiceCore.
+    // A truncated aggregate is therefore not safe to partially reuse in an earlier chapter.
+    const evidenceTruncated = profile.evidenceTruncated === true ||
+      (profile.evidencePolicyVersion !== 'character-evidence-v2-complete' && rawEvidence.length >= 8);
+    if (evidenceTruncated) {
+      exclusionDiagnostics.characterVoiceExcludedIncompleteEvidence++;
+      return [];
+    }
+    const hasFutureEvidence = rawEvidence.some((item: any) => {
+      const source = typeof item?.segmentId === 'string' ? sourceById.get(item.segmentId) : undefined;
+      return !!source && Number(source.ordinal) >= firstOrdinal;
+    });
+    if (hasFutureEvidence) {
+      // Aggregate voiceCore may include later dialogue; never leak it into an earlier batch.
+      exclusionDiagnostics.characterVoiceExcludedFutureEvidence++;
+      return [];
+    }
+    // Partial or imperfect evidence lowers traceability, not adoption. Retain valid prior
+    // examples and use the model's current best profile instead of waiting for a click.
+    const usableEvidence = rawEvidence.filter((item: any) => {
+      if (!item || !isPrior(item.segmentId)) return false;
+      const source = sourceById.get(item.segmentId);
+      return !!source && sourceQuoteMatches(source.text, item.sourceQuote);
+    });
+    if (!usableEvidence.length && !profile.voiceCore) {
+      exclusionDiagnostics.characterVoiceExcludedIncompleteEvidence++;
+      return [];
+    }
+    if (!appearedBefore(profile.canonicalSourceName)) {
+      exclusionDiagnostics.characterVoiceExcludedNameNotVisible++;
+      return [];
+    }
+    const aliases = Array.isArray(profile.aliases) ? profile.aliases : [];
+    if (aliases.some((alias: unknown) => !appearedBefore(alias))) {
+      exclusionDiagnostics.characterVoiceExcludedFutureAlias++;
+      return [];
+    }
+    const contrastRules = (Array.isArray(profile.contrastRules) ? profile.contrastRules : []).filter((rule: any) => {
+      const ids = Array.isArray(rule.evidenceSegmentIds) ? rule.evidenceSegmentIds : [];
+      return ids.length > 0 && ids.every(isPrior) && profiles.some((other: any) =>
+        other.characterId === rule.otherCharacterId && appearedBefore(other.canonicalSourceName) &&
+        (Array.isArray(other.aliases) ? other.aliases : []).every((alias: unknown) => appearedBefore(alias)));
+    }).map((rule: any) => ({ ...rule, evidenceSegmentIds: rule.evidenceSegmentIds.filter(isPrior) }));
+    return [{ ...profile, status: profile.status === 'rejected' ? 'rejected' : 'confirmed',
+      confirmationSource: profile.confirmationSource || 'model-default',
+      useForTranslation: profile.status !== 'rejected' && profile.useForTranslation !== false,
+      aliases, evidence: usableEvidence, contrastRules }];
+  });
+}
+

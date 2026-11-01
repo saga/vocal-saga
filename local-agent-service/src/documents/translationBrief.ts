@@ -13,700 +13,16 @@ import { getDocumentProjectStore } from './projectStore.ts';
 import { normalizeDocumentTranslationStrategy } from './documentStrategy.ts';
 import { isWorthCanonicalEntityMapping, normalizeCanonicalEntityKind, validateCanonicalTarget } from './canonicalEntityPolicy.ts';
 
-export const TRANSLATION_BRIEF_POLICY_VERSION = 'translation-brief-v10-bounded-examples';
-// Historical examples are style evidence, not a chapter transcript.
-export const MAX_ACCEPTED_EXAMPLES = 8;
-export const MAX_ACCEPTED_EXAMPLE_CHARS = 4_000;
-// Absolute serialization safety ceiling.
-export const MAX_TRANSLATION_BRIEF_CHARS = 1_000_000;
+import {
+  MAX_ACCEPTED_EXAMPLE_CHARS, MAX_TRANSLATION_BRIEF_CHARS, TRANSLATION_BRIEF_POLICY_VERSION,
+  type BriefSegment, type TranslationBrief,
+} from './briefContract.ts';
+import {
+  firstMatchingSourceOrdinal, isGenericCanonicalSourceName, normalizedSourceText,
+  safeCanonicalSourceAliases, sourceNameMatches, sourceQuoteMatches,
+} from './briefSourceContext.ts';
+import { buildTemporallyVisibleMemory } from './briefTemporalMemory.ts';
 
-export interface BriefSegment {
-  id: string;
-  text: string;
-  contextPath?: string;
-  kind?: string;
-  page?: number | null;
-  level?: number | null;
-  marker?: string | null;
-}
-
-export interface TranslationBrief {
-  version: 1;
-  policyVersion: string;
-  sourceRevisionId: string;
-  promptRevisionId: string;
-  memoryRevisionId: string | null;
-  /** Count of source-ordered context deltas merged for this run-local wave snapshot. */
-  contextDeltaCount: number;
-  sourceSegmentIds: string[];
-  chapterPath: string;
-  glossary: unknown;
-  precedingSegments: Array<{ id: string; text: string; contextPath: string }>;
-  contextGraph: Record<string, any> | null;
-  voiceContext: Record<string, any>;
-  /** Retrieval, temporal-boundary and budget-trimming counters for the trajectory/audit log. */
-  contextDiagnostics: Record<string, unknown>;
-  contextChars: number;
-  contextHash: string;
-}
-
-/**
- * 中文：将任意输入归一化为可比较的源文本：NFKC 归一化、统一引号/破折号、转小写并折叠空白。
- * 用于源文匹配、别名兼容性判断与证据引文校验，避免因标点/大小写差异导致误判。
- */
-function normalizedSourceText(value: unknown): string {
-  return String(value || '').normalize('NFKC')
-    .replace(/[‘’‛]/g, "'")
-    .replace(/[“”„‟]/g, '"')
-    .replace(/[‐‑‒–—−]/g, '-')
-    .toLocaleLowerCase().replace(/\s+/g, ' ').trim();
-}
-
-/**
- * 中文：判断 quote 是否为 source 中的连续子串（归一化后），且引文长度至少 8 个字符。
- * 用于证据引文的可验证性校验，防止短片段/伪造引用通过。
- */
-function sourceQuoteMatches(source: unknown, quote: unknown): boolean {
-  const sourceText = normalizedSourceText(source);
-  const quoteText = normalizedSourceText(quote);
-  return quoteText.length >= 8 && sourceText.includes(quoteText);
-}
-
-const GENERIC_CANONICAL_SOURCE_FORMS = new Set([
-  'lord', 'general', 'sire', 'council', 'regent', 'regents', 'ship',
-  'sir', 'madam', 'madame', 'captain', 'lady', 'samurai',
-]);
-const CANONICAL_ALIAS_STOPWORDS = new Set([
-  'the', 'a', 'an', 'of', 'and', 'or', 'lord', 'general', 'sire', 'sir', 'lady',
-  'madam', 'madame', 'captain', 'master', 'mr', 'mrs', 'ms', 'san', 'sama',
-]);
-
-/**
- * 中文：对规范实体源名做进一步归一化：去掉冠词、所有格后缀与尾部标点，便于别名兼容性比较。
- */
-function normalizedCanonicalSourceName(value: unknown): string {
-  return normalizedSourceText(value).replace(/^(?:the|a|an)\s+/, '')
-    .replace(/(?:['’]s)\b/g, '').replace(/[.!?]+$/g, '').trim();
-}
-
-/**
- * 中文：判断源名是否为通用称谓（如 lord/general/captain），这类名称不应直接作为规范映射注入。
- */
-function isGenericCanonicalSourceName(value: unknown): boolean {
-  return GENERIC_CANONICAL_SOURCE_FORMS.has(normalizedCanonicalSourceName(value));
-}
-
-/**
- * 中文：提取规范源名的身份 token（去除停用词），用于别名兼容性判断。
- */
-function canonicalSourceIdentityTokens(value: string): string[] {
-  return normalizedCanonicalSourceName(value).replace(/['’]s\b/g, '')
-    .match(/[a-z0-9]+/g)?.filter((token) => !CANONICAL_ALIAS_STOPWORDS.has(token)) || [];
-}
-
-/**
- * 中文：判断 alias 是否与 source 在身份上兼容（token 有重叠/前缀关系）；非拉丁文本默认兼容。
- * 防止把属于他人的别名挂到当前实体上。
- */
-function isCompatibleCanonicalSourceAlias(source: string, alias: string): boolean {
-  if (!/^[a-z0-9 ._'’-]+$/iu.test(source) || !/^[a-z0-9 ._'’-]+$/iu.test(alias)) return true;
-  const sourceTokens = canonicalSourceIdentityTokens(source);
-  const aliasTokens = canonicalSourceIdentityTokens(alias);
-  if (!aliasTokens.length) return false;
-  if (!sourceTokens.length) return true;
-  return sourceTokens.some((sourceToken) => aliasTokens.some((aliasToken) =>
-    sourceToken === aliasToken || sourceToken.startsWith(aliasToken) || aliasToken.startsWith(sourceToken)));
-}
-
-/**
- * 中文：从别名输入中过滤掉通用称谓、与源名相同项及不兼容别名，按归一化文本去重。
- */
-function safeCanonicalSourceAliases(source: string, aliasesInput: unknown): string[] {
-  const aliases = (Array.isArray(aliasesInput) ? aliasesInput : [])
-    .filter((alias): alias is string => typeof alias === 'string' && alias.trim().length > 0)
-    .map((alias) => alias.trim())
-    .filter((alias) => !isGenericCanonicalSourceName(alias) &&
-      normalizedSourceText(alias) !== normalizedSourceText(source) &&
-      isCompatibleCanonicalSourceAlias(source, alias));
-  return Array.from(new Map(aliases.map((alias) => [normalizedSourceText(alias), alias])).values());
-}
-
-const firstSourceOccurrenceCache = new Map<string, number>();
-const sourceRowsByRevision = new Map<string, Array<{ ordinal: number; text: string }>>();
-
-/**
- * 中文：按来源版本读取全部 source_segments（ordinal/text），带两版本 LRU 缓存。
- * 来源版本不可变，缓存可避免每个别名都重新扫描 SQLite。
- */
-function sourceRowsForRevision(db: any, revisionId: string): Array<{ ordinal: number; text: string }> {
-  const cached = sourceRowsByRevision.get(revisionId);
-  if (cached) {
-    sourceRowsByRevision.delete(revisionId);
-    sourceRowsByRevision.set(revisionId, cached);
-    return cached;
-  }
-  // Source revisions are immutable. A bounded two-revision LRU avoids rescanning SQLite for
-  // every alias while keeping memory usage bounded when several books are open.
-  const rows = db.prepare(
-    'SELECT ordinal, text FROM source_segments WHERE source_revision_id = ? ORDER BY ordinal'
-  ).all(revisionId) as Array<{ ordinal: number; text: string }>;
-  sourceRowsByRevision.set(revisionId, rows);
-  while (sourceRowsByRevision.size > 2) {
-    const oldest = sourceRowsByRevision.keys().next().value;
-    if (oldest) sourceRowsByRevision.delete(oldest);
-    else break;
-  }
-  return rows;
-}
-
-/**
- * 中文：在指定来源版本中查找 term 首次出现的 ordinal（name 或 quote 匹配）。
- * 结果缓存；用于时间边界判定（某名称/引文是否在当前批次之前已出现）。
- */
-function firstMatchingSourceOrdinal(
-  db: any,
-  revisionId: string,
-  termInput: unknown,
-  kind: 'name' | 'quote',
-): number {
-  const term = String(termInput || '').trim();
-  const normalizedTerm = normalizedSourceText(term);
-  if (!normalizedTerm || (kind === 'quote' && normalizedTerm.length < 8)) return Number.POSITIVE_INFINITY;
-  const cacheKey = revisionId + '\u0000' + kind + '\u0000' + normalizedTerm;
-  const cached = firstSourceOccurrenceCache.get(cacheKey);
-  if (cached !== undefined) return cached;
-  // Do not prefilter using SQLite instr(lower(text), lower(term)): that literal comparison
-  // rejects normalized-equivalent forms such as O’Connor/O'Connor before JS can compare them.
-  const match = sourceRowsForRevision(db, revisionId).find((row) => kind === 'quote'
-    ? sourceQuoteMatches(row.text, term)
-    : sourceNameMatches(row.text, term));
-  const ordinal = match ? Number(match.ordinal) : Number.POSITIVE_INFINITY;
-  firstSourceOccurrenceCache.set(cacheKey, ordinal);
-  while (firstSourceOccurrenceCache.size > 5000) {
-    const oldest = firstSourceOccurrenceCache.keys().next().value;
-    if (oldest) firstSourceOccurrenceCache.delete(oldest);
-    else break;
-  }
-  return ordinal;
-}
-
-/**
- * 中文：判断 name 是否作为完整词/子串出现在 source 中（拉丁名按词边界，非拉丁按子串）。
- */
-function sourceNameMatches(source: unknown, nameInput: unknown): boolean {
-  const sourceText = normalizedSourceText(source);
-  const name = normalizedSourceText(nameInput);
-  if (!sourceText || !name || name.length < 2) return false;
-  if (/^[a-z0-9 ._'’-]+$/i.test(name)) {
-    const haystack = ' ' + sourceText.replace(/[^a-z0-9]+/gi, ' ').trim() + ' ';
-    const needle = name.replace(/[^a-z0-9]+/gi, ' ').trim();
-    return needle.length >= 2 && haystack.includes(' ' + needle + ' ');
-  }
-  return sourceText.includes(name);
-}
-
-/**
- * 中文：文学记忆是全书级快照，但并非所有断言在源文任意位置都可用。
- * 仅保留来源 ordinal 早于当前批次的证据；移除无可靠时间来源的自由文本摘要/译例，避免后文剧透泄漏。
- * English:
- * Literary memory is a book-level snapshot, but not all its claims are available at every point
- * in the source. Only evidence whose source ordinal precedes this batch may survive retrieval.
- * Unscoped free-text summaries/examples are removed because they have no trustworthy temporal
- * provenance and could contain late plot revelations.
- */
-function buildTemporallyVisibleMemory(
-  context: any,
-  items: BriefSegment[],
-  precedingSegments: BriefSegment[],
-  exampleBudgetChars = MAX_ACCEPTED_EXAMPLE_CHARS,
-): Record<string, any> {
-  const projectId = String(context?.project?.projectId || '');
-  const revisionId = String(context?.run?.sourceRevisionId || '');
-  const store = getDocumentProjectStore();
-  const projectContext = store.getProjectContext(projectId);
-  const empty: Record<string, any> = {
-    version: 2, entities: [], relationships: [], styleGuide: {}, styleGuideStatus: 'candidate',
-    chapterSummaries: [], recentExamples: [], characterVoices: [],
-    relationshipVoiceRules: [], voiceAnchors: [], openQuestions: [],
-  };
-  const sourceRevisionExists = !!revisionId && !!projectContext.db.prepare(
-    'SELECT 1 FROM source_revisions WHERE revision_id = ?'
-  ).get(revisionId);
-  // 中文：缺少项目/来源版本/批次时，无法建立时间边界，直接返回空记忆，避免泄漏。
-  if (!projectId || !sourceRevisionExists || !items.length) return empty;
-
-  const rows = projectContext.db.prepare(
-    'SELECT segment_id, ordinal, text, context_path FROM source_segments ' +
-    'WHERE source_revision_id = ? AND segment_id IN (' + items.map(() => '?').join(',') + ') ' +
-    'ORDER BY ordinal'
-  ).all(revisionId, ...items.map((item) => item.id)) as any[];
-  const itemOrdinals = rows.map((row) => Number(row.ordinal)).filter(Number.isFinite);
-  if (!itemOrdinals.length) return empty;
-  const firstOrdinal = Math.min(...itemOrdinals);
-  // 中文：firstOrdinal 是当前批次第一个源段的 ordinal，作为时间边界基准。
-
-  const rawMemory = context?.memory && typeof context.memory === 'object'
-    ? JSON.parse(JSON.stringify(context.memory)) as Record<string, any>
-    : empty;
-  const editorialProfile = rawMemory.chineseEditorialProfile;
-  // 中文：编辑画像仅在来源版本匹配且未被拒绝时启用；机器默认采纳，证据仅作元数据。
-  if (!editorialProfile || editorialProfile.status === 'rejected' ||
-      editorialProfile.sourceRevisionId !== revisionId) {
-    rawMemory.chineseEditorialProfile = null;
-  } else {
-    // Machine-generated editorial profiles are default-adopted. Evidence remains metadata;
-    // it does not create a human approval gate. This profile is style-only, not plot memory.
-    editorialProfile.status = 'confirmed';
-    editorialProfile.confirmationSource = editorialProfile.confirmationSource || 'model-default';
-  }
-  const initialMemoryCounts = {
-    entities: Array.isArray(rawMemory.entities) ? rawMemory.entities.length : 0,
-    relationships: Array.isArray(rawMemory.relationships) ? rawMemory.relationships.length : 0,
-    characterVoices: Array.isArray(rawMemory.characterVoices) ? rawMemory.characterVoices.length : 0,
-  };
-  const exclusionDiagnostics = {
-    memoryEntityExcludedFutureAlias: 0,
-    memoryEntityExcludedNameNotVisible: 0,
-    memoryEntityExcludedEvidenceNotVisible: 0,
-    memoryRelationshipExcludedNameNotVisible: 0,
-    memoryRelationshipExcludedEvidenceNotVisible: 0,
-    characterVoiceExcludedFutureEvidence: 0,
-    characterVoiceExcludedIncompleteEvidence: 0,
-    characterVoiceExcludedNameNotVisible: 0,
-    characterVoiceExcludedFutureAlias: 0,
-    targetEvidenceExcludedAfterAcceptedCorrection: 0,
-  };
-  const referencedIds = new Set<string>();
-  for (const entity of Array.isArray(rawMemory.entities) ? rawMemory.entities : []) {
-    for (const evidence of Array.isArray(entity?.evidenceRefs) ? entity.evidenceRefs : []) {
-      if (typeof evidence?.segmentId === 'string') referencedIds.add(evidence.segmentId);
-    }
-    for (const evidence of Array.isArray(entity?.targetEvidenceRefs) ? entity.targetEvidenceRefs : []) {
-      if (typeof evidence?.segmentId === 'string') referencedIds.add(evidence.segmentId);
-    }
-  }
-  for (const relation of Array.isArray(rawMemory.relationships) ? rawMemory.relationships : []) {
-    for (const evidence of Array.isArray(relation?.evidenceRefs) ? relation.evidenceRefs : []) {
-      if (typeof evidence?.segmentId === 'string') referencedIds.add(evidence.segmentId);
-    }
-  }
-  for (const profile of Array.isArray(rawMemory.characterVoices) ? rawMemory.characterVoices : []) {
-    for (const evidence of Array.isArray(profile.evidence) ? profile.evidence : []) {
-      if (typeof evidence?.segmentId === 'string') referencedIds.add(evidence.segmentId);
-    }
-    for (const rule of Array.isArray(profile.contrastRules) ? profile.contrastRules : []) {
-      for (const id of Array.isArray(rule?.evidenceSegmentIds) ? rule.evidenceSegmentIds : []) {
-        if (typeof id === 'string') referencedIds.add(id);
-      }
-    }
-  }
-  for (const rule of Array.isArray(rawMemory.relationshipVoiceRules) ? rawMemory.relationshipVoiceRules : []) {
-    for (const id of Array.isArray(rule?.evidenceSegmentIds) ? rule.evidenceSegmentIds : []) {
-      if (typeof id === 'string') referencedIds.add(id);
-    }
-  }
-  for (const anchor of Array.isArray(rawMemory.voiceAnchors) ? rawMemory.voiceAnchors : []) {
-    if (typeof anchor?.segmentId === 'string') referencedIds.add(anchor.segmentId);
-  }
-  for (const segment of precedingSegments) referencedIds.add(segment.id);
-
-  const ids = Array.from(referencedIds);
-  const sourceById = new Map<string, { ordinal: number; text: string; contextPath: string }>();
-  for (let offset = 0; offset < ids.length; offset += 400) {
-    const chunk = ids.slice(offset, offset + 400);
-    const refRows = projectContext.db.prepare(
-      'SELECT segment_id, ordinal, text, context_path FROM source_segments ' +
-      'WHERE source_revision_id = ? AND segment_id IN (' + chunk.map(() => '?').join(',') + ')'
-    ).all(revisionId, ...chunk) as any[];
-    for (const row of refRows) sourceById.set(String(row.segment_id), {
-      ordinal: Number(row.ordinal), text: String(row.text || ''), contextPath: String(row.context_path || ''),
-    });
-  }
-  for (const row of rows) sourceById.set(String(row.segment_id), {
-    ordinal: Number(row.ordinal), text: String(row.text || ''), contextPath: String(row.context_path || ''),
-  });
-  const targetEvidenceSegmentIds = Array.from(new Set(
-    (Array.isArray(rawMemory.entities) ? rawMemory.entities : []).flatMap((entity: any) =>
-      (Array.isArray(entity?.targetEvidenceRefs) ? entity.targetEvidenceRefs : [])
-        .map((ref: any) => typeof ref?.segmentId === 'string' ? ref.segmentId : ''))
-      .filter(Boolean)
-  ));
-  const latestAcceptedTranslationBySegment = new Map<string, string>();
-  for (let offset = 0; offset < targetEvidenceSegmentIds.length; offset += 400) {
-    const chunk = targetEvidenceSegmentIds.slice(offset, offset + 400);
-    const acceptedRows = projectContext.db.prepare(
-      'SELECT s.segment_id AS segmentId, tr.translation_text AS translatedText ' +
-      'FROM source_segments s JOIN translation_results tr ' +
-        'ON tr.source_revision_id = s.source_revision_id AND tr.segment_id = s.segment_id ' +
-      'WHERE s.source_revision_id = ? AND s.segment_id IN (' + chunk.map(() => '?').join(',') + ') ' +
-        'AND tr.accepted = 1 AND tr.source_hash = s.source_hash AND tr.rowid = (' +
-          'SELECT latest.rowid FROM translation_results latest ' +
-          'WHERE latest.source_revision_id = s.source_revision_id AND latest.segment_id = s.segment_id ' +
-            'AND latest.accepted = 1 AND latest.source_hash = s.source_hash ' +
-          'ORDER BY COALESCE(latest.accepted_at, latest.created_at) DESC, latest.created_at DESC, latest.rowid DESC LIMIT 1)'
-    ).all(revisionId, ...chunk) as Array<{ segmentId: string; translatedText: string }>;
-    for (const row of acceptedRows) latestAcceptedTranslationBySegment.set(String(row.segmentId), String(row.translatedText || ''));
-  }
-  const isPrior = (id: unknown) => {
-    const source = typeof id === 'string' ? sourceById.get(id) : undefined;
-    return !!source && Number.isFinite(source.ordinal) && source.ordinal < firstOrdinal;
-  };
-  const appearedBefore = (nameInput: unknown): boolean =>
-    firstMatchingSourceOrdinal(projectContext.db, revisionId, nameInput, 'name') < firstOrdinal;
-  const appearsAsEarlierEvidence = (quoteInput: unknown): boolean =>
-    firstMatchingSourceOrdinal(projectContext.db, revisionId, quoteInput, 'quote') < firstOrdinal;
-
-  // Never trust book-level recentExamples: retrieve examples from the accepted translation
-  // ledger, pinned to this source revision and strictly before the current batch.
-  const currentExampleSource = [...precedingSegments, ...items].map((item) => String(item.text || '')).join(' ');
-  const stopWords = new Set([
-    'about','after','again','against','almost','also','among','another','around','because','before','being',
-    'between','could','does','during','each','every','from','have','hers','himself','into','just','more',
-    'most','other','over','same','should','some','such','than','that','their','them','then','there','these',
-    'they','this','those','through','under','very','were','what','when','where','which','while','with','would',
-    'your','you','the','and','for','are','was','were','but','not','you','his','her','she','him','our','out',
-    'who','how','why','can','did','had','has','its','let','may','now','off','once','one','only','own','say',
-    'said','see','too','two','all','any','day','get','got','new','old','way'
-  ]);
-  const sourceTokens = (value: unknown) => new Set(
-    (normalizedSourceText(value).match(/[\p{L}\p{N}]{2,}/gu) || [])
-      .filter((token) => !stopWords.has(token))
-  );
-  const currentTokens = sourceTokens(currentExampleSource);
-  const currentKinds = new Set(items.map((item) => String(item.kind || '')).filter(Boolean));
-  const currentChapters = new Set(items.map((item) => String(item.contextPath || '')).filter(Boolean));
-  const visibleReferenceNames = [
-    ...(Array.isArray(rawMemory.entities) ? rawMemory.entities.flatMap((entity: any) =>
-      [entity?.source, ...(Array.isArray(entity?.aliases) ? entity.aliases : [])]) : []),
-    ...(Array.isArray(rawMemory.characterVoices) ? rawMemory.characterVoices.flatMap((profile: any) =>
-      [profile?.canonicalSourceName, ...(Array.isArray(profile?.aliases) ? profile.aliases : [])]) : []),
-  ].filter((name: unknown) => typeof name === 'string' && appearedBefore(name));
-
-  // Keep retrieval bounded without relying on a fixed "last N examples" window alone:
-  // include recent accepted work, the current chapter, manually accepted examples, and rows
-  // matching a small set of distinctive current-source tokens. Scoring/ranking below remains
-  // authoritative. Query results are pinned to the immutable source revision and accepted row.
-  const currentChapterParams = Array.from(currentChapters);
-  const candidateTerms = Array.from(currentTokens)
-    .filter((token) => token.length >= 3)
-    .sort((a, b) => b.length - a.length || a.localeCompare(b))
-    .slice(0, 12);
-  const candidateClauses = [
-    's.ordinal >= ?',
-    ...(currentChapterParams.length ? ['s.context_path IN (' + currentChapterParams.map(() => '?').join(',') + ')'] : []),
-    "tr.origin = 'manual'",
-    ...candidateTerms.map(() => 'instr(lower(s.text), lower(?)) > 0'),
-  ];
-  const recentOrdinalBoundary = Math.max(0, firstOrdinal - 250);
-  const acceptedExampleRows = projectContext.db.prepare(
-    'SELECT s.segment_id AS segmentId, s.ordinal, s.text AS source, s.context_path AS chapter, ' +
-      's.kind, tr.translation_text AS target, tr.origin, COALESCE(tr.accepted_at, tr.created_at) AS acceptedAt ' +
-    'FROM translation_results tr JOIN source_segments s ' +
-      'ON s.source_revision_id = tr.source_revision_id AND s.segment_id = tr.segment_id ' +
-    'WHERE tr.source_revision_id = ? AND tr.accepted = 1 AND tr.source_hash = s.source_hash AND s.ordinal < ? ' +
-      'AND tr.rowid = (SELECT latest.rowid FROM translation_results latest ' +
-        'WHERE latest.source_revision_id = s.source_revision_id AND latest.segment_id = s.segment_id ' +
-          'AND latest.accepted = 1 AND latest.source_hash = s.source_hash ' +
-        'ORDER BY COALESCE(latest.accepted_at, latest.created_at) DESC, latest.created_at DESC, latest.rowid DESC LIMIT 1) ' +
-      'AND (' + candidateClauses.join(' OR ') + ') ' +
-    "ORDER BY CASE WHEN tr.origin = 'manual' THEN 0 " +
-      (currentChapterParams.length ? 'WHEN s.context_path IN (' + currentChapterParams.map(() => '?').join(',') + ') THEN 1 ' : '') +
-      'ELSE 2 END, s.ordinal DESC LIMIT 1200'
-  ).all(
-    revisionId, firstOrdinal,
-    recentOrdinalBoundary,
-    ...(currentChapterParams.length ? currentChapterParams : []),
-    ...candidateTerms,
-    ...(currentChapterParams.length ? currentChapterParams : []),
-  ) as Array<{
-    segmentId: string; ordinal: number; source: string; chapter: string; kind: string;
-    target: string; origin: string; acceptedAt: string;
-  }>;
-
-  const scoredExamples = acceptedExampleRows.map((row) => {
-    const tokens = sourceTokens(row.source);
-    const shared = Array.from(tokens).filter((token) => currentTokens.has(token)).length;
-    const overlap = shared / Math.max(1, Math.min(currentTokens.size, 12));
-    const normalizedRowSource = normalizedSourceText(row.source);
-    const normalizedCurrentSource = normalizedSourceText(currentExampleSource);
-    const exactPhrase = normalizedRowSource.length >= 12 &&
-      normalizedCurrentSource.includes(normalizedRowSource) ? 1 : 0;
-    const sharedNamedEntity = visibleReferenceNames.some((name: unknown) =>
-      sourceNameMatches(currentExampleSource, name) && sourceNameMatches(row.source, name)) ? 1 : 0;
-    const sameChapter = currentChapters.has(String(row.chapter || '')) ? 0.8 : 0;
-    const sameKind = currentKinds.has(String(row.kind || '')) ? 0.25 : 0;
-    const manual = row.origin === 'manual' ? 1.2 : 0;
-    const recency = 0.5 / (1 + Math.max(0, firstOrdinal - Number(row.ordinal)) / 40);
-    const score = overlap * 6 + Math.min(shared, 3) * 0.15 + exactPhrase * 2 +
-      sharedNamedEntity * 3.2 + sameChapter + sameKind + manual + recency;
-    return { ...row, score, shared, exactPhrase, sharedNamedEntity, tokens };
-  }).filter((row) => row.shared >= 2 || row.exactPhrase > 0 || row.sharedNamedEntity > 0)
-    .sort((a, b) => b.score - a.score || Number(b.origin === 'manual') - Number(a.origin === 'manual') ||
-      Number(b.ordinal) - Number(a.ordinal));
-
-  // Select a compact, diverse set rather than injecting every historical match. Highly
-  // overlapping examples usually repeat the same evidence and displace useful style variety.
-  const retrievedExamples: Array<{ segmentId: string; source: string; target: string; chapter: string; origin: string }> = [];
-  const selectedExampleTokens: Set<string>[] = [];
-  const selectedPrecedingIds = new Set(precedingSegments.map((segment) => segment.id));
-  let retrievedExampleChars = 0;
-  let acceptedExamplesExcludedAsPreceding = 0;
-  let acceptedExamplesTrimmedByBudget = 0;
-  for (const row of scoredExamples) {
-    const source = String(row.source || '');
-    const target = String(row.target || '');
-    if (!source || !target) continue;
-    if (selectedPrecedingIds.has(String(row.segmentId))) {
-      acceptedExamplesExcludedAsPreceding++;
-      continue;
-    }
-    const tokens = row.tokens as Set<string>;
-    const redundant = selectedExampleTokens.some((selected) => {
-      if (!tokens.size || !selected.size) return false;
-      const intersection = Array.from(tokens).filter((token) => selected.has(token)).length;
-      const union = tokens.size + selected.size - intersection;
-      return intersection / Math.max(1, union) >= 0.85;
-    });
-    if (redundant && row.sharedNamedEntity === 0 && row.exactPhrase === 0) continue;
-    const example = {
-      segmentId: String(row.segmentId), source, target,
-      chapter: String(row.chapter || '').slice(0, 120),
-      origin: ['manual', 'agent', 'imported'].includes(String(row.origin)) ? String(row.origin) : 'imported',
-    };
-    const exampleChars = JSON.stringify(example).length;
-    if (retrievedExamples.length >= MAX_ACCEPTED_EXAMPLES ||
-        retrievedExampleChars + exampleChars + (retrievedExamples.length ? 1 : 2) > Math.max(0, exampleBudgetChars)) {
-      acceptedExamplesTrimmedByBudget++;
-      continue;
-    }
-    retrievedExamples.push(example);
-    retrievedExampleChars += exampleChars;
-    selectedExampleTokens.push(tokens);
-  }
-  rawMemory.recentExamples = retrievedExamples;
-  rawMemory.__translationBriefDiagnostics = {
-    ...(rawMemory.__translationBriefDiagnostics || {}),
-    acceptedExamplesRetrieved: scoredExamples.length,
-    acceptedExamplesInjected: retrievedExamples.length,
-    acceptedExamplesExcludedAsPreceding,
-    acceptedExamplesTrimmedByBudget,
-    acceptedExampleChars: retrievedExampleChars,
-    acceptedExampleBudgetChars: Math.max(0, exampleBudgetChars),
-  };
-  rawMemory.entities = (Array.isArray(rawMemory.entities) ? rawMemory.entities : []).flatMap((entity: any) => {
-    // A durable user rejection must remove the entity from every downstream TranslationBrief
-    // projection, not merely from the visible voiceContext field.
-    if (!entity || entity.reviewStatus === 'rejected') return [];
-    const aliases = Array.isArray(entity?.aliases) ? entity.aliases : [];
-    const evidenceRefs = Array.isArray(entity.evidenceRefs) ? entity.evidenceRefs : [];
-    const userConfirmedMapping = entity?.reviewStatus === 'confirmed' && ['user-confirmed', 'user-modified'].includes(String(entity?.confirmationSource || ''));
-    const confirmedPersonMapping = entity?.kind === 'person' && userConfirmedMapping;
-    // Inferred identities still fail closed when a later-only alias appears. A confirmed person
-    // translation, however, is the canonical entry in 人物管理: keep it when its source name is
-    // already visible, and omit only aliases first revealed in later chapters.
-    if (!confirmedPersonMapping && aliases.some((alias: unknown) =>
-      !appearedBefore(alias) && !items.some((item) => sourceNameMatches(item.text, alias)))) {
-      exclusionDiagnostics.memoryEntityExcludedFutureAlias++;
-      return [];
-    }
-    const explicitCanonicalMapping = userConfirmedMapping;
-    const canonicalSourceVisibleNow = items.some((item) => sourceNameMatches(item.text, entity?.source));
-    const visibleInCurrentBatch = canonicalSourceVisibleNow || items.some((item) =>
-      aliases.some((alias: unknown) => sourceNameMatches(item.text, alias)));
-    if (!entity || (!appearedBefore(entity.source) &&
-        !(explicitCanonicalMapping && (visibleInCurrentBatch)))) {
-      exclusionDiagnostics.memoryEntityExcludedNameNotVisible++;
-      return [];
-    }
-    const priorEvidenceRefs = evidenceRefs.filter((ref: any) => {
-      if (!ref || !isPrior(ref.segmentId)) return false;
-      const source = sourceById.get(ref.segmentId);
-      return !!source && sourceQuoteMatches(source.text, ref.sourceQuote) &&
-        [entity.source, ...aliases].some((name: unknown) => sourceNameMatches(ref.sourceQuote, name));
-    });
-    const rawTargetEvidence = Array.isArray(entity.targetEvidenceRefs) ? entity.targetEvidenceRefs : [];
-    const visibleTargetEvidence = rawTargetEvidence.filter((ref: any) => {
-      if (!ref || !isPrior(ref.segmentId) ||
-          normalizedSourceText(ref.targetSurface) !== normalizedSourceText(entity.target)) return false;
-      const source = sourceById.get(ref.segmentId);
-      if (!source || !sourceQuoteMatches(source.text, ref.sourceQuote) ||
-          ![entity.source, ...aliases].some((name: unknown) => sourceNameMatches(ref.sourceQuote, name))) return false;
-      const latestAcceptedTranslation = latestAcceptedTranslationBySegment.get(String(ref.segmentId));
-      // If this source segment has since been accepted/edited, an older candidate surface must
-      // not keep a corrected target promoted. When no accepted result exists yet, retain the
-      // validated in-run surface as provisional rather than treating it as human-reviewed.
-      if (latestAcceptedTranslation !== undefined &&
-          !normalizedSourceText(latestAcceptedTranslation).includes(normalizedSourceText(ref.targetSurface))) {
-        exclusionDiagnostics.targetEvidenceExcludedAfterAcceptedCorrection++;
-        return false;
-      }
-      return true;
-    });
-    const independentTargetEvidenceCount = new Set(visibleTargetEvidence.map((ref: any) => ref.segmentId)).size;
-    const targetConfidence = independentTargetEvidenceCount >= 2 ? 'corroborated' : 'candidate';
-    // Dynamic candidates retain exact source and target evidence segments; source-name
-    // recognition alone is not enough to make the proposed target a forced canonical mapping.
-    const evidenceVisible = explicitCanonicalMapping || (evidenceRefs.length
-      ? priorEvidenceRefs.length > 0
-      : sourceNameMatches(entity.evidence, entity.source) && appearsAsEarlierEvidence(entity.evidence));
-    if (!evidenceVisible) {
-      const hasFutureEvidence = evidenceRefs.some((ref: any) => {
-        const source = typeof ref?.segmentId === 'string' ? sourceById.get(ref.segmentId) : undefined;
-        return !!source && Number(source.ordinal) >= firstOrdinal;
-      });
-      exclusionDiagnostics.memoryEntityExcludedEvidenceNotVisible++;
-      if (hasFutureEvidence) (exclusionDiagnostics as any).memoryEntityExcludedFutureEvidence =
-        Number((exclusionDiagnostics as any).memoryEntityExcludedFutureEvidence || 0) + 1;
-      return [];
-    }
-    const visibleAliases = aliases.filter((alias: unknown) =>
-      appearedBefore(alias) || items.some((item) => sourceNameMatches(item.text, alias)));
-    return [{
-      ...entity,
-      aliases: visibleAliases,
-      ...(evidenceRefs.length ? { evidenceRefs: priorEvidenceRefs } : {}),
-      targetEvidenceRefs: visibleTargetEvidence,
-      targetConfidence,
-    }];
-  });
-  rawMemory.relationships = (Array.isArray(rawMemory.relationships) ? rawMemory.relationships : []).flatMap((relation: any) => {
-    if (!relation || !appearedBefore(relation.subject) || !appearedBefore(relation.object)) {
-      exclusionDiagnostics.memoryRelationshipExcludedNameNotVisible++;
-      return [];
-    }
-    const evidenceRefs = Array.isArray(relation.evidenceRefs) ? relation.evidenceRefs : [];
-    const priorEvidenceRefs = evidenceRefs.filter((ref: any) => {
-      if (!ref || !isPrior(ref.segmentId)) return false;
-      const source = sourceById.get(ref.segmentId);
-      return !!source && sourceQuoteMatches(source.text, ref.sourceQuote) &&
-        sourceNameMatches(ref.sourceQuote, relation.subject) && sourceNameMatches(ref.sourceQuote, relation.object);
-    });
-    // Relationship analysis is default-adopted. Keep only names already visible before this
-    // batch; evidence quality is retained as metadata and never asks the reader to approve it.
-    return [{
-      ...relation,
-      reviewStatus: relation.reviewStatus === 'rejected' ? 'rejected' : 'confirmed',
-      ...(evidenceRefs.length ? { evidenceRefs: priorEvidenceRefs } : {}),
-    }].filter((item: any) => item.reviewStatus !== 'rejected');
-  });
-
-  rawMemory.characterVoices = (Array.isArray(rawMemory.characterVoices) ? rawMemory.characterVoices : []).flatMap((profile: any) => {
-    const rawEvidence = Array.isArray(profile.evidence) ? profile.evidence : [];
-    // Legacy capped profiles may have lost the future-dated rows that contributed to voiceCore.
-    // A truncated aggregate is therefore not safe to partially reuse in an earlier chapter.
-    const evidenceTruncated = profile.evidenceTruncated === true ||
-      (profile.evidencePolicyVersion !== 'character-evidence-v2-complete' && rawEvidence.length >= 8);
-    if (evidenceTruncated) {
-      exclusionDiagnostics.characterVoiceExcludedIncompleteEvidence++;
-      return [];
-    }
-    const hasFutureEvidence = rawEvidence.some((item: any) => {
-      const source = typeof item?.segmentId === 'string' ? sourceById.get(item.segmentId) : undefined;
-      return !!source && Number(source.ordinal) >= firstOrdinal;
-    });
-    if (hasFutureEvidence) {
-      // Aggregate voiceCore may include later dialogue; never leak it into an earlier batch.
-      exclusionDiagnostics.characterVoiceExcludedFutureEvidence++;
-      return [];
-    }
-    // Partial or imperfect evidence lowers traceability, not adoption. Retain valid prior
-    // examples and use the model's current best profile instead of waiting for a click.
-    const usableEvidence = rawEvidence.filter((item: any) => {
-      if (!item || !isPrior(item.segmentId)) return false;
-      const source = sourceById.get(item.segmentId);
-      return !!source && sourceQuoteMatches(source.text, item.sourceQuote);
-    });
-    if (!usableEvidence.length && !profile.voiceCore) {
-      exclusionDiagnostics.characterVoiceExcludedIncompleteEvidence++;
-      return [];
-    }
-    if (!appearedBefore(profile.canonicalSourceName)) {
-      exclusionDiagnostics.characterVoiceExcludedNameNotVisible++;
-      return [];
-    }
-    const aliases = Array.isArray(profile.aliases) ? profile.aliases : [];
-    if (aliases.some((alias: unknown) => !appearedBefore(alias))) {
-      exclusionDiagnostics.characterVoiceExcludedFutureAlias++;
-      return [];
-    }
-    const contrastRules = (Array.isArray(profile.contrastRules) ? profile.contrastRules : []).filter((rule: any) => {
-      const ids = Array.isArray(rule.evidenceSegmentIds) ? rule.evidenceSegmentIds : [];
-      return ids.length > 0 && ids.every(isPrior) && rawMemory.characterVoices.some((other: any) =>
-        other.characterId === rule.otherCharacterId && appearedBefore(other.canonicalSourceName) &&
-        (Array.isArray(other.aliases) ? other.aliases : []).every((alias: unknown) => appearedBefore(alias)));
-    }).map((rule: any) => ({ ...rule, evidenceSegmentIds: rule.evidenceSegmentIds.filter(isPrior) }));
-    return [{ ...profile, status: profile.status === 'rejected' ? 'rejected' : 'confirmed',
-      confirmationSource: profile.confirmationSource || 'model-default',
-      useForTranslation: profile.status !== 'rejected' && profile.useForTranslation !== false,
-      aliases, evidence: usableEvidence, contrastRules }];
-  });
-  const visibleCharacterIds = new Set(rawMemory.characterVoices.map((profile: any) => profile.characterId));
-  rawMemory.relationshipVoiceRules = (Array.isArray(rawMemory.relationshipVoiceRules) ? rawMemory.relationshipVoiceRules : [])
-    .filter((rule: any) => {
-      const evidenceIds = Array.isArray(rule.evidenceSegmentIds) ? rule.evidenceSegmentIds : [];
-      return evidenceIds.every(isPrior) &&
-        visibleCharacterIds.has(rule.speakerId) && visibleCharacterIds.has(rule.addresseeId) &&
-        rule.status !== 'rejected';
-    })
-    .map((rule: any) => ({
-      ...rule,
-      status: 'confirmed',
-      confirmationSource: rule.confirmationSource || 'model-default',
-      evidenceSegmentIds: (Array.isArray(rule.evidenceSegmentIds) ? rule.evidenceSegmentIds : []).filter(isPrior),
-      addressTerms: (Array.isArray(rule.addressTerms) ? rule.addressTerms : [])
-        .filter((term: unknown) => appearedBefore(term)),
-      // Scene-dependent register changes often summarize a later arc without segment-level quotes.
-      sceneDependentShift: '',
-    }));
-  rawMemory.voiceAnchors = (Array.isArray(rawMemory.voiceAnchors) ? rawMemory.voiceAnchors : []).filter((voiceAnchor: any) => {
-    const source = sourceById.get(String(voiceAnchor?.segmentId || ''));
-    return !!source && source.ordinal < firstOrdinal &&
-      visibleCharacterIds.has(voiceAnchor.speakerId) && sourceQuoteMatches(source.text, voiceAnchor.source) &&
-      sourceNameMatches(source.text, voiceAnchor.source);
-  });
-
-  // These book-level strings lack source-positioned citations. Do not let whole-book analysis
-  // leak a future plot fact through a field labelled "style", "example", or "summary".
-  // Whole-book summaries/examples remain excluded to protect temporal plot boundaries. Style-only
-  // guides are default-adopted; a user can explicitly disable the generated guide.
-  const styleGuideEnabled = rawMemory.styleGuideAutoDisabled !== true &&
-    ['context-graph', 'user-edited', 'user-confirmed'].includes(String(rawMemory.styleGuideOrigin || ''));
-  rawMemory.styleGuide = styleGuideEnabled ? rawMemory.styleGuide : {};
-  rawMemory.styleGuideStatus = styleGuideEnabled ? 'confirmed' : 'candidate';
-  rawMemory.styleGuideConfirmationSource = styleGuideEnabled
-    ? rawMemory.styleGuideConfirmationSource || 'model-default' : undefined;
-  rawMemory.chapterSummaries = [];
-  rawMemory.recentExamples = retrievedExamples;
-  rawMemory.openQuestions = [];
-  // The voice-context sanitizer intentionally ignores these counters; TranslationBrief copies
-  // them into its durable diagnostic summary so zero-injection and boundary exclusions are visible.
-  rawMemory.__translationBriefDiagnostics = {
-    ...exclusionDiagnostics,
-    memoryEntityCandidates: initialMemoryCounts.entities,
-    temporallyVisibleMemoryEntities: rawMemory.entities.length,
-    memoryEntityExcludedByBoundary: Math.max(0, initialMemoryCounts.entities - rawMemory.entities.length),
-    memoryRelationshipCandidates: initialMemoryCounts.relationships,
-    temporallyVisibleMemoryRelationships: rawMemory.relationships.length,
-    memoryRelationshipExcludedByBoundary: Math.max(0, initialMemoryCounts.relationships - rawMemory.relationships.length),
-    characterVoiceCandidates: initialMemoryCounts.characterVoices,
-    temporallyVisibleCharacterVoices: rawMemory.characterVoices.length,
-    characterVoicesExcludedByBoundary: Math.max(0, initialMemoryCounts.characterVoices - rawMemory.characterVoices.length),
-    acceptedExampleCandidates: scoredExamples.length,
-    acceptedExampleRowsRetrieved: acceptedExampleRows.length,
-    acceptedExampleManualCandidates: acceptedExampleRows.filter((row) => row.origin === 'manual').length,
-    acceptedExampleSameChapterCandidates: acceptedExampleRows.filter((row) => currentChapters.has(String(row.chapter || ''))).length,
-    acceptedExampleRecentWindowCandidates: acceptedExampleRows.filter((row) => Number(row.ordinal) >= recentOrdinalBoundary).length,
-    acceptedExampleCandidateTermCount: candidateTerms.length,
-    acceptedExampleSourceTokenCount: currentTokens.size,
-    selectedAcceptedExamples: retrievedExamples.length,
-    acceptedExamplesInjected: retrievedExamples.length,
-    acceptedExamplesExcludedAsPreceding,
-    acceptedExamplesTrimmedByBudget,
-    acceptedExampleChars: retrievedExampleChars,
-    acceptedExampleBudgetChars: Math.max(0, exampleBudgetChars),
-  };
-  return rawMemory;
-}
 
 /**
  * 中文：按当前批次的时间边界过滤术语表：仅保留源名在前文或本批次出现的术语；
@@ -795,11 +111,6 @@ function serializedContext(brief: Pick<TranslationBrief,
   });
 }
 
-/**
- * 中文：构造并持久化一个版本固定的 TranslationBrief：
- * 解析项目/来源/Prompt/记忆 revision，按策略裁剪前文，构造时间可见记忆与 Context Graph，
- * 过滤术语表，并计算 contextHash。初译与两个 Reviewer 共用此快照。
- */
 export function buildTranslationBrief(
   context: any,
   items: BriefSegment[],
@@ -814,6 +125,159 @@ export function buildTranslationBrief(
   const selectedPrecedingSegments = strategy.precedingContextSegments > 0
     ? precedingSegments.slice(-strategy.precedingContextSegments)
     : [];
+  const visiblePrecedingSegments = resolveVisiblePrecedingSegments(projectId, sourceRevisionId, selectedPrecedingSegments);
+  // The configured soft budget controls optional historical style examples. Core source context,
+  // glossary entries, visible canonical mappings and evidence-backed voice data are not discarded.
+  const glossary = filterGlossaryForBatch(context, items);
+  const exampleBudgetChars = Math.min(MAX_ACCEPTED_EXAMPLE_CHARS,
+    Math.max(1_000, Math.floor(strategy.contextBudgetChars * 0.25)));
+  const temporalMemory = context?.run?.translationMode === 'literary'
+    ? buildTemporallyVisibleMemory(context, items, visiblePrecedingSegments, exampleBudgetChars)
+    : {};
+  const chapterPaths = Array.from(new Set(items.map((item) => String(item.contextPath || '').trim()).filter(Boolean)));
+  // Book batches should be chapter-scoped. If callers violate that invariant, omitting summaries is safer.
+  const chapterPath = chapterPaths.length === 1 ? chapterPaths[0]! : '';
+  let graph = buildBatchContextGraph(projectId, items, visiblePrecedingSegments, chapterPath,
+    sourceRevisionId, String(context?.run?.targetLang || 'zh'), context?.run?.translationMode === 'literary');
+  const graphRetrievalDiagnostics = mergeMemoryEntitiesIntoMappings(graph, temporalMemory, projectId,
+    sourceRevisionId, items, visiblePrecedingSegments, String(context?.run?.targetLang || 'zh'));
+  const voiceContext = context?.run?.translationMode === 'literary'
+    ? buildProjectVoiceContext(
+        temporalMemory,
+        items.map((item) => ({ id: item.id, text: item.text, contextPath: item.contextPath, kind: item.kind })),
+        chapterPath || undefined,
+        visiblePrecedingSegments.map((item) => ({ id: item.id, text: item.text, contextPath: item.contextPath, kind: item.kind })),
+      ) as Record<string, any>
+    : {};
+  const pinnedMappings = mergePinnedProfileMappings(graph,
+    Array.isArray((context as any)?.memory?.characterVoices) ? (context as any).memory.characterVoices : [],
+    items, visiblePrecedingSegments);
+  applyStyleGuide(graph, temporalMemory);
+  // Graph chapter order is derived from source segment order and therefore is the canonical
+  // boundary. Do not use memory-only summaries when chapter matching could be ambiguous.
+  voiceContext.chapterSummaries = graph && chapterPath ? graph.chapterSummaries : [];
+
+  const { componentDiagnostics, componentLargest } = measureBriefComponents(
+    glossary, visiblePrecedingSegments, graph, voiceContext);
+
+  const brief: TranslationBrief = {
+    version: 1,
+    policyVersion: TRANSLATION_BRIEF_POLICY_VERSION,
+    sourceRevisionId,
+    promptRevisionId,
+    memoryRevisionId,
+    contextDeltaCount: Math.max(0, Number(context?.contextDeltaCount || 0)),
+    sourceSegmentIds: items.map((item) => item.id),
+    chapterPath,
+    glossary,
+    precedingSegments: visiblePrecedingSegments.map((item) => ({
+      id: item.id,
+      text: String(item.text || ''),
+      contextPath: String(item.contextPath || '').slice(0, 160),
+    })),
+    contextGraph: graph,
+    voiceContext,
+    contextDiagnostics: {
+      ...(typeof (temporalMemory as any)?.__translationBriefDiagnostics === 'object'
+        ? (temporalMemory as any).__translationBriefDiagnostics : {}),
+      ...graphRetrievalDiagnostics,
+      characterProfileMappingConflictCount: pinnedMappings.conflictCount,
+      graphMappingCandidatesBeforeBatchFilter: pinnedMappings.candidatesBeforeBatchFilter,
+      graphMappingsExcludedNotMentioned: pinnedMappings.excludedNotMentioned,
+      precedingContextAvailable: precedingSegments.length,
+      precedingContextConfigured: strategy.precedingContextSegments,
+      precedingContextInjected: visiblePrecedingSegments.length,
+      graphNameMappingsBeforeBudget: Array.isArray((graph as any)?.nameMappings) ? (graph as any).nameMappings.length : 0,
+      strongNameMappingsBeforeBudget: Array.isArray((graph as any)?.nameMappings)
+        ? (graph as any).nameMappings.filter((mapping: any) =>
+            ['confirmed', 'confirmed-memory', 'auto', 'run-canonical'].includes(String(mapping.sourceStatus))).length : 0,
+      acceptedExamplesInjected: Array.isArray((voiceContext as any)?.recentExamples) ? (voiceContext as any).recentExamples.length : 0,
+      dialogueParticipantsInjected: Array.isArray((voiceContext as any)?.dialogueParticipants)
+        ? (voiceContext as any).dialogueParticipants.length : 0,
+      contextBudgetChars: strategy.contextBudgetChars,
+      acceptedExampleBudgetChars: exampleBudgetChars,
+      budgetTrimCount: Number((temporalMemory as any)?.__translationBriefDiagnostics?.acceptedExamplesTrimmedByBudget || 0),
+      budgetFallbackUsed: false,
+    },
+    contextChars: 0,
+    contextHash: '',
+  };
+  finalizeBriefDiagnostics(brief, temporalMemory, componentDiagnostics);
+  // contextBudgetChars 是「建议预算」，不是硬约束：上下文证据不因提示词体积被删除。
+  // 但它必须可见——否则用户改了配置、看到日志里写着 18000，却不知道实际发了 18750。
+  const budgetExcess = strategy.contextBudgetChars > 0
+    ? brief.contextChars - strategy.contextBudgetChars : 0;
+  (brief.contextDiagnostics as any).contextBudgetExcessChars = budgetExcess > 0 ? budgetExcess : 0;
+  logInfo('translation-brief', 'assembled · segments=' + brief.sourceSegmentIds.length +
+    ' · chars=' + brief.contextChars +
+    ' · graphMappings=' + (Array.isArray((brief.contextGraph as any)?.nameMappings) ? (brief.contextGraph as any).nameMappings.length : 0) +
+    ' (strong=' + (Array.isArray((brief.contextGraph as any)?.nameMappings) ? (brief.contextGraph as any).nameMappings.filter((m: any) => ['confirmed','confirmed-memory','auto','run-canonical'].includes(String(m.sourceStatus))).length : 0) + ')' +
+    ' · voiceEntities=' + (Array.isArray((brief.voiceContext as any)?.entities) ? (brief.voiceContext as any).entities.length : 0) +
+    ' · voiceCharacters=' + (Array.isArray((brief.voiceContext as any)?.characterVoices) ? (brief.voiceContext as any).characterVoices.length : 0) +
+    ' · preceding=' + brief.precedingSegments.length +
+    ' · componentChars=' + componentLargest +
+    (budgetExcess > 0 ? ' · 超建议预算=' + budgetExcess + '（未裁剪）' : ''));
+  return brief;
+}
+
+export function summarizeTranslationBrief(brief: TranslationBrief): Record<string, unknown> {
+  const graph = brief.contextGraph as any;
+  const voice = brief.voiceContext as any;
+  const count = (value: unknown) => Array.isArray(value) ? value.length : 0;
+  const graphCharacterCount = count(graph?.characters);
+  const graphEntityCount = count(graph?.entities);
+  const graphRelationshipCount = count(graph?.relationships);
+  const voiceCharacterCount = count(voice?.characterVoices);
+  const nameMappingCount = count(graph?.nameMappings);
+  return {
+    policyVersion: brief.policyVersion,
+    contextHash: brief.contextHash,
+    contextChars: brief.contextChars,
+    sourceRevisionId: brief.sourceRevisionId,
+    promptRevisionId: brief.promptRevisionId,
+    memoryRevisionId: brief.memoryRevisionId,
+    sourceSegmentCount: brief.sourceSegmentIds.length,
+    chapterPath: brief.chapterPath || null,
+    precedingSegmentCount: brief.precedingSegments.length,
+    knowledgeBoundaryOrdinal: graph?.knowledgeBoundaryOrdinal ?? null,
+    graphCharacters: graphCharacterCount,
+    graphEntities: graphEntityCount,
+    graphRelationships: graphRelationshipCount,
+    graphChapterSummaries: count(graph?.chapterSummaries),
+    glossaryTerms: count((brief.glossary as any)?.document_terms),
+    voiceEntities: count(voice?.entities),
+    voiceRelationships: count(voice?.relationships),
+    characterVoices: voiceCharacterCount,
+    relationshipVoiceRules: count(voice?.relationshipVoiceRules),
+    voiceAnchors: count(voice?.voiceAnchors),
+    recentExamples: count(voice?.recentExamples),
+    dialogueParticipants: count(voice?.dialogueParticipants),
+    contextDiagnostics: brief.contextDiagnostics || {},
+    // Compatibility fields consumed by the Agent Trajectory UI. Keep them aligned with the
+    // detailed fields above so the UI doesn't silently display zero for populated context.
+    entityCount: graphCharacterCount + graphEntityCount,
+    relationshipCount: graphRelationshipCount,
+    characterVoiceCount: voiceCharacterCount,
+    nameMappingCount,
+  };
+}
+
+// 对外入口仍是 translationBrief：消费方（翻译 Agent、两个 Reviewer、轨迹面板、测试）
+// 不需要知道内部拆成了契约 / 源文引用 / 时间可见记忆三个模块。
+export {
+  MAX_ACCEPTED_EXAMPLES, MAX_ACCEPTED_EXAMPLE_CHARS, MAX_TRANSLATION_BRIEF_CHARS, TRANSLATION_BRIEF_POLICY_VERSION,
+  type BriefSegment, type TranslationBrief,
+} from './briefContract.ts';
+
+/**
+ * 解析真正可用的前文：按策略裁剪后回库补全 kind/contextPath。
+ * 来自其他来源版本的过期 ID 会被丢弃——它不是本次 Run 的合法前文。
+ */
+function resolveVisiblePrecedingSegments(
+  projectId: string,
+  sourceRevisionId: string,
+  selectedPrecedingSegments: BriefSegment[],
+): BriefSegment[] {
   // Resolve predecessor metadata from the immutable run source. Some callers provide only id/text,
   // but dialogue-participant retrieval needs the actual segment kind and must not infer it from prose.
   const visiblePrecedingSegments: BriefSegment[] = [];
@@ -839,27 +303,32 @@ export function buildTranslationBrief(
       });
     }
   }
-  // The configured soft budget controls optional historical style examples. Core source context,
-  // glossary entries, visible canonical mappings and evidence-backed voice data are not discarded.
-  const glossary = filterGlossaryForBatch(context, items);
-  const exampleBudgetChars = Math.min(MAX_ACCEPTED_EXAMPLE_CHARS,
-    Math.max(1_000, Math.floor(strategy.contextBudgetChars * 0.25)));
-  const temporalMemory = context?.run?.translationMode === 'literary'
-    ? buildTemporallyVisibleMemory(context, items, visiblePrecedingSegments, exampleBudgetChars)
-    : {};
-  const chapterPaths = Array.from(new Set(items.map((item) => String(item.contextPath || '').trim()).filter(Boolean)));
-  // Book batches should be chapter-scoped. If callers violate that invariant, omitting summaries is safer.
-  const chapterPath = chapterPaths.length === 1 ? chapterPaths[0]! : '';
-  let graph = context?.run?.translationMode === 'literary'
+  return visiblePrecedingSegments;
+}
+
+/**
+ * 构造本批次的 Context Graph。整本书分析没有可用的图节点时，仍然返回一个空壳图，
+ * 让显式术语表与有证据的记忆能继续合并进来；返回 null 会静默丢掉已确认的译名。
+ */
+function buildBatchContextGraph(
+  projectId: string,
+  items: BriefSegment[],
+  visiblePrecedingSegments: BriefSegment[],
+  chapterPath: string,
+  sourceRevisionId: string,
+  targetLang: string,
+  literary: boolean,
+): Record<string, any> | null {
+  let graph = literary
     ? buildProjectContextGraphBundle(
         projectId,
         items.map((item) => ({ id: item.id, text: item.text, contextPath: item.contextPath })),
         visiblePrecedingSegments.map((item) => ({ id: item.id, text: item.text, contextPath: item.contextPath })),
         sourceRevisionId,
-        String(context?.run?.targetLang || 'zh'),
+        targetLang,
       ) as Record<string, any> | null
     : null;
-  if (context?.run?.translationMode === 'literary' && !graph) {
+  if (literary && !graph) {
     // A book with no eligible Context Graph nodes can still have an explicit user glossary or
     // source-evidenced LiteraryMemory. The previous null result skipped that entire merge path,
     // so confirmed names silently disappeared from the actual translation request.
@@ -876,6 +345,22 @@ export function buildTranslationBrief(
       constraints: ['Only source-visible explicit mappings and evidence-backed memory may be added to this empty graph.'],
     };
   }
+  return graph;
+}
+
+/**
+ * 把时间可见记忆里的实体合并进 Context Graph 的 nameMappings。
+ * 用户确认的映射是权威条目：它覆盖同名候选，且在首次出现时就生效。
+ */
+function mergeMemoryEntitiesIntoMappings(
+  graph: Record<string, any>,
+  temporalMemory: Record<string, any>,
+  projectId: string,
+  sourceRevisionId: string,
+  items: BriefSegment[],
+  visiblePrecedingSegments: BriefSegment[],
+  targetLang: string,
+): Record<string, any> {
   const graphRetrievalDiagnostics = (graph as any)?.retrievalDiagnostics &&
     typeof (graph as any).retrievalDiagnostics === 'object'
     ? { ...(graph as any).retrievalDiagnostics } : {};
@@ -925,7 +410,7 @@ export function buildTranslationBrief(
       const rawAliases = Array.isArray(entity.aliases) ? entity.aliases : [];
       const userConfirmedMapping = entity.reviewStatus === 'confirmed' && entity.confirmationSource === 'user-confirmed';
       const entityKind = normalizeCanonicalEntityKind(entity.kind);
-      if (!source || !target || !validateCanonicalTarget({ source, target, targetLang: String(context?.run?.targetLang || 'zh'), kind: entityKind }).valid) continue;
+      if (!source || !target || !validateCanonicalTarget({ source, target, targetLang: targetLang, kind: entityKind }).valid) continue;
       if (!userConfirmedMapping && !isWorthCanonicalEntityMapping({ source, kind: entityKind, significance: entity.description || entity.evidence, explicitBookSpecificMeaning: entity.bookSpecificMeaning === true })) continue;
       const confirmedPersonMapping = entity.kind === 'person' && userConfirmedMapping;
       // A confirmed person name is a canonical mapping in 人物管理. Activate it only when the
@@ -1013,15 +498,22 @@ export function buildTranslationBrief(
     // Do not apply a count cap here. A later batch-scoped pass, after pinned profiles are
     // merged, removes mappings not mentioned in this batch or its configured preceding context.
   }
-  const voiceContext = context?.run?.translationMode === 'literary'
-    ? buildProjectVoiceContext(
-        temporalMemory,
-        items.map((item) => ({ id: item.id, text: item.text, contextPath: item.contextPath, kind: item.kind })),
-        chapterPath || undefined,
-        visiblePrecedingSegments.map((item) => ({ id: item.id, text: item.text, contextPath: item.contextPath, kind: item.kind })),
-      ) as Record<string, any>
-    : {};
+  return graphRetrievalDiagnostics;
+}
+
+/**
+ * 合并 run 期间固定的角色画像：它们是人物管理里已校验的名字快照。
+ * 与已确认映射冲突时不按数组顺序取胜，而是移除硬映射并把冲突写进 constraints。
+ */
+function mergePinnedProfileMappings(
+  graph: Record<string, any>,
+  pinnedProfiles: Array<Record<string, any>>,
+  items: BriefSegment[],
+  visiblePrecedingSegments: BriefSegment[],
+): { conflictCount: number; candidatesBeforeBatchFilter: number; excludedNotMentioned: number } {
   let characterProfileMappingConflictCount = 0;
+  let graphMappingCandidatesBeforeBatchFilter = 0;
+  let graphMappingsExcludedNotMentioned = 0;
   if (graph) {
     const visibleSourceSegments = [...visiblePrecedingSegments, ...items];
     const isVisibleHere = (name: unknown) => typeof name === 'string' && name.trim() &&
@@ -1029,9 +521,6 @@ export function buildTranslationBrief(
     // Use the run-pinned, Store-validated profile snapshot for canonical names. Voice-context
     // retrieval deliberately requires earlier evidence, so using only its selected profiles would
     // make a confirmed name disappear when its supporting quote belongs to the current batch.
-    const pinnedProfiles = Array.isArray((context as any)?.memory?.characterVoices)
-      ? (context as any).memory.characterVoices as Array<Record<string, any>>
-      : [];
     for (const profile of pinnedProfiles) {
       const source = typeof profile?.canonicalSourceName === 'string' ? profile.canonicalSourceName.trim() : '';
       const target = typeof profile?.targetName === 'string' ? profile.targetName.trim() : '';
@@ -1111,6 +600,17 @@ export function buildTranslationBrief(
       logInfo('translation-brief', 'confirmed character profile mapping conflicts=' + characterProfileMappingConflictCount);
     }
   }
+  return {
+    conflictCount: characterProfileMappingConflictCount,
+    candidatesBeforeBatchFilter: graphMappingCandidatesBeforeBatchFilter,
+    excludedNotMentioned: graphMappingsExcludedNotMentioned,
+  };
+}
+
+/**
+ * 应用文风基线：只补文风、语域、句法，绝不从中推断人物身份或剧情结论。
+ */
+function applyStyleGuide(graph: Record<string, any> | null, temporalMemory: Record<string, any>): void {
   // A completed, version-matched style-only baseline is auto-applied. Its fields must never
   // supply plot facts or identity claims; user-confirmed style memory has priority.
   if (graph) {
@@ -1135,10 +635,17 @@ export function buildTranslationBrief(
     graph.constraints = [...(Array.isArray(graph.constraints) ? graph.constraints : []),
       'styleGuide 只约束文风、句法、语域和词汇选择；绝不可用它推断或补写人物身份、事件、秘密与剧情结论。'];
   }
-  // Graph chapter order is derived from source segment order and therefore is the canonical
-  // boundary. Do not use memory-only summaries when chapter matching could be ambiguous.
-  voiceContext.chapterSummaries = graph && chapterPath ? graph.chapterSummaries : [];
+}
 
+/**
+ * 统计各上下文组件的体积，用于诊断「哪一块撑大了请求」；只输出字数，不导出原文。
+ */
+function measureBriefComponents(
+  glossary: unknown,
+  visiblePrecedingSegments: BriefSegment[],
+  graph: Record<string, any> | null,
+  voiceContext: Record<string, any>,
+): { componentDiagnostics: Record<string, any>; componentLargest: string } {
   // Size attribution is metadata-only: it lets diagnostics identify which retrieved
   // component dominates a prompt without exporting source, translation, or memory text.
   const jsonChars = (value: unknown) => JSON.stringify(value ?? null)?.length || 0;
@@ -1172,49 +679,17 @@ export function buildTranslationBrief(
     ['voiceContext', componentDiagnostics.voiceContext.chars],
   ].sort((a, b) => Number(b[1]) - Number(a[1])).slice(0, 4)
     .map(([key, chars]) => key + ':' + chars).join(',');
+  return { componentDiagnostics, componentLargest };
+}
 
-  const brief: TranslationBrief = {
-    version: 1,
-    policyVersion: TRANSLATION_BRIEF_POLICY_VERSION,
-    sourceRevisionId,
-    promptRevisionId,
-    memoryRevisionId,
-    contextDeltaCount: Math.max(0, Number(context?.contextDeltaCount || 0)),
-    sourceSegmentIds: items.map((item) => item.id),
-    chapterPath,
-    glossary,
-    precedingSegments: visiblePrecedingSegments.map((item) => ({
-      id: item.id,
-      text: String(item.text || ''),
-      contextPath: String(item.contextPath || '').slice(0, 160),
-    })),
-    contextGraph: graph,
-    voiceContext,
-    contextDiagnostics: {
-      ...(typeof (temporalMemory as any)?.__translationBriefDiagnostics === 'object'
-        ? (temporalMemory as any).__translationBriefDiagnostics : {}),
-      ...graphRetrievalDiagnostics,
-      characterProfileMappingConflictCount,
-      graphMappingCandidatesBeforeBatchFilter,
-      graphMappingsExcludedNotMentioned,
-      precedingContextAvailable: precedingSegments.length,
-      precedingContextConfigured: strategy.precedingContextSegments,
-      precedingContextInjected: visiblePrecedingSegments.length,
-      graphNameMappingsBeforeBudget: Array.isArray((graph as any)?.nameMappings) ? (graph as any).nameMappings.length : 0,
-      strongNameMappingsBeforeBudget: Array.isArray((graph as any)?.nameMappings)
-        ? (graph as any).nameMappings.filter((mapping: any) =>
-            ['confirmed', 'confirmed-memory', 'auto', 'run-canonical'].includes(String(mapping.sourceStatus))).length : 0,
-      acceptedExamplesInjected: Array.isArray((voiceContext as any)?.recentExamples) ? (voiceContext as any).recentExamples.length : 0,
-      dialogueParticipantsInjected: Array.isArray((voiceContext as any)?.dialogueParticipants)
-        ? (voiceContext as any).dialogueParticipants.length : 0,
-      contextBudgetChars: strategy.contextBudgetChars,
-      acceptedExampleBudgetChars: exampleBudgetChars,
-      budgetTrimCount: Number((temporalMemory as any)?.__translationBriefDiagnostics?.acceptedExamplesTrimmedByBudget || 0),
-      budgetFallbackUsed: false,
-    },
-    contextChars: 0,
-    contextHash: '',
-  };
+/**
+ * 填充预算相关诊断：全部为 0 是刻意的——检索到的证据不会为了满足建议预算被裁剪。
+ */
+function finalizeBriefDiagnostics(
+  brief: TranslationBrief,
+  temporalMemory: Record<string, any>,
+  componentDiagnostics: Record<string, any>,
+): void {
   // Do not prune retrieved context to satisfy a configured character budget. In particular,
   // never erase glossary terms, voice profiles, accepted examples, preceding dialogue, or confirmed
   // name mappings as an indirect consequence of a prompt-size heuristic. The runtime/provider owns
@@ -1256,61 +731,4 @@ export function buildTranslationBrief(
   diagnostic.contextComponents = componentDiagnostics;
   brief.contextChars = serialized.length;
   brief.contextHash = createHash('sha256').update(serialized, 'utf8').digest('hex');
-  // contextBudgetChars 是「建议预算」，不是硬约束：上下文证据不因提示词体积被删除。
-  // 但它必须可见——否则用户改了配置、看到日志里写着 18000，却不知道实际发了 18750。
-  const budgetExcess = strategy.contextBudgetChars > 0
-    ? brief.contextChars - strategy.contextBudgetChars : 0;
-  (brief.contextDiagnostics as any).contextBudgetExcessChars = budgetExcess > 0 ? budgetExcess : 0;
-  logInfo('translation-brief', 'assembled · segments=' + brief.sourceSegmentIds.length +
-    ' · chars=' + brief.contextChars +
-    ' · graphMappings=' + (Array.isArray((brief.contextGraph as any)?.nameMappings) ? (brief.contextGraph as any).nameMappings.length : 0) +
-    ' (strong=' + (Array.isArray((brief.contextGraph as any)?.nameMappings) ? (brief.contextGraph as any).nameMappings.filter((m: any) => ['confirmed','confirmed-memory','auto','run-canonical'].includes(String(m.sourceStatus))).length : 0) + ')' +
-    ' · voiceEntities=' + (Array.isArray((brief.voiceContext as any)?.entities) ? (brief.voiceContext as any).entities.length : 0) +
-    ' · voiceCharacters=' + (Array.isArray((brief.voiceContext as any)?.characterVoices) ? (brief.voiceContext as any).characterVoices.length : 0) +
-    ' · preceding=' + brief.precedingSegments.length +
-    ' · componentChars=' + componentLargest +
-    (budgetExcess > 0 ? ' · 超建议预算=' + budgetExcess + '（未裁剪）' : ''));
-  return brief;
-}
-
-export function summarizeTranslationBrief(brief: TranslationBrief): Record<string, unknown> {
-  const graph = brief.contextGraph as any;
-  const voice = brief.voiceContext as any;
-  const count = (value: unknown) => Array.isArray(value) ? value.length : 0;
-  const graphCharacterCount = count(graph?.characters);
-  const graphEntityCount = count(graph?.entities);
-  const graphRelationshipCount = count(graph?.relationships);
-  const voiceCharacterCount = count(voice?.characterVoices);
-  const nameMappingCount = count(graph?.nameMappings);
-  return {
-    policyVersion: brief.policyVersion,
-    contextHash: brief.contextHash,
-    contextChars: brief.contextChars,
-    sourceRevisionId: brief.sourceRevisionId,
-    promptRevisionId: brief.promptRevisionId,
-    memoryRevisionId: brief.memoryRevisionId,
-    sourceSegmentCount: brief.sourceSegmentIds.length,
-    chapterPath: brief.chapterPath || null,
-    precedingSegmentCount: brief.precedingSegments.length,
-    knowledgeBoundaryOrdinal: graph?.knowledgeBoundaryOrdinal ?? null,
-    graphCharacters: graphCharacterCount,
-    graphEntities: graphEntityCount,
-    graphRelationships: graphRelationshipCount,
-    graphChapterSummaries: count(graph?.chapterSummaries),
-    glossaryTerms: count((brief.glossary as any)?.document_terms),
-    voiceEntities: count(voice?.entities),
-    voiceRelationships: count(voice?.relationships),
-    characterVoices: voiceCharacterCount,
-    relationshipVoiceRules: count(voice?.relationshipVoiceRules),
-    voiceAnchors: count(voice?.voiceAnchors),
-    recentExamples: count(voice?.recentExamples),
-    dialogueParticipants: count(voice?.dialogueParticipants),
-    contextDiagnostics: brief.contextDiagnostics || {},
-    // Compatibility fields consumed by the Agent Trajectory UI. Keep them aligned with the
-    // detailed fields above so the UI doesn't silently display zero for populated context.
-    entityCount: graphCharacterCount + graphEntityCount,
-    relationshipCount: graphRelationshipCount,
-    characterVoiceCount: voiceCharacterCount,
-    nameMappingCount,
-  };
 }
