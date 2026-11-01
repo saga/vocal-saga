@@ -125,6 +125,34 @@ function hasName(source: string, name: string): boolean {
 }
 
 /**
+ * 校验过程中反复用到的只读输入，与两个会被逐段填充的输出容器。
+ * 拆成五段校验后共用这一份上下文，避免每段各带一串参数。
+ */
+type DeltaValidationContext = {
+  delta: ValidatedTranslationContextDelta;
+  diagnostics: ContextDeltaDiagnostics;
+  segments: Array<{ id: string; text: string; contextPath?: string }>;
+  sourceById: Map<string, string>;
+  translations: Map<string, string>;
+  targetLang: string;
+  idPrefix: string;
+};
+
+/** 单个候选经字段清洗后的形态；null 表示基础证据已经不足，直接判为无效候选。 */
+type ParsedEntityCandidate = {
+  originalLocalId: string;
+  canonicalSource: string;
+  targetProposal: string;
+  aliasesRaw: unknown[];
+  kind: string;
+  evidence: ContextEvidence[];
+  reason: string;
+  bookSpecificMeaning: boolean;
+};
+
+type ExpandedEntity = { source: string; target: string; evidence: ContextEvidence[]; localId: string };
+
+/**
  * 独立校验初译返回的 context_delta，不让无效记忆元数据污染有效译文。
  * 每条声明必须引用当前输入 segments 中的原文 quote；target_surface 还必须能在对应译文中找到。
  * 输出是经过服务端证据校验的模型默认采纳建议；模型不能伪装成用户确认，置信度与证据范围单独记录。
@@ -137,131 +165,195 @@ export function validateTranslationContextDelta(
   knownEntities: unknown[] = [],
   targetLang = 'zh',
 ): { delta: ValidatedTranslationContextDelta; diagnostics: ContextDeltaDiagnostics } {
-  const delta = emptyTranslationContextDelta();
-  const diagnostics: ContextDeltaDiagnostics = {
-    candidateCount: 0,
-    acceptedEntityCandidates: 0, rejectedEntityCandidates: 0,
-    droppedLowValueEntityCandidates: 0, rejectedCompoundEntityCandidates: 0, rejectedTargetQualityCandidates: 0,
-    acceptedEntityMentions: 0, rejectedEntityMentions: 0,
-    acceptedRelationships: 0, rejectedRelationships: 0,
-    acceptedOpenQuestions: 0, rejectedOpenQuestions: 0,
-    acceptedConflicts: 0, rejectedConflicts: 0,
+  const context: DeltaValidationContext = {
+    delta: emptyTranslationContextDelta(),
+    diagnostics: {
+      candidateCount: 0,
+      acceptedEntityCandidates: 0, rejectedEntityCandidates: 0,
+      droppedLowValueEntityCandidates: 0, rejectedCompoundEntityCandidates: 0, rejectedTargetQualityCandidates: 0,
+      acceptedEntityMentions: 0, rejectedEntityMentions: 0,
+      acceptedRelationships: 0, rejectedRelationships: 0,
+      acceptedOpenQuestions: 0, rejectedOpenQuestions: 0,
+      acceptedConflicts: 0, rejectedConflicts: 0,
+    },
+    segments,
+    sourceById: new Map(segments.map((segment) => [segment.id, segment.text])),
+    translations,
+    targetLang,
+    idPrefix,
   };
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { delta, diagnostics };
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { delta: context.delta, diagnostics: context.diagnostics };
+  }
   const value = raw as Record<string, unknown>;
-  const sourceById = new Map(segments.map((segment) => [segment.id, segment.text]));
+
   const candidatesRaw = Array.isArray(value.entity_candidates) ? value.entity_candidates.slice(0, 32) : [];
-  diagnostics.candidateCount = candidatesRaw.length;
+  context.diagnostics.candidateCount = candidatesRaw.length;
+  const localIds = validateEntityCandidates(context, candidatesRaw);
+  validateEntityMentions(context, value.entity_mentions, localIds, collectKnownNames(knownEntities));
+  validateRelationshipDeltas(context, value.relationship_deltas);
+  validateOpenQuestions(context, value.open_questions);
+  validateConflicts(context, value.conflicts);
+  return { delta: context.delta, diagnostics: context.diagnostics };
+}
+
+/**
+ * 实体候选：先做字段与证据的最低门槛，再拆复合名（如「张氏兄弟」拆成多人），
+ * 每个拆出的成员都要单独通过译名质量与「是否值得建映射」两关。
+ * 返回「模型原始 localId → 服务端 localId」映射，供后续 entity_mentions 引用绑定。
+ */
+function validateEntityCandidates(
+  context: DeltaValidationContext,
+  candidatesRaw: unknown[],
+): Map<string, string> {
+  const { delta, diagnostics, segments, sourceById, targetLang, idPrefix } = context;
   const localIds = new Map<string, string>();
   const seenLocalIds = new Set<string>();
+
   for (const candidateRaw of candidatesRaw) {
-    if (!candidateRaw || typeof candidateRaw !== 'object' || Array.isArray(candidateRaw)) {
+    const parsed = parseEntityCandidate(candidateRaw, sourceById);
+    if (!parsed || seenLocalIds.has(parsed.originalLocalId)) {
       diagnostics.rejectedEntityCandidates++;
       continue;
     }
-    const candidate = candidateRaw as Record<string, unknown>;
-    const originalLocalId = text(candidate.local_id ?? candidate.localId, 64);
-    const canonicalSource = text(candidate.canonical_source ?? candidate.canonicalSource, 120);
-    const targetProposal = text(candidate.target_proposal ?? candidate.targetProposal, 120);
-    const aliasesRaw = Array.isArray(candidate.aliases) ? candidate.aliases.slice(0, 12) : [];
-    const kind = normalizeCanonicalEntityKind(candidate.kind);
-    const evidence = sourceEvidence(candidate.evidence, sourceById);
-    const matchingEvidence = evidence.some((entry) => hasName(entry.sourceQuote, canonicalSource));
-    if (!originalLocalId || seenLocalIds.has(originalLocalId) || !canonicalSource || !targetProposal || !evidence.length || !matchingEvidence) {
+    // A compound source name expands into one candidate per part; the parts must pair up with
+    // a same-length target list. Anything else is a malformed mapping rather than a name list.
+    const expansion = expandEntityCandidate(parsed, idPrefix);
+    if (!expansion) {
       diagnostics.rejectedEntityCandidates++;
+      diagnostics.rejectedCompoundEntityCandidates++;
       continue;
     }
+    // The original local ID refers to the whole list and is ambiguous after splitting.
+    // Do not silently bind its entity mentions to the first element; mentions must identify
+    // one split source by canonical name or be rejected by the normal evidence checks.
+    if (expansion.wholeLocalId) localIds.set(parsed.originalLocalId, expansion.wholeLocalId);
+    seenLocalIds.add(parsed.originalLocalId);
 
-    const sourceCompound = splitCompoundCanonicalName(canonicalSource);
-    const targetCompound = splitCompoundCanonicalName(targetProposal);
-    const expanded: Array<{ source: string; target: string; evidence: ContextEvidence[]; localId: string }> = [];
-    if (sourceCompound) {
-      if (!targetCompound || sourceCompound.parts.length !== targetCompound.parts.length) {
-        diagnostics.rejectedEntityCandidates++;
-        diagnostics.rejectedCompoundEntityCandidates++;
-        continue;
-      }
-      if (sourceCompound.parts.length > 12) {
-        diagnostics.rejectedEntityCandidates++;
-        diagnostics.rejectedCompoundEntityCandidates++;
-        continue;
-      }
-      const pairs = sourceCompound.parts.map((sourcePart, index) => ({
-        source: sourcePart,
-        target: targetCompound.parts[index] || '',
-        evidence: evidence.filter((entry) => hasName(entry.sourceQuote, sourcePart)),
-      }));
-      if (pairs.some((pair) => !pair.target || !pair.evidence.length)) {
-        diagnostics.rejectedEntityCandidates++;
-        diagnostics.rejectedCompoundEntityCandidates++;
-        continue;
-      }
-      pairs.forEach((pair, index) => expanded.push({
-        ...pair,
-        localId: (idPrefix + originalLocalId).slice(0, 56) + ':part' + String(index + 1),
-      }));
-      // The original local ID refers to the whole list and is ambiguous after splitting.
-      // Do not silently bind its entity mentions to the first element; mentions must identify
-      // one split source by canonical name or be rejected by the normal evidence checks.
-    } else {
-      // A single source name must never carry a multi-target list.
-      if (targetCompound) {
-        diagnostics.rejectedEntityCandidates++;
-        diagnostics.rejectedCompoundEntityCandidates++;
-        continue;
-      }
-      expanded.push({ source: canonicalSource, target: targetProposal, evidence, localId: (idPrefix + originalLocalId).slice(0, 64) });
-      localIds.set(originalLocalId, (idPrefix + originalLocalId).slice(0, 64));
-    }
-
-    seenLocalIds.add(originalLocalId);
-    for (const item of expanded) {
+    for (const item of expansion.items) {
       if (delta.entityCandidates.length >= 120) {
         diagnostics.rejectedEntityCandidates++;
         continue;
       }
       const targetQuality = validateCanonicalTarget({
-        source: item.source, target: item.target, targetLang, kind,
+        source: item.source, target: item.target, targetLang, kind: parsed.kind,
       });
       if (!targetQuality.valid) {
         diagnostics.rejectedEntityCandidates++;
         diagnostics.rejectedTargetQualityCandidates++;
         continue;
       }
-      if (kind !== 'person' && !isWorthCanonicalEntityMapping({
-        source: item.source, kind,
-        mentions: segments.filter((segment) => hasName(segment.text, item.source)).length,
-        chapterCount: new Set(segments.filter((segment) => hasName(segment.text, item.source))
-          .map((segment: any) => String((segment as any).contextPath || '')).filter(Boolean)).size,
-        significance: text(candidate.reason, 180),
-        explicitBookSpecificMeaning: candidate.book_specific_meaning === true || candidate.bookSpecificMeaning === true,
+      if (parsed.kind !== 'person' && !isWorthCanonicalEntityMapping({
+        source: item.source, kind: parsed.kind,
+        ...countNameOccurrences(segments, item.source),
+        significance: parsed.reason,
+        explicitBookSpecificMeaning: parsed.bookSpecificMeaning,
       })) {
         diagnostics.droppedLowValueEntityCandidates++;
         continue;
       }
-      const aliases = Array.from(new Set(aliasesRaw.map((alias) => text(alias, 80)).filter((alias) =>
+      const aliases = Array.from(new Set(parsed.aliasesRaw.map((alias) => text(alias, 80)).filter((alias) =>
         alias && !splitCompoundCanonicalName(alias) &&
         normalized(alias) !== normalized(item.source) &&
         segments.some((segment) => hasName(segment.text, alias)) &&
         item.evidence.some((entry) => hasName(entry.sourceQuote, alias)
       )))).slice(0, 8);
       const localId = item.localId;
-      if (seenLocalIds.has(localId) && localId !== originalLocalId) {
+      if (seenLocalIds.has(localId) && localId !== parsed.originalLocalId) {
         // Split candidates get stable unique suffixes; protect against malicious duplicated output IDs.
         diagnostics.rejectedEntityCandidates++;
         continue;
       }
       seenLocalIds.add(localId);
       delta.entityCandidates.push({
-        localId, canonicalSource: item.source, aliases, kind,
+        localId, canonicalSource: item.source, aliases, kind: parsed.kind,
         targetProposal: targetQuality.normalizedTarget, evidence: item.evidence,
-        ...(text(candidate.reason, 180) ? { reason: text(candidate.reason, 180) } : {}),
-        ...((candidate.book_specific_meaning === true || candidate.bookSpecificMeaning === true) ? { bookSpecificMeaning: true } : {}),
+        ...(parsed.reason ? { reason: parsed.reason } : {}),
+        ...(parsed.bookSpecificMeaning ? { bookSpecificMeaning: true } : {}),
       });
       diagnostics.acceptedEntityCandidates++;
     }
   }
+  return localIds;
+}
 
+/** 读取候选字段并做首轮门槛：来源名必须在自己的证据引文中出现，否则视为凭空提出。 */
+function parseEntityCandidate(
+  candidateRaw: unknown,
+  sourceById: Map<string, string>,
+): ParsedEntityCandidate | null {
+  if (!candidateRaw || typeof candidateRaw !== 'object' || Array.isArray(candidateRaw)) return null;
+  const candidate = candidateRaw as Record<string, unknown>;
+  const originalLocalId = text(candidate.local_id ?? candidate.localId, 64);
+  const canonicalSource = text(candidate.canonical_source ?? candidate.canonicalSource, 120);
+  const targetProposal = text(candidate.target_proposal ?? candidate.targetProposal, 120);
+  const aliasesRaw = Array.isArray(candidate.aliases) ? candidate.aliases.slice(0, 12) : [];
+  const kind = normalizeCanonicalEntityKind(candidate.kind);
+  const evidence = sourceEvidence(candidate.evidence, sourceById);
+  const matchingEvidence = evidence.some((entry) => hasName(entry.sourceQuote, canonicalSource));
+  if (!originalLocalId || !canonicalSource || !targetProposal || !evidence.length || !matchingEvidence) return null;
+  return {
+    originalLocalId,
+    canonicalSource,
+    targetProposal,
+    aliasesRaw,
+    kind,
+    evidence,
+    reason: text(candidate.reason, 180),
+    bookSpecificMeaning: candidate.book_specific_meaning === true || candidate.bookSpecificMeaning === true,
+  };
+}
+
+/**
+ * 复合名拆分。返回 null 表示这份映射无法安全展开：目标不是等长的列表、成员过多，
+ * 或者某个成员缺少自己的证据——这几种情况都不允许退化成「整体当作一个实体」。
+ */
+function expandEntityCandidate(
+  parsed: ParsedEntityCandidate,
+  idPrefix: string,
+): { items: ExpandedEntity[]; wholeLocalId?: string } | null {
+  const sourceCompound = splitCompoundCanonicalName(parsed.canonicalSource);
+  const targetCompound = splitCompoundCanonicalName(parsed.targetProposal);
+  if (!sourceCompound) {
+    // A single source name must never carry a multi-target list.
+    if (targetCompound) return null;
+    const localId = (idPrefix + parsed.originalLocalId).slice(0, 64);
+    return {
+      items: [{ source: parsed.canonicalSource, target: parsed.targetProposal, evidence: parsed.evidence, localId }],
+      wholeLocalId: localId,
+    };
+  }
+  if (!targetCompound || sourceCompound.parts.length !== targetCompound.parts.length) return null;
+  if (sourceCompound.parts.length > 12) return null;
+  const pairs = sourceCompound.parts.map((sourcePart, index) => ({
+    source: sourcePart,
+    target: targetCompound.parts[index] || '',
+    evidence: parsed.evidence.filter((entry) => hasName(entry.sourceQuote, sourcePart)),
+  }));
+  if (pairs.some((pair) => !pair.target || !pair.evidence.length)) return null;
+  return {
+    items: pairs.map((pair, index) => ({
+      ...pair,
+      localId: (idPrefix + parsed.originalLocalId).slice(0, 56) + ':part' + String(index + 1),
+    })),
+  };
+}
+
+/** 名称在全书出现次数与跨章数：低价值实体（一次性地名、泛称）靠这两个量被筛掉。 */
+function countNameOccurrences(
+  segments: DeltaValidationContext['segments'],
+  name: string,
+): { mentions: number; chapterCount: number } {
+  const hits = segments.filter((segment) => hasName(segment.text, name));
+  return {
+    mentions: hits.length,
+    chapterCount: new Set(hits
+      .map((segment) => String((segment as any).contextPath || '')).filter(Boolean)).size,
+  };
+}
+
+/** 已确认的已知实体名，用来放行「本地候选已存在」的提及引用。 */
+function collectKnownNames(knownEntities: unknown[]): Set<string> {
   const knownNames = new Set<string>();
   for (const entity of knownEntities.slice(0, 160)) {
     if (!entity || typeof entity !== 'object' || Array.isArray(entity)) continue;
@@ -270,9 +362,23 @@ export function validateTranslationContextDelta(
       if (text(name, 120)) knownNames.add(normalized(name));
     }
   }
+  return knownNames;
+}
+
+/**
+ * 实体提及：引用必须指向本批已采纳的候选或已知实体，原文引文与译文落点都要能对上。
+ * 这两处「对不上」正是模型最常见的编造方式，因此缺一即拒。
+ */
+function validateEntityMentions(
+  context: DeltaValidationContext,
+  mentionsRaw: unknown,
+  localIds: Map<string, string>,
+  knownNames: Set<string>,
+): void {
+  const { delta, diagnostics, sourceById, translations } = context;
   const validRefs = new Set(delta.entityCandidates.flatMap((candidate) =>
     [candidate.localId, candidate.canonicalSource, ...candidate.aliases].map(normalized)));
-  for (const mentionRaw of (Array.isArray(value.entity_mentions) ? value.entity_mentions : []).slice(0, 128)) {
+  for (const mentionRaw of (Array.isArray(mentionsRaw) ? mentionsRaw : []).slice(0, 128)) {
     if (!mentionRaw || typeof mentionRaw !== 'object' || Array.isArray(mentionRaw)) {
       diagnostics.rejectedEntityMentions++;
       continue;
@@ -294,9 +400,12 @@ export function validateTranslationContextDelta(
     delta.entityMentions.push({ segmentId, sourceQuote, entityRef, targetSurface });
     diagnostics.acceptedEntityMentions++;
   }
+}
 
-  const relationshipRaw = Array.isArray(value.relationship_deltas) ? value.relationship_deltas.slice(0, 32) : [];
-  for (const relationRaw of relationshipRaw) {
+/** 关系：主客体都必须在同一条证据引文中同时出现，否则只是两条独立提及的拼接。 */
+function validateRelationshipDeltas(context: DeltaValidationContext, relationshipRaw: unknown): void {
+  const { delta, diagnostics, sourceById } = context;
+  for (const relationRaw of (Array.isArray(relationshipRaw) ? relationshipRaw : []).slice(0, 32)) {
     if (!relationRaw || typeof relationRaw !== 'object' || Array.isArray(relationRaw)) {
       diagnostics.rejectedRelationships++;
       continue;
@@ -317,9 +426,12 @@ export function validateTranslationContextDelta(
     delta.relationshipDeltas.push({ subjectSource, predicate, objectSource, evidence });
     diagnostics.acceptedRelationships++;
   }
+}
 
-  const questionsRaw = Array.isArray(value.open_questions) ? value.open_questions.slice(0, 20) : [];
-  for (const questionRaw of questionsRaw) {
+/** 悬念：问题本身不要求证据内容，但必须能指回本批原文，否则无法在后续章节复核。 */
+function validateOpenQuestions(context: DeltaValidationContext, questionsRaw: unknown): void {
+  const { delta, diagnostics, sourceById } = context;
+  for (const questionRaw of (Array.isArray(questionsRaw) ? questionsRaw : []).slice(0, 20)) {
     if (!questionRaw || typeof questionRaw !== 'object' || Array.isArray(questionRaw)) {
       diagnostics.rejectedOpenQuestions++;
       continue;
@@ -334,9 +446,12 @@ export function validateTranslationContextDelta(
     delta.openQuestions.push({ question: cleanQuestion, evidence });
     diagnostics.acceptedOpenQuestions++;
   }
+}
 
-  const conflictsRaw = Array.isArray(value.conflicts) ? value.conflicts.slice(0, 20) : [];
-  for (const conflictRaw of conflictsRaw) {
+/** 冲突：主题与细节都必须给出，且证据要落在本批原文上。 */
+function validateConflicts(context: DeltaValidationContext, conflictsRaw: unknown): void {
+  const { delta, diagnostics, sourceById } = context;
+  for (const conflictRaw of (Array.isArray(conflictsRaw) ? conflictsRaw : []).slice(0, 20)) {
     if (!conflictRaw || typeof conflictRaw !== 'object' || Array.isArray(conflictRaw)) {
       diagnostics.rejectedConflicts++;
       continue;
@@ -352,7 +467,6 @@ export function validateTranslationContextDelta(
     delta.conflicts.push({ topic, details, evidence });
     diagnostics.acceptedConflicts++;
   }
-  return { delta, diagnostics };
 }
 
 /**

@@ -65,6 +65,38 @@ function auditSourceLanguage(db: any, runId?: string): string {
  */
 export function runProjectQualityAudit(projectId: string, runId?: string): Record<string, any> {
   const { store, context, segments } = currentSource(projectId);
+  assertAuditPreconditions(runId, context, segments);
+  const revisionId = context.currentSourceRevisionId;
+
+  const view = buildAuditTranslationView(context, segments, runId);
+  const memory = loadMemory(projectId, runId);
+  const section = collectAuditFindings({
+    projectId, context, segments, translations: view.translations, memory,
+    sourceLang: auditSourceLanguage(context.db, runId), runId,
+  });
+  const chinese = chineseEditorialMetrics(context.db, revisionId, runId);
+  const findings = allAuditFindings(section);
+  const auditId = randomUUID();
+  const report = buildAuditReport({
+    auditId, projectId, runId, segments, section, chinese, findings,
+    revisionId,
+    acceptedTranslationSnapshotHash: view.acceptedTranslationSnapshotHash,
+    effectiveTranslationSnapshotHash: view.effectiveTranslationSnapshotHash,
+    storedSourceIndex: section.storedSourceIndex,
+    editorialProfile: memory.chineseEditorialProfile || null,
+  });
+  store.saveQualityAudit(projectId, report);
+  store.appendEvent(projectId, runId || null, 'quality-audit.completed', {
+    auditId, sourceRevisionId: revisionId, metrics: report.metrics,
+  });
+  return report;
+}
+
+/**
+ * 前置校验：空来源、仍在运行的 Run、以及「指定 runId 必须已结束」这三种情况都拒绝审计。
+ * "partial" 是终结状态而非活跃 worker，它的缺失译文正是审计要看的东西，因此不拦。
+ */
+function assertAuditPreconditions(runId: string | undefined, context: any, segments: any[]): void {
   if (!segments.length) fail('当前来源版本没有可审计的片段。', 409);
   // Each document project owns its own SQLite database, so every row here belongs to this project.
   // "partial" is a terminal status, not an active worker: its missing accepted translations need auditing.
@@ -74,25 +106,42 @@ export function runProjectQualityAudit(projectId: string, runId?: string): Recor
   if (active?.run_id && (!runId || runId === active.run_id)) {
     fail('当前项目仍有运行中的或已暂停的任务，请等待完成或继续运行后再审计；若需检查候选结果，请提供已结束的 runId。', 409);
   }
-  if (runId) {
-    const requestedRun = context.db.prepare('SELECT status FROM translation_runs WHERE run_id = ?').get(runId) as { status?: string } | undefined;
-    if (!requestedRun) fail('找不到质量审计指定的翻译运行：' + runId, 404);
-    if (!['completed', 'awaiting_acceptance'].includes(String(requestedRun.status))) {
-      fail('只有已完成或等待采纳的运行可以作为审计候选来源。', 409);
-    }
+  if (!runId) return;
+  const requestedRun = context.db.prepare('SELECT status FROM translation_runs WHERE run_id = ?').get(runId) as { status?: string } | undefined;
+  if (!requestedRun) fail('找不到质量审计指定的翻译运行：' + runId, 404);
+  if (!['completed', 'awaiting_acceptance'].includes(String(requestedRun.status))) {
+    fail('只有已完成或等待采纳的运行可以作为审计候选来源。', 409);
   }
+}
+
+/**
+ * 译文视图：已采纳译文 + 可选叠加一个已结束 Run 的候选。
+ * 两个快照哈希都保留——返工校验要比对用户当时看到的那一版，而不是叠加后的版本。
+ */
+function buildAuditTranslationView(
+  context: any,
+  segments: any[],
+  runId?: string,
+): { translations: Map<string, string>; acceptedTranslationSnapshotHash: string; effectiveTranslationSnapshotHash: string } {
   const acceptedTranslationMap = acceptedTranslations(context.db, context.currentSourceRevisionId);
   const acceptedTranslationSnapshotHash = translationSnapshotHash(segments, acceptedTranslationMap);
   const translations = new Map(acceptedTranslationMap);
   if (runId) overlayRunCandidates(context.db, context.currentSourceRevisionId, runId, translations);
-  const effectiveTranslationSnapshotHash = translationSnapshotHash(segments, translations);
-  const memory = loadMemory(projectId, runId);
-  const mappingConflictAudit = canonicalNameMappingConflictFindings(segments, memory);
-  const termFindings = terminologyFindings(segments, translations, memory, mappingConflictAudit.conflictedSources);
-  const sourceLang = auditSourceLanguage(context.db, runId);
-  const residueFindings = englishResidueFindings(segments, translations, auditTargetLanguage(context.db, runId), sourceLang);
-  const missing = segments.filter((segment) => !translations.get(segment.id)?.trim()).map((segment) => ({
-    findingId: stableFindingId('missing-translation', [segment.id], context.currentSourceRevisionId),
+  return {
+    translations,
+    acceptedTranslationSnapshotHash,
+    effectiveTranslationSnapshotHash: translationSnapshotHash(segments, translations),
+  };
+}
+
+/** 覆盖检查：没有可用译文的片段。 */
+function missingTranslationFindings(
+  segments: any[],
+  translations: Map<string, string>,
+  revisionId: string,
+): any[] {
+  return segments.filter((segment) => !translations.get(segment.id)?.trim()).map((segment) => ({
+    findingId: stableFindingId('missing-translation', [segment.id], revisionId),
     type: 'missing-translation',
     category: 'coverage',
     severity: 'must-fix',
@@ -102,20 +151,49 @@ export function runProjectQualityAudit(projectId: string, runId?: string): Recor
     sourceExcerpt: segment.text.slice(0, 240),
     explanation: '该来源片段没有当前可用的已采纳译文或本次运行候选译文。',
   }));
-  const numberFindings = numericFindings(segments, translations, sourceLang);
-  ensureSourceFeatureIndex(projectId, context.currentSourceRevisionId, sourceLang);
-  const storedSourceIndex = readSourceFeatureIndex(context.db, context.currentSourceRevisionId, sourceLang);
-  const repeatedFindings = repeatedExpressionFindings(segments, translations, undefined, storedSourceIndex);
+}
+
+/** 九类确定性检查与审校发现。返回分组而不合并，因为指标要按组计数。 */
+function collectAuditFindings(input: {
+  projectId: string;
+  context: any;
+  segments: any[];
+  translations: Map<string, string>;
+  memory: any;
+  sourceLang: string;
+  runId?: string;
+}) {
+  const { projectId, context, segments, translations, memory, sourceLang, runId } = input;
+  const revisionId = context.currentSourceRevisionId;
+  const mappingConflict = canonicalNameMappingConflictFindings(segments, memory);
+  const terminology = terminologyFindings(segments, translations, memory, mappingConflict.conflictedSources);
+  const residue = englishResidueFindings(segments, translations, auditTargetLanguage(context.db, runId), sourceLang);
+  const missing = missingTranslationFindings(segments, translations, revisionId);
+  const numeric = numericFindings(segments, translations, sourceLang);
+
+  // 源文特征索引是重复表达检测的输入；先确保存在，再读取实际使用的那一版。
+  ensureSourceFeatureIndex(projectId, revisionId, sourceLang);
+  const storedSourceIndex = readSourceFeatureIndex(context.db, revisionId, sourceLang);
+  const repeated = repeatedExpressionFindings(segments, translations, undefined, storedSourceIndex);
+
   const presentIds = new Set(segments.map((segment) => segment.id));
-  const outputFindings = translationOutputValidationFindings(context.db, runId, presentIds);
-  const contextFindings = translationContextDeltaFindings(context.db, runId, presentIds, context.currentSourceRevisionId);
+  const output = translationOutputValidationFindings(context.db, runId, presentIds);
+  const contextDelta = translationContextDeltaFindings(context.db, runId, presentIds, revisionId);
   const sourceById = new Map(segments.map((segment) => [segment.id, segment.text]));
-  const mentionFindings = entityMentionDriftFindings(
-    context.db, runId, context.currentSourceRevisionId, sourceById, translations,
+  const mentions = entityMentionDriftFindings(
+    context.db, runId, revisionId, sourceById, translations,
     Array.isArray(memory.entities) ? memory.entities : [],
   );
-  const review = currentReviewFindings(context.db, context.currentSourceRevisionId, runId);
-  const reviewFindings = review.findings.filter((finding) => presentIds.has(finding.segmentId)).map((finding) => ({
+  const review = currentReviewFindings(context.db, revisionId, runId);
+  return {
+    mappingConflict, terminology, residue, missing, numeric, repeated, output, contextDelta, mentions,
+    review, reviewRows: reviewFindingRows(review, presentIds), storedSourceIndex,
+  };
+}
+
+/** 审校发现转成审计 finding：类型由编辑模式与维度共同决定，级别由优先级映射。 */
+function reviewFindingRows(review: any, presentIds: Set<string>): any[] {
+  return review.findings.filter((finding: any) => presentIds.has(finding.segmentId)).map((finding: any) => ({
     findingId: 'review_' + finding.findingId,
     type: finding.editorialMode === 'chinese-monolingual' ? 'chinese-literary-editing'
       : finding.category === 'accuracy'
@@ -141,47 +219,161 @@ export function runProjectQualityAudit(projectId: string, runId?: string): Recor
     suggestion: finding.suggestion,
     proposedTranslation: finding.proposedTranslation,
   }));
-  const chineseEditorial = chineseEditorialStageMetrics(context.db, context.currentSourceRevisionId, runId);
-  const chineseEditorialFindings = chineseEditorialFindingsForRun(
-    context.db, context.currentSourceRevisionId, chineseEditorial.runId,
-  );
-  const chineseEditorialApplied = chineseEditorialFindings.filter((finding) => finding.applicationStatus === 'applied').length;
-  const chineseEditorialAutoApplied = chineseEditorialFindings.filter((finding) =>
+}
+
+/**
+ * 中文单语编辑的统计口径：应用状态与双语验证状态是两个独立维度，
+ * 用户决定率只统计用户真正处理过的（应用 + 拒绝），未处理的不计入分母。
+ */
+function chineseEditorialMetrics(db: any, revisionId: string, runId?: string) {
+  const stage = chineseEditorialStageMetrics(db, revisionId, runId);
+  const findings = chineseEditorialFindingsForRun(db, revisionId, stage.runId);
+  const applied = findings.filter((finding: any) => finding.applicationStatus === 'applied').length;
+  const autoApplied = findings.filter((finding: any) =>
     finding.applicationStatus === 'applied' && finding.applicationMethod === 'automatic-bilingual-verification').length;
-  const chineseEditorialUserApplied = chineseEditorialApplied - chineseEditorialAutoApplied;
-  const chineseEditorialDismissed = chineseEditorialFindings.filter((finding) => finding.applicationStatus === 'dismissed').length;
-  const chineseEditorialPending = chineseEditorialFindings.filter((finding) => !['applied', 'dismissed'].includes(finding.applicationStatus)).length;
-  const chineseEditorialVerified = chineseEditorialFindings.filter((finding) =>
+  const userApplied = applied - autoApplied;
+  const dismissed = findings.filter((finding: any) => finding.applicationStatus === 'dismissed').length;
+  const pending = findings.filter((finding: any) => !['applied', 'dismissed'].includes(finding.applicationStatus)).length;
+  const verified = findings.filter((finding: any) =>
     ['verified', 'corrected'].includes(finding.bilingualReviewStatus)).length;
-  const chineseEditorialCorrected = chineseEditorialFindings.filter((finding) =>
-    finding.bilingualReviewStatus === 'corrected').length;
-  const chineseEditorialBilingualPending = chineseEditorialFindings.filter((finding) =>
+  const corrected = findings.filter((finding: any) => finding.bilingualReviewStatus === 'corrected').length;
+  const bilingualPending = findings.filter((finding: any) =>
     !['verified', 'corrected'].includes(finding.bilingualReviewStatus)).length;
-  const chineseEditorialUserDecided = chineseEditorialUserApplied + chineseEditorialDismissed;
-  const chineseEditorialLatestOverrides = chineseEditorialFindings.filter((finding) => {
+  return {
+    stage, applied, autoApplied, userApplied, dismissed, pending, verified, corrected, bilingualPending,
+    userDecided: userApplied + dismissed,
+    latestOverrides: countManuallyOverriddenAfterApply(db, revisionId, findings),
+  };
+}
+
+/**
+ * 「自动应用后被人工改写」的条数：只有当前采纳的仍是自动应用结果时才算没被覆盖，
+ * 已经变成 manual 且结果 ID 不同，就说明用户最终还是自己改了。
+ */
+function countManuallyOverriddenAfterApply(db: any, revisionId: string, findings: any[]): number {
+  return findings.filter((finding: any) => {
     if (finding.applicationStatus !== 'applied' || !finding.appliedResultId) return false;
-    const latest = context.db.prepare(
+    const latest = db.prepare(
       'SELECT result_id, origin FROM translation_results WHERE source_revision_id = ? AND segment_id = ? AND accepted = 1 ORDER BY rowid DESC LIMIT 1'
-    ).get(context.currentSourceRevisionId, finding.segmentId) as { result_id?: string; origin?: string } | undefined;
+    ).get(revisionId, finding.segmentId) as { result_id?: string; origin?: string } | undefined;
     return !!latest && latest.result_id !== finding.appliedResultId && latest.origin === 'manual';
   }).length;
-  const editorialProfile = memory.chineseEditorialProfile || null;
-  const findings = [
-    ...missing, ...mappingConflictAudit.findings, ...termFindings, ...residueFindings,
-    ...numberFindings, ...repeatedFindings, ...outputFindings, ...contextFindings, ...mentionFindings, ...reviewFindings,
-  ];
-  const auditId = randomUUID();
+}
+
+function ratePer100Segments(count: number, total: number): number {
+  return total ? Math.round(count / total * 1000) / 10 : 0;
+}
+
+/** 指标汇总：所有比率都按片段总数归一，未翻译片段也算分母，避免小样本虚高。 */
+function buildAuditMetrics(input: {
+  segments: any[];
+  section: ReturnType<typeof collectAuditFindings>;
+  chinese: ReturnType<typeof chineseEditorialMetrics>;
+  findings: any[];
+  editorialProfile: any;
+}): Record<string, any> {
+  const { segments, section, chinese, findings, editorialProfile } = input;
+  const { missing, terminology, mappingConflict, residue, numeric, output, repeated, contextDelta, mentions, reviewRows } = section;
   const translatedCount = segments.length - missing.length;
-  const ratePer100 = (count: number) => segments.length ? Math.round(count / segments.length * 1000) / 10 : 0;
-  const report = {
+  const rate = (count: number) => ratePer100Segments(count, segments.length);
+  const repeatedDrift = repeated.filter((item) => item.type === 'repeated-expression-drift').length;
+  const styleFindings = reviewRows.filter((item) => item.category === 'style').length;
+  const characterVoiceFindings = reviewRows.filter((item) => item.type === 'character-voice-review').length;
+  return {
+    sourceSegmentCount: segments.length,
+    translatedSegmentCount: translatedCount,
+    missingTranslationCount: missing.length,
+    missingTranslationRatePer100Segments: rate(missing.length),
+    coveragePercent: segments.length ? Math.round(translatedCount / segments.length * 1000) / 10 : 100,
+    terminologyDriftCount: terminology.length,
+    terminologyDriftRatePer100Segments: rate(terminology.length),
+    canonicalNameMappingConflictCount: mappingConflict.findings.length,
+    englishResidueCount: residue.length,
+    englishResidueRatePer100Segments: rate(residue.length),
+    numericTokenMismatchCount: numeric.length,
+    numericTokenMismatchRatePer100Segments: rate(numeric.length),
+    duplicateOutputIdFindingCount: output.filter((item: any) => item.type === 'duplicate-output-id').length,
+    malformedOutputFindingCount: output.filter((item: any) => item.type === 'malformed-output-row').length,
+    unexpectedOutputIdFindingCount: output.filter((item: any) => item.type === 'unexpected-output-id').length,
+    repeatedExpressionDriftGroups: repeatedDrift,
+    contextDeltaConflictCount: contextDelta.length,
+    entityMentionDriftCount: mentions.length,
+    repeatedExpressionAlignmentReviewCount: repeated.filter((item) => item.type === 'repeated-expression-alignment-review').length,
+    repeatedExpressionDriftRatePer100Segments: rate(repeatedDrift),
+    accuracyReviewFindingCount: reviewRows.filter((item) => item.category === 'accuracy').length,
+    reviewerTerminologyFindingCount: reviewRows.filter((item) => item.category === 'terminology').length,
+    styleReviewFindingCount: styleFindings,
+    styleFindingRatePer100Segments: rate(styleFindings),
+    characterVoiceFindingCount: characterVoiceFindings,
+    characterVoiceFindingRatePer100Segments: rate(characterVoiceFindings),
+    chineseEditorial: {
+      runId: chinese.stage.runId,
+      reviewedSegmentCount: chinese.stage.reviewedCount,
+      editedSegmentCount: chinese.stage.editedCount,
+      unchangedSegmentCount: chinese.stage.unchangedCount,
+      uncoveredSegmentCount: chinese.stage.uncoveredCount,
+      editRatePercent: chinese.stage.reviewedCount
+        ? Math.round(chinese.stage.editedCount / chinese.stage.reviewedCount * 1000) / 10 : null,
+      unchangedRatePercent: chinese.stage.reviewedCount
+        ? Math.round(chinese.stage.unchangedCount / chinese.stage.reviewedCount * 1000) / 10 : null,
+      findingCount: chinese.stage.findingCount,
+      bilingualVerifiedFindingCount: chinese.verified,
+      bilingualCorrectedFindingCount: chinese.corrected,
+      bilingualPendingFindingCount: chinese.bilingualPending,
+      automaticallyAppliedFindingCount: chinese.autoApplied,
+      userAppliedFindingCount: chinese.userApplied,
+      userDismissedFindingCount: chinese.dismissed,
+      pendingUserDecisionFindingCount: chinese.pending,
+      userDecisionAcceptanceRatePercent: chinese.userDecided
+        ? Math.round(chinese.userApplied / chinese.userDecided * 1000) / 10 : null,
+      manuallyOverriddenAfterApplyCount: chinese.latestOverrides,
+    },
+    chineseEditorialProfile: editorialProfile ? {
+      status: editorialProfile.status,
+      sourceRevisionId: editorialProfile.sourceRevisionId,
+      analysisVersion: editorialProfile.analysisVersion,
+      sampleFingerprint: editorialProfile.sampleFingerprint,
+      sampleCount: editorialProfile.sampleCount,
+      chapterCount: editorialProfile.chapterCount,
+      evidenceCount: Array.isArray(editorialProfile.evidenceRefs) ? editorialProfile.evidenceRefs.length : 0,
+    } : { status: 'not-generated' },
+    repairableFindingCount: findings.filter((item) => item.repairable).length,
+  };
+}
+
+function allAuditFindings(section: ReturnType<typeof collectAuditFindings>): any[] {
+  return [
+    ...section.missing, ...section.mappingConflict.findings, ...section.terminology, ...section.residue,
+    ...section.numeric, ...section.repeated, ...section.output, ...section.contextDelta,
+    ...section.mentions, ...section.reviewRows,
+  ];
+}
+
+/** 报告装配：分析上限与解释文案是契约的一部分，改检查口径时必须同步改这里。 */
+function buildAuditReport(input: {
+  auditId: string;
+  projectId: string;
+  runId?: string;
+  revisionId: string;
+  segments: any[];
+  section: ReturnType<typeof collectAuditFindings>;
+  chinese: ReturnType<typeof chineseEditorialMetrics>;
+  findings: any[];
+  acceptedTranslationSnapshotHash: string;
+  effectiveTranslationSnapshotHash: string;
+  storedSourceIndex: any;
+  editorialProfile: any;
+}): Record<string, any> {
+  const { auditId, projectId, runId, revisionId, segments, section, findings, storedSourceIndex } = input;
+  return {
     auditId,
     projectId,
-    sourceRevisionId: context.currentSourceRevisionId,
+    sourceRevisionId: revisionId,
     runId: runId || null,
     // Aggregate hashes keep stale-repair protection bounded even for very long books.
-    translationSnapshotHash: effectiveTranslationSnapshotHash,
-    acceptedTranslationSnapshotHash,
-    reviewRunId: review.reviewRunId,
+    translationSnapshotHash: input.effectiveTranslationSnapshotHash,
+    acceptedTranslationSnapshotHash: input.acceptedTranslationSnapshotHash,
+    reviewRunId: section.review.reviewRunId,
     createdAt: new Date().toISOString(),
     analysisLimits: {
       repeatedExpressionGroupsAnalyzed: MAX_REPEATED_EXPRESSION_GROUPS,
@@ -192,84 +384,28 @@ export function runProjectQualityAudit(projectId: string, runId?: string): Recor
       maximumSegmentsForFindingLevelRepair: MAX_BULK_REPAIR_SEGMENTS,
       note: '全书原文参与确定性扫描；为控制报告规模，重复表达最多分析前 300 个高频候选组，单组最多列出 500 个位置。更大范围必须显式选 segmentIds 返工。',
     },
-    metrics: {
-      sourceSegmentCount: segments.length,
-      translatedSegmentCount: translatedCount,
-      missingTranslationCount: missing.length,
-      missingTranslationRatePer100Segments: ratePer100(missing.length),
-      coveragePercent: segments.length ? Math.round(translatedCount / segments.length * 1000) / 10 : 100,
-      terminologyDriftCount: termFindings.length,
-      terminologyDriftRatePer100Segments: ratePer100(termFindings.length),
-      canonicalNameMappingConflictCount: mappingConflictAudit.findings.length,
-      englishResidueCount: residueFindings.length,
-      englishResidueRatePer100Segments: ratePer100(residueFindings.length),
-      numericTokenMismatchCount: numberFindings.length,
-      numericTokenMismatchRatePer100Segments: ratePer100(numberFindings.length),
-      duplicateOutputIdFindingCount: outputFindings.filter((item) => item.type === 'duplicate-output-id').length,
-      malformedOutputFindingCount: outputFindings.filter((item) => item.type === 'malformed-output-row').length,
-      unexpectedOutputIdFindingCount: outputFindings.filter((item) => item.type === 'unexpected-output-id').length,
-      repeatedExpressionDriftGroups: repeatedFindings.filter((item) => item.type === 'repeated-expression-drift').length,
-      contextDeltaConflictCount: contextFindings.length,
-      entityMentionDriftCount: mentionFindings.length,
-      repeatedExpressionAlignmentReviewCount: repeatedFindings.filter((item) => item.type === 'repeated-expression-alignment-review').length,
-      repeatedExpressionDriftRatePer100Segments: ratePer100(repeatedFindings.filter((item) => item.type === 'repeated-expression-drift').length),
-      accuracyReviewFindingCount: reviewFindings.filter((item) => item.category === 'accuracy').length,
-      reviewerTerminologyFindingCount: reviewFindings.filter((item) => item.category === 'terminology').length,
-      styleReviewFindingCount: reviewFindings.filter((item) => item.category === 'style').length,
-      styleFindingRatePer100Segments: ratePer100(reviewFindings.filter((item) => item.category === 'style').length),
-      characterVoiceFindingCount: reviewFindings.filter((item) => item.type === 'character-voice-review').length,
-      characterVoiceFindingRatePer100Segments: ratePer100(reviewFindings.filter((item) => item.type === 'character-voice-review').length),
-      chineseEditorial: {
-        runId: chineseEditorial.runId,
-        reviewedSegmentCount: chineseEditorial.reviewedCount,
-        editedSegmentCount: chineseEditorial.editedCount,
-        unchangedSegmentCount: chineseEditorial.unchangedCount,
-        uncoveredSegmentCount: chineseEditorial.uncoveredCount,
-        editRatePercent: chineseEditorial.reviewedCount
-          ? Math.round(chineseEditorial.editedCount / chineseEditorial.reviewedCount * 1000) / 10 : null,
-        unchangedRatePercent: chineseEditorial.reviewedCount
-          ? Math.round(chineseEditorial.unchangedCount / chineseEditorial.reviewedCount * 1000) / 10 : null,
-        findingCount: chineseEditorial.findingCount,
-        bilingualVerifiedFindingCount: chineseEditorialVerified,
-        bilingualCorrectedFindingCount: chineseEditorialCorrected,
-        bilingualPendingFindingCount: chineseEditorialBilingualPending,
-        automaticallyAppliedFindingCount: chineseEditorialAutoApplied,
-        userAppliedFindingCount: chineseEditorialUserApplied,
-        userDismissedFindingCount: chineseEditorialDismissed,
-        pendingUserDecisionFindingCount: chineseEditorialPending,
-        userDecisionAcceptanceRatePercent: chineseEditorialUserDecided
-          ? Math.round(chineseEditorialUserApplied / chineseEditorialUserDecided * 1000) / 10 : null,
-        manuallyOverriddenAfterApplyCount: chineseEditorialLatestOverrides,
-      },
-      chineseEditorialProfile: editorialProfile ? {
-        status: editorialProfile.status,
-        sourceRevisionId: editorialProfile.sourceRevisionId,
-        analysisVersion: editorialProfile.analysisVersion,
-        sampleFingerprint: editorialProfile.sampleFingerprint,
-        sampleCount: editorialProfile.sampleCount,
-        chapterCount: editorialProfile.chapterCount,
-        evidenceCount: Array.isArray(editorialProfile.evidenceRefs) ? editorialProfile.evidenceRefs.length : 0,
-      } : { status: 'not-generated' },
-      repairableFindingCount: findings.filter((item) => item.repairable).length,
-    },
-    interpretation: [
-      '遗漏检查为确定性检查。',
-      '术语漂移是基于已确认规范译名的启发式提示；未出现规范译名不一定代表错误。',
-      '人物规范译名冲突会单独报告，不会在多个已确认译名之间自动选一个。',
-      '英文残留检测只提供启发式复核提示；专名或刻意保留的外语也可能命中。',
-      '数字序列差异是启发式提示，需考虑中文数字、日期格式和上下文后人工确认。',
-      '重复表达只对重复源文片段的译文差异提示复核，不自动统一。',
-      '重复输出 ID、未知输出 ID 和结构不合法的模型响应只从运行事件报告，不接受这些异常行。',
-      '同一实体的候选译名冲突来自初译 context_delta 的来源证据，仅作为人工复核项；不会自动统一译名或自动返工。',
-      '准确性/遗漏、术语、人物声线与文风提示来自已有 Reviewer 发现；若没有运行相应审校，报告不能证明该类问题不存在。',
-      '中文单语编辑只有经过双语忠实度 Reviewer 完整验证后才会自动应用；其它可选文风建议仍需用户自行决定。',
-      '自动应用、用户主动应用和用户拒绝分别计数；最终采纳事务不会覆盖更新的人工修订。',
-    ],
+    metrics: buildAuditMetrics({
+      segments,
+      section,
+      findings,
+      chinese: input.chinese,
+      editorialProfile: input.editorialProfile,
+    }),
+    interpretation: AUDIT_INTERPRETATION,
     findings,
   };
-  store.saveQualityAudit(projectId, report);
-  store.appendEvent(projectId, runId || null, 'quality-audit.completed', {
-    auditId, sourceRevisionId: context.currentSourceRevisionId, metrics: report.metrics,
-  });
-  return report;
 }
+
+const AUDIT_INTERPRETATION = [
+  '遗漏检查为确定性检查。',
+  '术语漂移是基于已确认规范译名的启发式提示；未出现规范译名不一定代表错误。',
+  '人物规范译名冲突会单独报告，不会在多个已确认译名之间自动选一个。',
+  '英文残留检测只提供启发式复核提示；专名或刻意保留的外语也可能命中。',
+  '数字序列差异是启发式提示，需考虑中文数字、日期格式和上下文后人工确认。',
+  '重复表达只对重复源文片段的译文差异提示复核，不自动统一。',
+  '重复输出 ID、未知输出 ID 和结构不合法的模型响应只从运行事件报告，不接受这些异常行。',
+  '同一实体的候选译名冲突来自初译 context_delta 的来源证据，仅作为人工复核项；不会自动统一译名或自动返工。',
+  '准确性/遗漏、术语、人物声线与文风提示来自已有 Reviewer 发现；若没有运行相应审校，报告不能证明该类问题不存在。',
+  '中文单语编辑只有经过双语忠实度 Reviewer 完整验证后才会自动应用；其它可选文风建议仍需用户自行决定。',
+  '自动应用、用户主动应用和用户拒绝分别计数；最终采纳事务不会覆盖更新的人工修订。',
+];

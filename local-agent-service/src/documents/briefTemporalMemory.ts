@@ -63,20 +63,64 @@ export function buildTemporallyVisibleMemory(
   precedingSegments: BriefSegment[],
   exampleBudgetChars = MAX_ACCEPTED_EXAMPLE_CHARS,
 ): Record<string, any> {
-  const projectId = String(context?.project?.projectId || '');
-  const revisionId = String(context?.run?.sourceRevisionId || '');
-  const store = getDocumentProjectStore();
-  const projectContext = store.getProjectContext(projectId);
-  const empty: Record<string, any> = {
+  const base = loadTemporalBase(context, items);
+  if (!base) return emptyTemporalMemory();
+  const { db, revisionId, rows, firstOrdinal } = base;
+
+  const rawMemory = prepareRunMemory(context, revisionId);
+  const initialMemoryCounts = countMemoryEntries(rawMemory);
+  const exclusionDiagnostics = createExclusionDiagnostics();
+  const sourceById = loadSourceIndex(db, revisionId, rawMemory, precedingSegments, rows);
+  const latestAcceptedTranslationBySegment = loadLatestAcceptedTranslations(db, revisionId, rawMemory);
+
+  const boundary = createTemporalBoundary({
+    db, revisionId, firstOrdinal, items, precedingSegments,
+    sourceById, latestAcceptedTranslationBySegment,
+  });
+  const acceptedExamples = retrieveAcceptedExamples(boundary, rawMemory, exampleBudgetChars);
+  rawMemory.entities = filterVisibleEntities(boundary, rawMemory.entities, exclusionDiagnostics);
+  rawMemory.relationships = filterVisibleRelationships(boundary, rawMemory.relationships, exclusionDiagnostics);
+  rawMemory.characterVoices = filterVisibleCharacterVoices(boundary, rawMemory.characterVoices, exclusionDiagnostics);
+  applyVoiceRuleVisibility(rawMemory, boundary, sourceById);
+  applyStyleGuideGate(rawMemory);
+
+  // Whole-book summaries/examples remain excluded to protect temporal plot boundaries. Style-only
+  // guides are default-adopted; a user can explicitly disable the generated guide.
+  rawMemory.chapterSummaries = [];
+  rawMemory.recentExamples = acceptedExamples.retrievedExamples;
+  rawMemory.openQuestions = [];
+  // The voice-context sanitizer intentionally ignores these counters; TranslationBrief copies
+  // them into its durable diagnostic summary so zero-injection and boundary exclusions are visible.
+  rawMemory.__translationBriefDiagnostics = buildBriefDiagnostics({
+    exclusionDiagnostics, initialMemoryCounts, rawMemory, acceptedExamples, exampleBudgetChars,
+  });
+  return rawMemory;
+}
+
+/** 空记忆的规范形状：所有可注入字段都显式给出空值，调用方无需再判 undefined。 */
+function emptyTemporalMemory(): Record<string, any> {
+  return {
     version: 2, entities: [], relationships: [], styleGuide: {}, styleGuideStatus: 'candidate',
     chapterSummaries: [], recentExamples: [], characterVoices: [],
     relationshipVoiceRules: [], voiceAnchors: [], openQuestions: [],
   };
+}
+
+/**
+ * 建立时间边界的必要输入：来源版本必须仍然存在，批次片段必须取得到 ordinal。
+ * 任一条不成立就无法定义「之前」，返回 null 让调用方返回空记忆，绝不放行整本记忆。
+ */
+function loadTemporalBase(
+  context: any,
+  items: BriefSegment[],
+): { db: any; revisionId: string; rows: any[]; firstOrdinal: number } | null {
+  const projectId = String(context?.project?.projectId || '');
+  const revisionId = String(context?.run?.sourceRevisionId || '');
+  const projectContext = getDocumentProjectStore().getProjectContext(projectId);
   const sourceRevisionExists = !!revisionId && !!projectContext.db.prepare(
     'SELECT 1 FROM source_revisions WHERE revision_id = ?'
   ).get(revisionId);
-  // 中文：缺少项目/来源版本/批次时，无法建立时间边界，直接返回空记忆，避免泄漏。
-  if (!projectId || !sourceRevisionExists || !items.length) return empty;
+  if (!projectId || !sourceRevisionExists || !items.length) return null;
 
   const rows = projectContext.db.prepare(
     'SELECT segment_id, ordinal, text, context_path FROM source_segments ' +
@@ -84,31 +128,45 @@ export function buildTemporallyVisibleMemory(
     'ORDER BY ordinal'
   ).all(revisionId, ...items.map((item) => item.id)) as any[];
   const itemOrdinals = rows.map((row) => Number(row.ordinal)).filter(Number.isFinite);
-  if (!itemOrdinals.length) return empty;
-  const firstOrdinal = Math.min(...itemOrdinals);
-  // 中文：firstOrdinal 是当前批次第一个源段的 ordinal，作为时间边界基准。
+  if (!itemOrdinals.length) return null;
+  // firstOrdinal 是当前批次第一个源段的 ordinal，作为时间边界基准。
+  return { db: projectContext.db, revisionId, rows, firstOrdinal: Math.min(...itemOrdinals) };
+}
 
+/**
+ * 取本轮的记忆工作副本，并按来源版本闸门处理中文编辑画像。
+ * 画像只在来源版本匹配且未被拒绝时启用；机器默认采纳，证据仅作元数据。
+ */
+function prepareRunMemory(context: any, revisionId: string): Record<string, any> {
   const rawMemory = context?.memory && typeof context.memory === 'object'
     ? JSON.parse(JSON.stringify(context.memory)) as Record<string, any>
-    : empty;
-
+    : emptyTemporalMemory();
   const editorialProfile = rawMemory.chineseEditorialProfile;
-  // 中文：编辑画像仅在来源版本匹配且未被拒绝时启用；机器默认采纳，证据仅作元数据。
   if (!editorialProfile || editorialProfile.status === 'rejected' ||
       editorialProfile.sourceRevisionId !== revisionId) {
     rawMemory.chineseEditorialProfile = null;
-  } else {
-    // Machine-generated editorial profiles are default-adopted. Evidence remains metadata;
-    // it does not create a human approval gate. This profile is style-only, not plot memory.
-    editorialProfile.status = 'confirmed';
-    editorialProfile.confirmationSource = editorialProfile.confirmationSource || 'model-default';
+    return rawMemory;
   }
-  const initialMemoryCounts = {
+  // Machine-generated editorial profiles are default-adopted. Evidence remains metadata;
+  // it does not create a human approval gate. This profile is style-only, not plot memory.
+  editorialProfile.status = 'confirmed';
+  editorialProfile.confirmationSource = editorialProfile.confirmationSource || 'model-default';
+  return rawMemory;
+}
+
+function countMemoryEntries(rawMemory: Record<string, any>): {
+  entities: number; relationships: number; characterVoices: number;
+} {
+  return {
     entities: Array.isArray(rawMemory.entities) ? rawMemory.entities.length : 0,
     relationships: Array.isArray(rawMemory.relationships) ? rawMemory.relationships.length : 0,
     characterVoices: Array.isArray(rawMemory.characterVoices) ? rawMemory.characterVoices.length : 0,
   };
-  const exclusionDiagnostics = {
+}
+
+/** 各阶段被时间边界排除的条数，最终原样并入 TranslationBrief 诊断。 */
+function createExclusionDiagnostics(): Record<string, number> {
+  return {
     memoryEntityExcludedFutureAlias: 0,
     memoryEntityExcludedNameNotVisible: 0,
     memoryEntityExcludedEvidenceNotVisible: 0,
@@ -120,7 +178,10 @@ export function buildTemporallyVisibleMemory(
     characterVoiceExcludedFutureAlias: 0,
     targetEvidenceExcludedAfterAcceptedCorrection: 0,
   };
+}
 
+/** 记忆里被引用到的全部源段，加上当前批次的前文片段。 */
+function collectReferencedSegmentIds(rawMemory: Record<string, any>, precedingSegments: BriefSegment[]): string[] {
   const referencedIds = new Set<string>();
   for (const entity of Array.isArray(rawMemory.entities) ? rawMemory.entities : []) {
     for (const evidence of Array.isArray(entity?.evidenceRefs) ? entity.evidenceRefs : []) {
@@ -154,12 +215,25 @@ export function buildTemporallyVisibleMemory(
     if (typeof anchor?.segmentId === 'string') referencedIds.add(anchor.segmentId);
   }
   for (const segment of precedingSegments) referencedIds.add(segment.id);
+  return Array.from(referencedIds);
+}
 
-  const ids = Array.from(referencedIds);
+/**
+ * 一次取回所有被引用的源段。分批是因为 SQLite 的绑定变量数有上限，
+ * 批次自身的片段最后覆盖，保证它们始终是真值。
+ */
+function loadSourceIndex(
+  db: any,
+  revisionId: string,
+  rawMemory: Record<string, any>,
+  precedingSegments: BriefSegment[],
+  rows: any[],
+): Map<string, { ordinal: number; text: string; contextPath: string }> {
+  const ids = collectReferencedSegmentIds(rawMemory, precedingSegments);
   const sourceById = new Map<string, { ordinal: number; text: string; contextPath: string }>();
   for (let offset = 0; offset < ids.length; offset += 400) {
     const chunk = ids.slice(offset, offset + 400);
-    const refRows = projectContext.db.prepare(
+    const refRows = db.prepare(
       'SELECT segment_id, ordinal, text, context_path FROM source_segments ' +
       'WHERE source_revision_id = ? AND segment_id IN (' + chunk.map(() => '?').join(',') + ')'
     ).all(revisionId, ...chunk) as any[];
@@ -170,6 +244,18 @@ export function buildTemporallyVisibleMemory(
   for (const row of rows) sourceById.set(String(row.segment_id), {
     ordinal: Number(row.ordinal), text: String(row.text || ''), contextPath: String(row.context_path || ''),
   });
+  return sourceById;
+}
+
+/**
+ * 译名证据对应的最新已采纳译文：用来识别「译名证据已被人工修改推翻」的旧实体。
+ * 只查 targetEvidenceRefs 涉及的片段，不做全量扫描。
+ */
+function loadLatestAcceptedTranslations(
+  db: any,
+  revisionId: string,
+  rawMemory: Record<string, any>,
+): Map<string, string> {
   const targetEvidenceSegmentIds = Array.from(new Set(
     (Array.isArray(rawMemory.entities) ? rawMemory.entities : []).flatMap((entity: any) =>
       (Array.isArray(entity?.targetEvidenceRefs) ? entity.targetEvidenceRefs : [])
@@ -179,7 +265,7 @@ export function buildTemporallyVisibleMemory(
   const latestAcceptedTranslationBySegment = new Map<string, string>();
   for (let offset = 0; offset < targetEvidenceSegmentIds.length; offset += 400) {
     const chunk = targetEvidenceSegmentIds.slice(offset, offset + 400);
-    const acceptedRows = projectContext.db.prepare(
+    const acceptedRows = db.prepare(
       'SELECT s.segment_id AS segmentId, tr.translation_text AS translatedText ' +
       'FROM source_segments s JOIN translation_results tr ' +
         'ON tr.source_revision_id = s.source_revision_id AND tr.segment_id = s.segment_id ' +
@@ -192,24 +278,43 @@ export function buildTemporallyVisibleMemory(
     ).all(revisionId, ...chunk) as Array<{ segmentId: string; translatedText: string }>;
     for (const row of acceptedRows) latestAcceptedTranslationBySegment.set(String(row.segmentId), String(row.translatedText || ''));
   }
-  const isPrior = (id: unknown) => {
-    const source = typeof id === 'string' ? sourceById.get(id) : undefined;
-    return !!source && Number.isFinite(source.ordinal) && source.ordinal < firstOrdinal;
-  };
-  const appearedBefore = (nameInput: unknown): boolean =>
-    firstMatchingSourceOrdinal(projectContext.db, revisionId, nameInput, 'name') < firstOrdinal;
-  const appearsAsEarlierEvidence = (quoteInput: unknown): boolean =>
-    firstMatchingSourceOrdinal(projectContext.db, revisionId, quoteInput, 'quote') < firstOrdinal;
+  return latestAcceptedTranslationBySegment;
+}
 
-  const boundary: TemporalBoundary = {
-    db: projectContext.db, revisionId, firstOrdinal, items, precedingSegments,
-    sourceById, latestAcceptedTranslationBySegment, appearedBefore, isPrior, appearsAsEarlierEvidence,
+/** 把边界判定收成一个对象：所有过滤阶段共用它，边界规则只在这一处定义。 */
+function createTemporalBoundary(input: {
+  db: any;
+  revisionId: string;
+  firstOrdinal: number;
+  items: BriefSegment[];
+  precedingSegments: BriefSegment[];
+  sourceById: Map<string, { ordinal: number; text: string; contextPath: string }>;
+  latestAcceptedTranslationBySegment: Map<string, string>;
+}): TemporalBoundary {
+  const { db, revisionId, firstOrdinal, sourceById } = input;
+  return {
+    ...input,
+    isPrior: (id: unknown) => {
+      const source = typeof id === 'string' ? sourceById.get(id) : undefined;
+      return !!source && Number.isFinite(source.ordinal) && source.ordinal < firstOrdinal;
+    },
+    appearedBefore: (nameInput: unknown): boolean =>
+      firstMatchingSourceOrdinal(db, revisionId, nameInput, 'name') < firstOrdinal,
+    appearsAsEarlierEvidence: (quoteInput: unknown): boolean =>
+      firstMatchingSourceOrdinal(db, revisionId, quoteInput, 'quote') < firstOrdinal,
   };
-  const acceptedExamples = retrieveAcceptedExamples(boundary, rawMemory, exampleBudgetChars);
-  rawMemory.entities = filterVisibleEntities(boundary, rawMemory.entities, exclusionDiagnostics);
-  rawMemory.relationships = filterVisibleRelationships(boundary, rawMemory.relationships, exclusionDiagnostics);
-  rawMemory.characterVoices = filterVisibleCharacterVoices(boundary, rawMemory.characterVoices, exclusionDiagnostics);
+}
 
+/**
+ * 关系声音规则与声音锚点：都要求说话双方已经通过声音过滤，且全部证据早于边界。
+ * 场景相关的语域变化经常概括后文而没有片段级引文，因此这里一律清空。
+ */
+function applyVoiceRuleVisibility(
+  rawMemory: Record<string, any>,
+  boundary: TemporalBoundary,
+  sourceById: Map<string, { ordinal: number; text: string; contextPath: string }>,
+): void {
+  const { isPrior, appearedBefore, firstOrdinal } = boundary;
   const visibleCharacterIds = new Set(rawMemory.characterVoices.map((profile: any) => profile.characterId));
   rawMemory.relationshipVoiceRules = (Array.isArray(rawMemory.relationshipVoiceRules) ? rawMemory.relationshipVoiceRules : [])
     .filter((rule: any) => {
@@ -234,23 +339,33 @@ export function buildTemporallyVisibleMemory(
       visibleCharacterIds.has(voiceAnchor.speakerId) && sourceQuoteMatches(source.text, voiceAnchor.source) &&
       sourceNameMatches(source.text, voiceAnchor.source);
   });
+}
 
+/**
+ * 文风指南的数据开关：整本书级别、没有源文定位的字段不能放行，
+ * 但只含风格规范且来自图谱/用户时默认生效——用户可以显式关闭。
+ */
+function applyStyleGuideGate(rawMemory: Record<string, any>): void {
   // These book-level strings lack source-positioned citations. Do not let whole-book analysis
   // leak a future plot fact through a field labelled "style", "example", or "summary".
-  // Whole-book summaries/examples remain excluded to protect temporal plot boundaries. Style-only
-  // guides are default-adopted; a user can explicitly disable the generated guide.
   const styleGuideEnabled = rawMemory.styleGuideAutoDisabled !== true &&
     ['context-graph', 'user-edited', 'user-confirmed'].includes(String(rawMemory.styleGuideOrigin || ''));
   rawMemory.styleGuide = styleGuideEnabled ? rawMemory.styleGuide : {};
   rawMemory.styleGuideStatus = styleGuideEnabled ? 'confirmed' : 'candidate';
   rawMemory.styleGuideConfirmationSource = styleGuideEnabled
     ? rawMemory.styleGuideConfirmationSource || 'model-default' : undefined;
-  rawMemory.chapterSummaries = [];
-  rawMemory.recentExamples = acceptedExamples.retrievedExamples;
-  rawMemory.openQuestions = [];
-  // The voice-context sanitizer intentionally ignores these counters; TranslationBrief copies
-  // them into its durable diagnostic summary so zero-injection and boundary exclusions are visible.
-  rawMemory.__translationBriefDiagnostics = {
+}
+
+/** 诊断汇总：候选数、可见数、被边界排除数与译例预算，全部落到一个可持久化的对象上。 */
+function buildBriefDiagnostics(input: {
+  exclusionDiagnostics: Record<string, number>;
+  initialMemoryCounts: { entities: number; relationships: number; characterVoices: number };
+  rawMemory: Record<string, any>;
+  acceptedExamples: AcceptedExampleRetrieval;
+  exampleBudgetChars: number;
+}): Record<string, any> {
+  const { exclusionDiagnostics, initialMemoryCounts, rawMemory, acceptedExamples, exampleBudgetChars } = input;
+  return {
     ...exclusionDiagnostics,
     memoryEntityCandidates: initialMemoryCounts.entities,
     temporallyVisibleMemoryEntities: rawMemory.entities.length,
@@ -275,7 +390,6 @@ export function buildTemporallyVisibleMemory(
     acceptedExampleChars: acceptedExamples.retrievedExampleChars,
     acceptedExampleBudgetChars: Math.max(0, exampleBudgetChars),
   };
-  return rawMemory;
 }
 
 /**

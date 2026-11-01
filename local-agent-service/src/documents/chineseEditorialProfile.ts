@@ -45,6 +45,23 @@ const PROFILE_SCHEMA: Record<string, unknown> = {
   },
 };
 
+type ProfileStore = ReturnType<typeof getDocumentProjectStore>;
+type AcceptedRow = {
+  id: string; ordinal: number; sourceText: string; kind: string; contextPath: string; targetText: string;
+};
+type ProfileSample = { segmentId: string; targetText: string };
+type ProfileEvidenceRef = { segmentId: string; targetExcerpt: string; observation: string; aspect: string };
+type GeneratedProfile = { profile: Record<string, any>; evidenceRefs: ProfileEvidenceRef[] };
+
+/** 通过门禁后仍需的信息：Store、运行上下文、来源修订号与增量查询句柄。 */
+type ProfileRefreshContext = {
+  store: ProfileStore;
+  context: ReturnType<ProfileStore['getRunContext']>;
+  run: Record<string, any>;
+  db: any;
+  revisionId: string;
+};
+
 function cleanText(value: unknown, max = 500): string {
   return typeof value === 'string' ? value.replace(/\s+/gu, ' ').trim().slice(0, max) : '';
 }
@@ -86,10 +103,69 @@ export function applyChineseEditorialProfileReview(
  * 样本指纹 unchanged 或用户拒绝/用户管理时跳过。
  */
 export async function refreshChineseEditorialProfile(projectId: string, runId: string): Promise<void> {
+  const ctx = resolveProfileRefreshContext(projectId, runId);
+  if (!ctx) return;
+  const { store } = ctx;
+
+  const selection = selectProfileSamples(store, projectId, runId, loadAcceptedSampleRows(ctx.db, ctx.revisionId));
+  if (!selection) return;
+  const { samples, chapterCount, acceptedCount } = selection;
+
+  const sampleFingerprint = fingerprint({
+    revisionId: ctx.revisionId,
+    samples: samples.map((sample) => [sample.segmentId, sample.targetText]),
+  });
+  if (isProfileRefreshRedundant(store, projectId, runId, ctx.revisionId, sampleFingerprint)) return;
+
+  const agent = parseAgentModel(String(ctx.run.model || 'auto'), String(ctx.run.provider || 'workbuddy'));
+  const rawTaskProfile = getCodeBuddyTaskProfile(ctx.context.prompt?.config || {}, 'styleReview');
+  // A profile-generation task uses the configured model/effort, but not a user-authored style-review
+  // template that may contain instructions for segment-level findings.
+  const taskProfile = { ...rawTaskProfile, userPromptTemplate: '', systemPromptAppendix: '' };
+  const { prompt, systemPrompt } = buildProfilePrompts(samples);
+
+  store.appendEvent(projectId, runId, 'chinese-editorial-profile.analysis.started', {
+    analysisVersion: ANALYSIS_VERSION,
+    acceptedSegmentCount: acceptedCount,
+    selectedSampleCount: samples.length,
+    chapterCount,
+    sampleFingerprint,
+    provider: agent.provider,
+    model: agent.model || '<runtime-default>',
+  });
+  const startedAt = Date.now();
+  const result = await runAgentStructured(
+    agent,
+    prompt,
+    systemPrompt,
+    PROFILE_SCHEMA,
+    'chinese-editorial-profile:' + ctx.revisionId + ':' + sampleFingerprint.slice(0, 12),
+    'document:' + projectId + ':chinese-editorial-profile:' + ctx.revisionId,
+    taskProfile,
+    { timeoutMs: ANALYSIS_TIMEOUT_MS },
+  );
+
+  await adoptGeneratedProfile({
+    store, projectId, runId,
+    revisionId: ctx.revisionId,
+    generated: parseGeneratedProfile(result.result, samples),
+    sampleFingerprint,
+    sampleCount: samples.length,
+    chapterCount,
+    startedAt,
+    usage: result.usage || null,
+  });
+}
+
+/**
+ * 门禁：只有中文文学模式的 Run 才生成档案，且 Run 的来源修订必须仍是项目的当前修订。
+ * 返回 null 表示本次不生成（已经记录了跳过原因）。
+ */
+function resolveProfileRefreshContext(projectId: string, runId: string): ProfileRefreshContext | null {
   const store = getDocumentProjectStore();
   const context = store.getRunContext(projectId, runId);
   const run = context.run as Record<string, any>;
-  if (run.translationMode !== 'literary' || !/^zh(?:-|$)/iu.test(String(run.targetLang || 'zh'))) return;
+  if (run.translationMode !== 'literary' || !/^zh(?:-|$)/iu.test(String(run.targetLang || 'zh'))) return null;
 
   const { db, currentSourceRevisionId } = store.getProjectContext(projectId);
   const revisionId = String(run.sourceRevisionId || '');
@@ -99,10 +175,14 @@ export async function refreshChineseEditorialProfile(projectId: string, runId: s
       runSourceRevisionId: revisionId,
       currentSourceRevisionId,
     });
-    return;
+    return null;
   }
+  return { store, context, run, db, revisionId };
+}
 
-  const rows = db.prepare(
+/** 每个片段只取最新一条、且来源哈希与当前原文一致的已采纳译文。 */
+function loadAcceptedSampleRows(db: any, revisionId: string): AcceptedRow[] {
+  return db.prepare(
     'SELECT s.segment_id AS id, s.ordinal, s.text AS sourceText, s.kind, s.context_path AS contextPath, ' +
       'tr.translation_text AS targetText ' +
     'FROM source_segments s JOIN translation_results tr ' +
@@ -113,10 +193,19 @@ export async function refreshChineseEditorialProfile(projectId: string, runId: s
           'AND latest.accepted = 1 AND latest.source_hash = s.source_hash ' +
         'ORDER BY COALESCE(latest.accepted_at, latest.created_at) DESC, latest.created_at DESC, latest.rowid DESC LIMIT 1) ' +
     'ORDER BY s.ordinal'
-  ).all(revisionId) as Array<{
-    id: string; ordinal: number; sourceText: string; kind: string; contextPath: string; targetText: string;
-  }>;
+  ).all(revisionId) as AcceptedRow[];
+}
 
+/**
+ * 样本量下限：单章至少要 8 段，跨章可以少到 8 段的同一口径。
+ * 抽样后再要求 8 段有非空译文，否则模型看不到足够的连续文本，规则必然泛化。
+ */
+function selectProfileSamples(
+  store: ProfileStore,
+  projectId: string,
+  runId: string,
+  rows: AcceptedRow[],
+): { samples: ProfileSample[]; chapterCount: number; acceptedCount: number } | null {
   const distinctChapters = new Set(rows.map((row) => row.contextPath).filter(Boolean));
   if (rows.length < 8 || (distinctChapters.size < 2 && rows.length < 12)) {
     store.appendEvent(projectId, runId, 'chinese-editorial-profile.skipped', {
@@ -125,7 +214,7 @@ export async function refreshChineseEditorialProfile(projectId: string, runId: s
       chapterCount: distinctChapters.size || (rows.length ? 1 : 0),
       minimumAcceptedSegments: distinctChapters.size < 2 ? 12 : 8,
     });
-    return;
+    return null;
   }
 
   const sourceSamples: BookScanSegment[] = rows.map((row) => ({
@@ -147,15 +236,23 @@ export async function refreshChineseEditorialProfile(projectId: string, runId: s
       acceptedSegmentCount: rows.length,
       selectedSampleCount: samples.length,
     });
-    return;
+    return null;
   }
+  return { samples, chapterCount: distinctChapters.size || 1, acceptedCount: rows.length };
+}
 
-  const sampleFingerprint = fingerprint({
-    revisionId,
-    samples: samples.map((sample) => [sample.segmentId, sample.targetText]),
-  });
-  const current = store.getCurrentLiteraryMemory(projectId);
-  const existing = current.memory.chineseEditorialProfile;
+/**
+ * 已采纳样本没变就不必再调模型：同指纹的生效档案、同指纹的待采纳更新、或同指纹同版本号的候选档案，
+ * 都视为「本次分析不会产生新信息」。
+ */
+function isProfileRefreshRedundant(
+  store: ProfileStore,
+  projectId: string,
+  runId: string,
+  revisionId: string,
+  sampleFingerprint: string,
+): boolean {
+  const existing = store.getCurrentLiteraryMemory(projectId).memory.chineseEditorialProfile;
   if (existing?.status === 'confirmed' && existing.sourceRevisionId === revisionId &&
       (existing.sampleFingerprint === sampleFingerprint ||
        existing.pendingUpdate?.sampleFingerprint === sampleFingerprint)) {
@@ -165,7 +262,7 @@ export async function refreshChineseEditorialProfile(projectId: string, runId: s
       profileFingerprint: existing.sampleFingerprint || null,
       pendingUpdateFingerprint: existing.pendingUpdate?.sampleFingerprint || null,
     });
-    return;
+    return true;
   }
   if (existing?.status === 'candidate' && existing.sourceRevisionId === revisionId &&
       existing.sampleFingerprint === sampleFingerprint && existing.analysisVersion === ANALYSIS_VERSION) {
@@ -173,14 +270,13 @@ export async function refreshChineseEditorialProfile(projectId: string, runId: s
       reason: 'same-sample-profile-already-exists',
       sampleFingerprint,
     });
-    return;
+    return true;
   }
+  return false;
+}
 
-  const agent = parseAgentModel(String(run.model || 'auto'), String(run.provider || 'workbuddy'));
-  const rawTaskProfile = getCodeBuddyTaskProfile(context.prompt?.config || {}, 'styleReview');
-  // A profile-generation task uses the configured model/effort, but not a user-authored style-review
-  // template that may contain instructions for segment-level findings.
-  const taskProfile = { ...rawTaskProfile, userPromptTemplate: '', systemPromptAppendix: '' };
+/** 提示只含中文译文：不给原文，避免模型把翻译判断混进风格归纳。 */
+function buildProfilePrompts(samples: ProfileSample[]): { prompt: string; systemPrompt: string } {
   const prompt = [
     '任务：从一组已经由用户采纳的中文文学译文中，归纳这本书稳定的中文目标语表达档案。',
     '输入只有中文译文，不提供外文原文。不要推断剧情事实、人物身份、作者国籍或翻译策略。',
@@ -199,28 +295,15 @@ export async function refreshChineseEditorialProfile(projectId: string, runId: s
     '输出的 profile 只能包含中文目标语风格规范，不能包含原文、源语言名称、剧情摘要或人物事实。',
     '不确定的维度留空，不要为了填满字段而编造规则。',
   ].join('\n');
+  return { prompt, systemPrompt };
+}
 
-  store.appendEvent(projectId, runId, 'chinese-editorial-profile.analysis.started', {
-    analysisVersion: ANALYSIS_VERSION,
-    acceptedSegmentCount: rows.length,
-    selectedSampleCount: samples.length,
-    chapterCount: distinctChapters.size || 1,
-    sampleFingerprint,
-    provider: agent.provider,
-    model: agent.model || '<runtime-default>',
-  });
-  const startedAt = Date.now();
-  const result = await runAgentStructured(
-    agent,
-    prompt,
-    systemPrompt,
-    PROFILE_SCHEMA,
-    'chinese-editorial-profile:' + revisionId + ':' + sampleFingerprint.slice(0, 12),
-    'document:' + projectId + ':chinese-editorial-profile:' + revisionId,
-    taskProfile,
-    { timeoutMs: ANALYSIS_TIMEOUT_MS },
-  );
-  const output = result.result as Record<string, any>;
+/**
+ * 输出清洗：字段裁剪到有界长度，证据逐条回到样本里核对原文连续出现。
+ * 空档案直接抛错——宁可整轮失败，也不要让一条只有空规则的档案被当成全书规范。
+ */
+function parseGeneratedProfile(raw: unknown, samples: ProfileSample[]): GeneratedProfile {
+  const output = raw as Record<string, any>;
   const profileInput = output?.profile && typeof output.profile === 'object' ? output.profile : {};
   const profile = {
     narrativeVoice: cleanText(profileInput.narrativeVoice, 1000),
@@ -232,7 +315,7 @@ export async function refreshChineseEditorialProfile(projectId: string, runId: s
     avoid: cleanList(profileInput.avoid, 12, 240),
   };
   const sampleById = new Map(samples.map((sample) => [sample.segmentId, sample.targetText]));
-  const evidenceRefs = (Array.isArray(output?.observations) ? output.observations : []).flatMap((item: any) => {
+  const evidenceRefs: ProfileEvidenceRef[] = (Array.isArray(output?.observations) ? output.observations : []).flatMap((item: any) => {
     const segmentId = cleanText(item?.segmentId, 160);
     const targetExcerpt = cleanText(item?.targetExcerpt, 240);
     const observation = cleanText(item?.observation, 240);
@@ -242,13 +325,35 @@ export async function refreshChineseEditorialProfile(projectId: string, runId: s
     return sample && targetExcerpt.length >= 4 && sample.includes(targetExcerpt) && observation && aspect
       ? [{ segmentId, targetExcerpt, observation, aspect }]
       : [];
-  }).filter((item: any, index: number, all: any[]) =>
+  }).filter((item, index, all) =>
     all.findIndex((other) => other.segmentId === item.segmentId && other.targetExcerpt === item.targetExcerpt) === index
   ).slice(0, 24);
-  const evidenceSegmentCount = new Set(evidenceRefs.map((item: any) => item.segmentId)).size;
   if (!Object.values(profile).some((value) => Array.isArray(value) ? value.length > 0 : !!value)) {
     throw new Error('中文 Editorial Profile 输出缺少可用的风格内容。');
   }
+  return { profile, evidenceRefs };
+}
+
+/**
+ * 采纳决策：分析期间用户可能已经拒绝或手改过档案，因此必须重新读取记忆再判定。
+ * 用户拒绝 → 保持停用；用户管理 → 用户优先；已有生效档案 → 转成待采纳更新并递增版本；
+ * 否则首次生成直接生效。所有分支都以事件留痕。
+ */
+async function adoptGeneratedProfile(args: {
+  store: ProfileStore;
+  projectId: string;
+  runId: string;
+  revisionId: string;
+  generated: GeneratedProfile;
+  sampleFingerprint: string;
+  sampleCount: number;
+  chapterCount: number;
+  startedAt: number;
+  usage: unknown;
+}): Promise<void> {
+  const { store, projectId, runId, revisionId, generated, sampleFingerprint, startedAt } = args;
+  const { profile, evidenceRefs } = generated;
+  const evidenceSegmentCount = new Set(evidenceRefs.map((item) => item.segmentId)).size;
 
   // Reload after the model call. Preserve user-managed profiles; replace machine-default profiles automatically.
   const latest = store.getCurrentLiteraryMemory(projectId);
@@ -261,8 +366,8 @@ export async function refreshChineseEditorialProfile(projectId: string, runId: s
     sourceRevisionId: revisionId,
     analysisVersion: ANALYSIS_VERSION,
     sampleFingerprint,
-    sampleCount: samples.length,
-    chapterCount: distinctChapters.size || 1,
+    sampleCount: args.sampleCount,
+    chapterCount: args.chapterCount,
     generatedAt,
     profile,
     evidenceRefs,
@@ -313,12 +418,12 @@ export async function refreshChineseEditorialProfile(projectId: string, runId: s
       baseProfileFingerprint: latestProfile.sampleFingerprint || null,
       profileFingerprint: sampleFingerprint,
       analysisVersion: ANALYSIS_VERSION,
-      sampleCount: samples.length,
+      sampleCount: args.sampleCount,
       evidenceCount: evidenceRefs.length,
       evidenceSegmentCount,
       durationMs: Date.now() - startedAt,
       adoptionSource: 'model-default',
-      usage: result.usage || null,
+      usage: args.usage,
     });
     return;
   }
@@ -331,16 +436,15 @@ export async function refreshChineseEditorialProfile(projectId: string, runId: s
     memoryRevisionId: saved.memoryRevisionId,
     profileFingerprint: sampleFingerprint,
     analysisVersion: ANALYSIS_VERSION,
-    sampleCount: samples.length,
+    sampleCount: args.sampleCount,
     evidenceCount: evidenceRefs.length,
     evidenceSegmentCount,
     durationMs: Date.now() - startedAt,
     adoptionSource: 'model-default',
-    usage: result.usage || null,
+    usage: args.usage,
   });
 }
 
-/** Idempotent background trigger used after candidate acceptance and completed runs. */
 /**
  * 幂等的后台触发器：同一 projectId:runId 不重复启动；失败记录事件但不阻断翻译采纳。
  */
