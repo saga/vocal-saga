@@ -36,6 +36,7 @@ import {
 import {
   assertNoActiveTranslation,
   chapterMap,
+  type ContextGraphRunProgress,
   clearReplaceableModelGeneratedContextGraphItems,
   contextGraphCandidateDisposition,
   getMeta,
@@ -133,95 +134,11 @@ export function reconcileOrphanedContextGraphRun(projectId: string, db: Database
  */
 async function runAnalysis(projectId: string, runId: string): Promise<void> {
   const store = getDocumentProjectStore();
-  const { db, revisionId, segments } = readSegments(projectId);
-  const startedAt = new Date().toISOString();
-  const initialProgress = readRunProgress(db, runId);
-  const strategy: ContextGraphAnalysisStrategy = initialProgress.strategy === 'B' ? 'B' : 'A';
-  db.prepare('UPDATE context_graph_runs SET status = \'running\', phase = \'sample\', started_at = ?, progress_json = ? WHERE run_id = ?')
-    .run(startedAt, JSON.stringify({ ...initialProgress, segmentCount: segments.length }), runId);
-  store.appendEvent(projectId, runId, 'context-graph.phase', {
-    phase: 'sample', segmentCount: segments.length, strategy,
-    ...(initialProgress.resumedFromRunId ? { resumedFromRunId: initialProgress.resumedFromRunId } : {}),
-  });
-  writeChapterSnapshots(db, revisionId, segments);
-
-  const prompts = store.listPrompts(projectId);
-  const config = prompts[0]?.config || {};
-  const sourceLang = safeText(config.sourceLang, 40) || 'auto';
-  const targetLang = safeText(config.targetLang, 40) || 'zh';
-  const provider = safeText(config.provider, 40) || 'workbuddy';
-  const modelName = safeText(config.model, 240) || 'auto';
-  const scanStartedAt = Date.now();
-  const scan = await scanBookSegmentsConcurrent(segments, { sourceLang });
-  const scanDurationMs = Date.now() - scanStartedAt;
-  const sourceFeatureIndexReused = hasCurrentSourceFeatureIndex(db, revisionId, segments.length, sourceLang);
-  if (!sourceFeatureIndexReused) {
-    persistSourceFeatureIndex(db, revisionId, segments, scan, sourceLang);
-    readySourceFeatureIndexes.set(revisionId, {
-      indexVersion: BOOK_SCAN_INDEX_VERSION,
-      sourceLang,
-      sourceSegmentCount: segments.length,
-      entityMentionCount: scan.indexDiagnostics.entityMentionCount,
-      entityMentionLimit: scan.indexDiagnostics.entityMentionLimit,
-      entityMentionsTruncated: scan.indexDiagnostics.entityMentionsTruncated,
-      textUnitCount: scan.indexDiagnostics.textUnitCount,
-      textUnitLimit: scan.indexDiagnostics.textUnitLimit,
-      textUnitsTruncated: scan.indexDiagnostics.textUnitsTruncated,
-      quantityMentionCount: scan.indexDiagnostics.quantityMentionCount,
-      quantityMentionLimit: scan.indexDiagnostics.quantityMentionLimit,
-      quantityMentionsTruncated: scan.indexDiagnostics.quantityMentionsTruncated,
-    });
-  }
-  const samplePlan = planBookSamples(segments, scan);
-  const samples: Segment[] = samplePlan.samples.map(({ segment }) => ({
-    id: segment.id, ordinal: segment.ordinal, text: segment.text,
-    kind: segment.kind || 'paragraph', contextPath: segment.contextPath || '',
-  }));
-  const sampleReasons = new Map<string, string[]>(samplePlan.samples.map((item) => [item.segment.id, item.reasons] as [string, string[]]));
-  const sampleIds = new Set(samples.map((segment) => segment.id));
-  const samplesById = new Map(samples.map((segment) => [segment.id, segment]));
-  const chapters = chapterMap(segments);
-  const scanSummary = {
-    strategyVersion: 'adaptive-book-scan-v3-source-language-index',
-    segmentCount: scan.segmentCount,
-    sourceCharCount: scan.charCount,
-    chapterCount: scan.chapterCount,
-    dialogueSegmentCount: scan.dialogueSegmentCount,
-    nameCandidateCount: scan.nameCandidates.length,
-    repeatedPhraseCandidateCount: scan.repeatedPhrases.length,
-    entityMentionCount: scan.indexDiagnostics.entityMentionCount,
-    entityMentionsTruncated: scan.indexDiagnostics.entityMentionsTruncated,
-    sentenceAndQuoteUnitCount: scan.indexDiagnostics.textUnitCount,
-    textUnitsTruncated: scan.indexDiagnostics.textUnitsTruncated,
-    quantityMentionCount: scan.indexDiagnostics.quantityMentionCount,
-    quantityMentionsTruncated: scan.indexDiagnostics.quantityMentionsTruncated,
-    ...samplePlan.diagnostics,
-    samplePlan: samplePlan.samples.map((item) => ({
-      segmentId: item.segment.id, ordinal: item.segment.ordinal, chapter: item.segment.contextPath,
-      reasons: item.reasons,
-    })),
-  };
-  store.appendEvent(projectId, runId, 'context-graph.scan.completed', {
-    strategyVersion: scanSummary.strategyVersion,
-    segmentCount: scan.segmentCount, chapterCount: scan.chapterCount,
-    dialogueSegmentCount: scan.dialogueSegmentCount,
-    nameCandidateCount: scan.nameCandidates.length,
-    repeatedPhraseCandidateCount: scan.repeatedPhrases.length,
-    sampleCount: samples.length, sampleLimit: samplePlan.diagnostics.sampleLimit,
-    targetedNameCount: samplePlan.diagnostics.targetedNameCount,
-    entityMentionCount: scan.indexDiagnostics.entityMentionCount,
-    sentenceAndQuoteUnitCount: scan.indexDiagnostics.textUnitCount,
-    quantityMentionCount: scan.indexDiagnostics.quantityMentionCount,
-    indexVersion: BOOK_SCAN_INDEX_VERSION,
-    scanDurationMs,
-    sourceFeatureIndexReused,
-    indexTruncation: {
-      entityMentions: scan.indexDiagnostics.entityMentionsTruncated,
-      textUnits: scan.indexDiagnostics.textUnitsTruncated,
-      quantityMentions: scan.indexDiagnostics.quantityMentionsTruncated,
-    },
-  });
-
+  const prepared = await prepareAnalysisInputs(store, projectId, runId);
+  const {
+    db, revisionId, segments, initialProgress, strategy, sourceLang, targetLang, provider, modelName,
+    scan, samples, sampleReasons, sampleIds, samplesById, chapters, scanSummary,
+  } = prepared;
 
   const agent = parseAgentModel(modelName, provider);
   const prompt = graphAnalysisPrompt(
@@ -234,7 +151,7 @@ async function runAnalysis(projectId: string, runId: string): Promise<void> {
   patchRunProgress(db, runId, {
     sampleCount: samples.length, chapterCount: chapters.length,
     sourceLang, targetLang, provider: agent.provider, model: agent.model, scan: scanSummary,
-    scanDurationMs, sampleIds: samples.map((sample) => sample.id),
+    scanDurationMs: prepared.scanDurationMs, sampleIds: samples.map((sample) => sample.id),
   });
   db.prepare('UPDATE context_graph_runs SET phase = \'model-analysis\' WHERE run_id = ?').run(runId);
   const latestPrompt = store.listPrompts(projectId)[0];
@@ -250,250 +167,75 @@ async function runAnalysis(projectId: string, runId: string): Promise<void> {
     scan: {
       strategyVersion: scanSummary.strategyVersion, nameCandidateCount: scan.nameCandidates.length,
       repeatedPhraseCandidateCount: scan.repeatedPhrases.length,
-      dialogueSegmentCount: scan.dialogueSegmentCount, targetedNameCount: samplePlan.diagnostics.targetedNameCount,
+      dialogueSegmentCount: scan.dialogueSegmentCount, targetedNameCount: prepared.samplePlanDiagnostics.targetedNameCount,
     },
   });
   const modelAnalysisStartedAt = Date.now();
-  let data: Record<string, any>;
-  // style 沿用 run 级 Session key（兼容旧数据与文风补全路径），其余阶段各自持有独立 Session。
   let workflowSessionId = safeText(getMeta(db, revisionId, workflowSessionKey(runId)), 500);
-  const stageSessionIds = new Map<ContextGraphWorkflowStageId, string>();
-  if (workflowSessionId) stageSessionIds.set('style', workflowSessionId);
   if (!workflowSessionId && initialProgress.resumedFromRunId) {
     workflowSessionId = safeText(getMeta(db, revisionId, workflowSessionKey(String(initialProgress.resumedFromRunId))), 500);
-    if (workflowSessionId) {
-      saveMeta(db, revisionId, workflowSessionKey(runId), workflowSessionId);
-      stageSessionIds.set('style', workflowSessionId);
-    }
+    if (workflowSessionId) saveMeta(db, revisionId, workflowSessionKey(runId), workflowSessionId);
   }
 
+  let data: Record<string, any>;
   if (strategy === 'B') {
-    const resumeFromRunId = typeof initialProgress.resumedFromRunId === 'string' ? initialProgress.resumedFromRunId : '';
-    const checkpointSourceRunId = resumeFromRunId || runId;
-    const completedBefore = new Set<string>(Array.isArray(initialProgress.completedStages) ? initialProgress.completedStages : []);
-    const aggregate: Record<string, any> = {};
-    const stageTimeoutConfigured = Number(process.env.LOCAL_AGENT_CONTEXT_GRAPH_STAGE_TIMEOUT_MS);
-    const stageTimeoutMs = Number.isFinite(stageTimeoutConfigured) && stageTimeoutConfigured > 0
-      ? Math.min(ANALYSIS_TIMEOUT_MS, stageTimeoutConfigured)
-      : Math.min(ANALYSIS_TIMEOUT_MS, 5 * 60 * 1000);
-
-    type WorkflowStage = { id: ContextGraphWorkflowStageId; label: string; phase: string; fields: readonly string[] };
-
-    /** 阶段 Session key：style 沿用 run 级 key，其余阶段按阶段隔离，避免并行分支互相覆盖。 */
-    const stageSessionKey = (stageId: ContextGraphWorkflowStageId, forRunId: string) =>
-      stageId === 'style' ? workflowSessionKey(forRunId) : workflowSessionKey(forRunId, stageId);
-
-    /**
-     * 执行单个阶段：命中检查点直接恢复，否则发起一次结构化调用并落库。
-     * 同波次内多个阶段会并发调用本函数，因此每次读写 progress_json 之间不能插入 await。
-     */
-    const runStage = async (stage: WorkflowStage, waveIndex: number): Promise<void> => {
-      const checkpoint = completedBefore.has(stage.id)
-        ? getMeta(db, revisionId, workflowCheckpointKey(checkpointSourceRunId, stage.id))
-        : null;
-      const validCheckpoint = checkpoint && typeof checkpoint === 'object' && !Array.isArray(checkpoint) &&
-        stage.fields.every((field) => Object.prototype.hasOwnProperty.call(checkpoint, field));
-      if (validCheckpoint) {
-        Object.assign(aggregate, checkpoint);
-        if (checkpointSourceRunId !== runId) saveMeta(db, revisionId, workflowCheckpointKey(runId, stage.id), checkpoint);
-        const restoredProgress = readRunProgress(db, runId);
-        store.appendEvent(projectId, runId, 'context-graph.stage.restored', {
-          strategy: 'B', stage: stage.id, stageLabel: stage.label,
-          sourceRunId: checkpointSourceRunId,
-          completedStageCount: Array.isArray(restoredProgress.completedStages) ? restoredProgress.completedStages.length : 0,
-          stageCount: CONTEXT_GRAPH_WORKFLOW_STAGES.length,
-        });
-        logInfo('context-graph', '恢复已保存阶段 · ' + stage.id + ' · run=' + runId.slice(0, 8));
-        return;
-      }
-
-      const prior = readRunProgress(db, runId);
-      const completedStages = Array.isArray(prior.completedStages) ? prior.completedStages : [];
-      patchRunProgress(db, runId, {
-        strategy: 'B', workflowVersion: CONTEXT_GRAPH_WORKFLOW_VERSION,
-        currentStage: stage.id, completedStages,
-      });
-      store.appendEvent(projectId, runId, 'context-graph.phase', {
-        phase: stage.phase, strategy: 'B', stage: stage.id, stageLabel: stage.label,
-        stageIndex: CONTEXT_GRAPH_WORKFLOW_STAGES.findIndex((item) => item.id === stage.id) + 1,
-        stageCount: CONTEXT_GRAPH_WORKFLOW_STAGES.length, completedStageCount: completedStages.length,
-        waveIndex: waveIndex + 1, waveSize: (CONTEXT_GRAPH_STAGE_WAVES[waveIndex] || []).length,
-      });
-
-      // 并行分支不能共用同一个 Session；能续聊时复用父阶段 Session，避免重发整份样本。
-      const parentStageId = CONTEXT_GRAPH_STAGE_SESSION_PARENT[stage.id];
-      const sessionId = stageSessionIds.get(stage.id)
-        || safeText(getMeta(db, revisionId, stageSessionKey(stage.id, checkpointSourceRunId)), 500)
-        || (parentStageId
-          ? stageSessionIds.get(parentStageId)
-            || safeText(getMeta(db, revisionId, stageSessionKey(parentStageId, checkpointSourceRunId)), 500)
-          : '');
-      const stagePrompt = buildContextGraphWorkflowPrompt(
-        stage.id, prompt, aggregate,
-        agent.provider === 'workbuddy' && !!sessionId,
-      );
-      const stageSchema = buildContextGraphWorkflowSchema(ANALYSIS_SCHEMA, stage.id);
-      const stageStartedAt = Date.now();
-      const stageRun = await runAgentStructured(
-        { provider: agent.provider, model: agent.model },
-        stagePrompt,
-        DEFAULT_CONTEXT_GRAPH_SYSTEM_PROMPT,
-        stageSchema,
-        runId + ':' + stage.id,
-        'context-graph:' + projectId + ':' + revisionId + ':' + runId,
-        taskProfile,
-        {
-          timeoutMs: stageTimeoutMs,
-          ...(agent.provider === 'workbuddy' ? {
-            persistSession: true,
-            ...(sessionId ? { sessionId } : {}),
-            onSessionId: (newSessionId: string) => {
-              stageSessionIds.set(stage.id, newSessionId);
-              saveMeta(db, revisionId, stageSessionKey(stage.id, runId), newSessionId);
-              if (stage.id === 'style') workflowSessionId = newSessionId;
-            },
-          } : {}),
-        },
-      );
-      if (stageRun.usage) logInfo('context-graph', 'B 阶段 ' + stage.id + ' · ' + formatTurnUsageLog(stageRun.usage));
-      if (!stageRun.result || Array.isArray(stageRun.result)) {
-        throw new Error('Context Graph 工作流阶段 ' + stage.id + ' 返回了非对象结果。');
-      }
-      const stageOutput = stageRun.result as Record<string, any>;
-      const missingFields = stage.fields.filter((field) => !Object.prototype.hasOwnProperty.call(stageOutput, field));
-      if (missingFields.length) {
-        throw new Error('Context Graph 工作流阶段 ' + stage.id + ' 缺少结构化字段：' + missingFields.join(', '));
-      }
-      if (stageRun.sessionId && agent.provider === 'workbuddy') {
-        stageSessionIds.set(stage.id, stageRun.sessionId);
-        saveMeta(db, revisionId, stageSessionKey(stage.id, runId), stageRun.sessionId);
-        if (stage.id === 'style') workflowSessionId = stageRun.sessionId;
-      }
-      const stageElapsedMs = Date.now() - stageStartedAt;
-      persistWorkflowStageCheckpoint(
-        db, revisionId, runId, stage.id, stageOutput, stageElapsedMs,
-        sampleIds, samples,
-      );
-      const stageProgress = readRunProgress(db, runId);
-      const stageSummary = Array.isArray(stageProgress.stageResults)
-        ? stageProgress.stageResults.find((item: any) => item.stage === stage.id)
-        : null;
-      store.appendEvent(projectId, runId, 'context-graph.stage.completed', {
-        strategy: 'B', stage: stage.id, stageLabel: stage.label,
-        stageIndex: CONTEXT_GRAPH_WORKFLOW_STAGES.findIndex((item) => item.id === stage.id) + 1,
-        stageCount: CONTEXT_GRAPH_WORKFLOW_STAGES.length,
-        completedStageCount: Array.isArray(stageProgress.completedStages) ? stageProgress.completedStages.length : 0,
-        elapsedMs: stageElapsedMs, outputCounts: stageSummary?.outputCounts || {},
-        waveIndex: waveIndex + 1,
-      });
-      Object.assign(aggregate, stageOutput);
-    };
-
-    for (let waveIndex = 0; waveIndex < CONTEXT_GRAPH_STAGE_WAVES.length; waveIndex++) {
-      const wave = CONTEXT_GRAPH_STAGE_WAVES[waveIndex]!;
-      const stages = wave
-        .map((stageId) => CONTEXT_GRAPH_WORKFLOW_STAGES.find((item) => item.id === stageId) as WorkflowStage | undefined)
-        .filter((stage): stage is WorkflowStage => !!stage);
-      if (!stages.length) continue;
-      // 同波次只写一次 phase：并发阶段各自写会让 UI 的阶段读数来回跳动。
-      db.prepare('UPDATE context_graph_runs SET phase = ? WHERE run_id = ?').run(stages[0]!.phase, runId);
-      if (stages.length > 1) {
-        logInfo('context-graph', '并行波次 ' + (waveIndex + 1) + '/' + CONTEXT_GRAPH_STAGE_WAVES.length +
-          ' · ' + stages.map((stage) => stage.id).join('+'));
-      }
-      // 同波次阶段互不依赖；任一失败即整体失败，已落库的检查点留给下次恢复。
-      await Promise.all(stages.map((stage) => runStage(stage, waveIndex)));
-    }
-
-    data = aggregate;
-    patchRunProgress(db, runId, {
-      strategy: 'B', workflowVersion: CONTEXT_GRAPH_WORKFLOW_VERSION,
-      currentStage: null, workflowElapsedMs: Date.now() - modelAnalysisStartedAt,
-      completedStages: CONTEXT_GRAPH_WORKFLOW_STAGES.map((stage) => stage.id),
+    const staged = await runStagedWorkflow({
+      store, db, revisionId, projectId, runId, prompt, initialProgress, agent, taskProfile,
+      sampleIds, samples, modelAnalysisStartedAt, workflowSessionId,
     });
+    data = staged.data;
+    workflowSessionId = staged.workflowSessionId;
   } else {
-    const analysisRun = await runAgentStructured(
-      { provider: agent.provider, model: agent.model },
-      prompt,
-      DEFAULT_CONTEXT_GRAPH_SYSTEM_PROMPT,
-      ANALYSIS_SCHEMA,
-      runId,
-      'context-graph:' + projectId + ':' + revisionId + ':' + runId,
-      taskProfile,
-      { timeoutMs: ANALYSIS_TIMEOUT_MS },
-    );
-    if (analysisRun.usage) logInfo('context-graph', formatTurnUsageLog(analysisRun.usage));
-    const output = analysisRun.result;
-    if (!output || Array.isArray(output)) throw new Error('Context Graph 分析返回了非对象结果。');
-    data = output as Record<string, any>;
-    patchRunProgress(db, runId, {
-      strategy: 'A', workflowVersion: CONTEXT_GRAPH_WORKFLOW_VERSION,
-      currentStage: null, workflowElapsedMs: Date.now() - modelAnalysisStartedAt,
-    });
+    data = await runSingleShotAnalysis({ db, projectId, revisionId, runId, prompt, agent, taskProfile, modelAnalysisStartedAt });
   }
 
-  const styleDimensions = ['narrativeStyle', 'styleRegister', 'styleRhythm', 'styleDialogue', 'styleDiction'];
-  const findMissingStyleFields = (value: Record<string, any>) => [
-    ...styleDimensions.filter((field) => !safeText(value[field], 1000)),
-    ...(!Array.isArray(value.styleRules) || uniqueStrings(value.styleRules, 24, 240).length === 0 ? ['styleRules'] : []),
-  ];
-  let missingStyleDimensions = findMissingStyleFields(data);
-  let styleRepairUsed = false;
-  if (missingStyleDimensions.length) {
-    styleRepairUsed = true;
-    // Some providers treat a JSON schema as shape guidance and still emit empty strings.
-    // Repair only these fields rather than falsely completing a run with an empty style guide.
-    logWarn('context-graph', '文风字段为空，启动定向补全 · strategy=' + strategy + ' · fields=' + missingStyleDimensions.join(','));
-    const repairStartedAt = Date.now();
-    const repairRun = await runAgentStructured(
-      { provider: agent.provider, model: agent.model },
-      buildContextGraphWorkflowPrompt(
-        'style', prompt, data, strategy === 'B' && agent.provider === 'workbuddy' && !!workflowSessionId,
-      ) + '\n\n上次结构化响应中的以下字段为空：' + missingStyleDimensions.join('、') +
-        '。请重新分析并全部填写这些字段；不能返回空字符串或空规则数组。保持其他字段的证据边界，不要编造原文证据。',
-      DEFAULT_CONTEXT_GRAPH_SYSTEM_PROMPT,
-      buildContextGraphWorkflowSchema(ANALYSIS_SCHEMA, 'style'),
-      runId + ':style-repair',
-      'context-graph:' + projectId + ':' + revisionId + ':' + runId,
-      taskProfile,
-      {
-        timeoutMs: Math.min(ANALYSIS_TIMEOUT_MS, 5 * 60 * 1000),
-        ...(strategy === 'B' && agent.provider === 'workbuddy' ? {
-          persistSession: true,
-          ...(workflowSessionId ? { sessionId: workflowSessionId } : {}),
-          onSessionId: (sessionId: string) => {
-            workflowSessionId = sessionId;
-            saveMeta(db, revisionId, workflowSessionKey(runId), sessionId);
-          },
-        } : {}),
-      },
-    );
-    if (!repairRun.result || Array.isArray(repairRun.result)) throw new Error('Context Graph 文风补全返回了非对象结果。');
-    const repairedStyle = repairRun.result as Record<string, any>;
-    Object.assign(data, repairedStyle);
-    missingStyleDimensions = findMissingStyleFields(data);
-    if (missingStyleDimensions.length) {
-      throw new Error('Context Graph 文风补全后仍缺少有效字段（' + missingStyleDimensions.join('、') +
-        '）。本轮未标记为完成；B 方案已保存的其他阶段结果会在重试时复用。');
-    }
-    if (strategy === 'B') {
-      persistWorkflowStageCheckpoint(
-        db, revisionId, runId, 'style',
-        Object.fromEntries(CONTEXT_GRAPH_WORKFLOW_STAGES[0].fields.map((field) => [field, data[field]])),
-        Date.now() - repairStartedAt, sampleIds, samples,
-      );
-    }
-  }
-  const styleFieldCoverage = Object.fromEntries(
-    styleDimensions.map((field) => [field, !!safeText(data[field], 1000)]),
-  ) as Record<string, boolean>;
-  const styleRuleCount = uniqueStrings(data.styleRules, 24, 240).length;
-  const styleAvoidCount = uniqueStrings(data.styleAvoid, 16, 240).length;
-  const styleEvidenceCount = Array.isArray(data.styleEvidence) ? data.styleEvidence.length : 0;
-  patchRunProgress(db, runId, {
-    workflowElapsedMs: Date.now() - modelAnalysisStartedAt,
-    styleRepairUsed, styleFieldCoverage, styleRuleCount, styleAvoidCount, styleEvidenceCount,
+  const style = await completeStyleGuide({
+    db, projectId, revisionId, runId, prompt, data, strategy, agent, taskProfile,
+    modelAnalysisStartedAt, sampleIds, samples, workflowSessionId: workflowSessionId || undefined,
   });
+
+  persistAnalysisGraph({
+    store, db, projectId, runId, revisionId, segments, sampleIds, samples, chapters, scanSummary,
+    data, strategy, sourceLang, targetLang, modelAnalysisStartedAt, agent, scan, sampleReasons, style,
+  });
+}
+
+/**
+ * 落库：把模型输出的事务性写入图谱——清空可替换的模型生成项、写文风元信息、
+ * 保存人物/实体/关系、写章节摘要与完成事件。任何一步失败都整体回滚，
+ * 已保存的阶段检查点不受影响，下次可从这里继续。
+ */
+function persistAnalysisGraph(input: {
+  store: ReturnType<typeof getDocumentProjectStore>;
+  db: DatabaseSync;
+  projectId: string;
+  runId: string;
+  revisionId: string;
+  segments: Segment[];
+  sampleIds: Set<string>;
+  samples: Segment[];
+  chapters: ReturnType<typeof chapterMap>;
+  scanSummary: Record<string, any>;
+  data: Record<string, any>;
+  strategy: ContextGraphAnalysisStrategy;
+  sourceLang: string;
+  targetLang: string;
+  modelAnalysisStartedAt: number;
+  agent: ReturnType<typeof parseAgentModel>;
+  scan: Awaited<ReturnType<typeof scanBookSegmentsConcurrent>>;
+  sampleReasons: Map<string, string[]>;
+  style: {
+    styleRepairUsed: boolean;
+    styleFieldCoverage: Record<string, boolean>;
+    styleRuleCount: number;
+    styleAvoidCount: number;
+    styleEvidenceCount: number;
+  };
+}): void {
+  const {
+    store, db, projectId, runId, revisionId, segments, sampleIds, samples, chapters, scanSummary,
+    data, strategy, sourceLang, targetLang, modelAnalysisStartedAt, agent, scan, sampleReasons, style,
+  } = input;
   const sourceById = new Map(segments.map((segment) => [segment.id, segment]));
   const allowedEvidence = new Map<string, Segment>();
   for (const id of sampleIds) {
@@ -881,11 +623,11 @@ async function runAnalysis(projectId: string, runId: string): Promise<void> {
         chapterSummaries: Array.isArray(data.chapterSummaries) ? data.chapterSummaries.length : 0,
       },
       styleMetrics: {
-        fieldCoverage: styleFieldCoverage,
-        rules: styleRuleCount,
-        avoidRules: styleAvoidCount,
-        evidenceItems: styleEvidenceCount,
-        repaired: styleRepairUsed,
+        fieldCoverage: style.styleFieldCoverage,
+        rules: style.styleRuleCount,
+        avoidRules: style.styleAvoidCount,
+        evidenceItems: style.styleEvidenceCount,
+        repaired: style.styleRepairUsed,
       },
       persistedCounts: {
         characters: persistedNodes.filter((node) => node.kind === 'character').length,
@@ -959,7 +701,8 @@ async function runAnalysis(projectId: string, runId: string): Promise<void> {
       strategy,
       workflowVersion: CONTEXT_GRAPH_WORKFLOW_VERSION,
       workflowElapsedMs: Date.now() - modelAnalysisStartedAt,
-      styleRepairUsed, styleFieldCoverage, styleRuleCount, styleAvoidCount, styleEvidenceCount,
+      styleRepairUsed: style.styleRepairUsed, styleFieldCoverage: style.styleFieldCoverage, styleRuleCount: style.styleRuleCount,
+      styleAvoidCount: style.styleAvoidCount, styleEvidenceCount: style.styleEvidenceCount,
       ...(strategy === 'B' ? {
         completedStages: CONTEXT_GRAPH_WORKFLOW_STAGES.map((stage) => stage.id),
         stageResults: readRunProgress(db, runId).stageResults || [],
@@ -972,6 +715,403 @@ async function runAnalysis(projectId: string, runId: string): Promise<void> {
     throw error;
   }
 }
+
+
+/**
+ * 准备一次全书分析的输入：进度、提示词配置、全书扫描、样本计划与章节索引。
+ * 扫描是这里最慢的一步，因此先把结果落库并缓存源文特征索引，重跑时直接复用。
+ */
+async function prepareAnalysisInputs(store: ReturnType<typeof getDocumentProjectStore>, projectId: string, runId: string) {
+  const { db, revisionId, segments } = readSegments(projectId);
+  const startedAt = new Date().toISOString();
+  const initialProgress = readRunProgress(db, runId);
+  const strategy: ContextGraphAnalysisStrategy = initialProgress.strategy === 'B' ? 'B' : 'A';
+  db.prepare('UPDATE context_graph_runs SET status = \'running\', phase = \'sample\', started_at = ?, progress_json = ? WHERE run_id = ?')
+    .run(startedAt, JSON.stringify({ ...initialProgress, segmentCount: segments.length }), runId);
+  store.appendEvent(projectId, runId, 'context-graph.phase', {
+    phase: 'sample', segmentCount: segments.length, strategy,
+    ...(initialProgress.resumedFromRunId ? { resumedFromRunId: initialProgress.resumedFromRunId } : {}),
+  });
+  writeChapterSnapshots(db, revisionId, segments);
+
+  const prompts = store.listPrompts(projectId);
+  const config = prompts[0]?.config || {};
+  const sourceLang = safeText(config.sourceLang, 40) || 'auto';
+  const targetLang = safeText(config.targetLang, 40) || 'zh';
+  const provider = safeText(config.provider, 40) || 'workbuddy';
+  const modelName = safeText(config.model, 240) || 'auto';
+  const scanStartedAt = Date.now();
+  const scan = await scanBookSegmentsConcurrent(segments, { sourceLang });
+  const scanDurationMs = Date.now() - scanStartedAt;
+  const sourceFeatureIndexReused = hasCurrentSourceFeatureIndex(db, revisionId, segments.length, sourceLang);
+  if (!sourceFeatureIndexReused) {
+    persistSourceFeatureIndex(db, revisionId, segments, scan, sourceLang);
+    readySourceFeatureIndexes.set(revisionId, {
+      indexVersion: BOOK_SCAN_INDEX_VERSION,
+      sourceLang,
+      sourceSegmentCount: segments.length,
+      entityMentionCount: scan.indexDiagnostics.entityMentionCount,
+      entityMentionLimit: scan.indexDiagnostics.entityMentionLimit,
+      entityMentionsTruncated: scan.indexDiagnostics.entityMentionsTruncated,
+      textUnitCount: scan.indexDiagnostics.textUnitCount,
+      textUnitLimit: scan.indexDiagnostics.textUnitLimit,
+      textUnitsTruncated: scan.indexDiagnostics.textUnitsTruncated,
+      quantityMentionCount: scan.indexDiagnostics.quantityMentionCount,
+      quantityMentionLimit: scan.indexDiagnostics.quantityMentionLimit,
+      quantityMentionsTruncated: scan.indexDiagnostics.quantityMentionsTruncated,
+    });
+  }
+  const samplePlan = planBookSamples(segments, scan);
+  const samples: Segment[] = samplePlan.samples.map(({ segment }) => ({
+    id: segment.id, ordinal: segment.ordinal, text: segment.text,
+    kind: segment.kind || 'paragraph', contextPath: segment.contextPath || '',
+  }));
+  const sampleReasons = new Map<string, string[]>(samplePlan.samples.map((item) => [item.segment.id, item.reasons] as [string, string[]]));
+  const sampleIds = new Set(samples.map((segment) => segment.id));
+  const samplesById = new Map(samples.map((segment) => [segment.id, segment]));
+  const chapters = chapterMap(segments);
+  const scanSummary = {
+    strategyVersion: 'adaptive-book-scan-v3-source-language-index',
+    segmentCount: scan.segmentCount,
+    sourceCharCount: scan.charCount,
+    chapterCount: scan.chapterCount,
+    dialogueSegmentCount: scan.dialogueSegmentCount,
+    nameCandidateCount: scan.nameCandidates.length,
+    repeatedPhraseCandidateCount: scan.repeatedPhrases.length,
+    entityMentionCount: scan.indexDiagnostics.entityMentionCount,
+    entityMentionsTruncated: scan.indexDiagnostics.entityMentionsTruncated,
+    sentenceAndQuoteUnitCount: scan.indexDiagnostics.textUnitCount,
+    textUnitsTruncated: scan.indexDiagnostics.textUnitsTruncated,
+    quantityMentionCount: scan.indexDiagnostics.quantityMentionCount,
+    quantityMentionsTruncated: scan.indexDiagnostics.quantityMentionsTruncated,
+    ...samplePlan.diagnostics,
+    samplePlan: samplePlan.samples.map((item) => ({
+      segmentId: item.segment.id, ordinal: item.segment.ordinal, chapter: item.segment.contextPath,
+      reasons: item.reasons,
+    })),
+  };
+  store.appendEvent(projectId, runId, 'context-graph.scan.completed', {
+    strategyVersion: scanSummary.strategyVersion,
+    segmentCount: scan.segmentCount, chapterCount: scan.chapterCount,
+    dialogueSegmentCount: scan.dialogueSegmentCount,
+    nameCandidateCount: scan.nameCandidates.length,
+    repeatedPhraseCandidateCount: scan.repeatedPhrases.length,
+    sampleCount: samples.length, sampleLimit: samplePlan.diagnostics.sampleLimit,
+    targetedNameCount: samplePlan.diagnostics.targetedNameCount,
+    entityMentionCount: scan.indexDiagnostics.entityMentionCount,
+    sentenceAndQuoteUnitCount: scan.indexDiagnostics.textUnitCount,
+    quantityMentionCount: scan.indexDiagnostics.quantityMentionCount,
+    indexVersion: BOOK_SCAN_INDEX_VERSION,
+    scanDurationMs,
+    sourceFeatureIndexReused,
+    indexTruncation: {
+      entityMentions: scan.indexDiagnostics.entityMentionsTruncated,
+      textUnits: scan.indexDiagnostics.textUnitsTruncated,
+      quantityMentions: scan.indexDiagnostics.quantityMentionsTruncated,
+    },
+  });
+
+  return {
+    db, revisionId, segments, initialProgress, strategy, sourceLang, targetLang, provider, modelName,
+    scan, scanDurationMs, samples, sampleReasons, sampleIds, samplesById, chapters, scanSummary,
+    samplePlanDiagnostics: samplePlan.diagnostics,
+  };
+}
+
+/**
+ * B 方案：按波次执行分阶段工作流。命中检查点的阶段直接恢复，同波次阶段并发执行，
+ * 任一阶段失败即整体失败，已落库的检查点留给下次恢复。
+ */
+async function runStagedWorkflow(input: {
+  store: ReturnType<typeof getDocumentProjectStore>;
+  db: DatabaseSync;
+  revisionId: string;
+  projectId: string;
+  runId: string;
+  prompt: string;
+  initialProgress: ContextGraphRunProgress;
+  agent: ReturnType<typeof parseAgentModel>;
+  taskProfile: ReturnType<typeof getCodeBuddyTaskProfile>;
+  sampleIds: Set<string>;
+  samples: Segment[];
+  modelAnalysisStartedAt: number;
+  workflowSessionId: string;
+}): Promise<{ data: Record<string, any>; workflowSessionId: string }> {
+  const { store, db, revisionId, projectId, runId, prompt, initialProgress, agent, taskProfile, sampleIds, samples, modelAnalysisStartedAt } = input;
+  let workflowSessionId = input.workflowSessionId;
+  const stageSessionIds = new Map<ContextGraphWorkflowStageId, string>();
+  if (workflowSessionId) stageSessionIds.set('style', workflowSessionId);
+  const resumeFromRunId = typeof initialProgress.resumedFromRunId === 'string' ? initialProgress.resumedFromRunId : '';
+  const checkpointSourceRunId = resumeFromRunId || runId;
+  const completedBefore = new Set<string>(Array.isArray(initialProgress.completedStages) ? initialProgress.completedStages : []);
+  const aggregate: Record<string, any> = {};
+  const stageTimeoutConfigured = Number(process.env.LOCAL_AGENT_CONTEXT_GRAPH_STAGE_TIMEOUT_MS);
+  const stageTimeoutMs = Number.isFinite(stageTimeoutConfigured) && stageTimeoutConfigured > 0
+    ? Math.min(ANALYSIS_TIMEOUT_MS, stageTimeoutConfigured)
+    : Math.min(ANALYSIS_TIMEOUT_MS, 5 * 60 * 1000);
+
+  type WorkflowStage = { id: ContextGraphWorkflowStageId; label: string; phase: string; fields: readonly string[] };
+
+  /** 阶段 Session key：style 沿用 run 级 key，其余阶段按阶段隔离，避免并行分支互相覆盖。 */
+  const stageSessionKey = (stageId: ContextGraphWorkflowStageId, forRunId: string) =>
+    stageId === 'style' ? workflowSessionKey(forRunId) : workflowSessionKey(forRunId, stageId);
+
+  /**
+   * 执行单个阶段：命中检查点直接恢复，否则发起一次结构化调用并落库。
+   * 同波次内多个阶段会并发调用本函数，因此每次读写 progress_json 之间不能插入 await。
+   */
+  const runStage = async (stage: WorkflowStage, waveIndex: number): Promise<void> => {
+    const checkpoint = completedBefore.has(stage.id)
+      ? getMeta(db, revisionId, workflowCheckpointKey(checkpointSourceRunId, stage.id))
+      : null;
+    const validCheckpoint = checkpoint && typeof checkpoint === 'object' && !Array.isArray(checkpoint) &&
+      stage.fields.every((field) => Object.prototype.hasOwnProperty.call(checkpoint, field));
+    if (validCheckpoint) {
+      Object.assign(aggregate, checkpoint);
+      if (checkpointSourceRunId !== runId) saveMeta(db, revisionId, workflowCheckpointKey(runId, stage.id), checkpoint);
+      const restoredProgress = readRunProgress(db, runId);
+      store.appendEvent(projectId, runId, 'context-graph.stage.restored', {
+        strategy: 'B', stage: stage.id, stageLabel: stage.label,
+        sourceRunId: checkpointSourceRunId,
+        completedStageCount: Array.isArray(restoredProgress.completedStages) ? restoredProgress.completedStages.length : 0,
+        stageCount: CONTEXT_GRAPH_WORKFLOW_STAGES.length,
+      });
+      logInfo('context-graph', '恢复已保存阶段 · ' + stage.id + ' · run=' + runId.slice(0, 8));
+      return;
+    }
+
+    const prior = readRunProgress(db, runId);
+    const completedStages = Array.isArray(prior.completedStages) ? prior.completedStages : [];
+    patchRunProgress(db, runId, {
+      strategy: 'B', workflowVersion: CONTEXT_GRAPH_WORKFLOW_VERSION,
+      currentStage: stage.id, completedStages,
+    });
+    store.appendEvent(projectId, runId, 'context-graph.phase', {
+      phase: stage.phase, strategy: 'B', stage: stage.id, stageLabel: stage.label,
+      stageIndex: CONTEXT_GRAPH_WORKFLOW_STAGES.findIndex((item) => item.id === stage.id) + 1,
+      stageCount: CONTEXT_GRAPH_WORKFLOW_STAGES.length, completedStageCount: completedStages.length,
+      waveIndex: waveIndex + 1, waveSize: (CONTEXT_GRAPH_STAGE_WAVES[waveIndex] || []).length,
+    });
+
+    // 并行分支不能共用同一个 Session；能续聊时复用父阶段 Session，避免重发整份样本。
+    const parentStageId = CONTEXT_GRAPH_STAGE_SESSION_PARENT[stage.id];
+    const sessionId = stageSessionIds.get(stage.id)
+      || safeText(getMeta(db, revisionId, stageSessionKey(stage.id, checkpointSourceRunId)), 500)
+      || (parentStageId
+        ? stageSessionIds.get(parentStageId)
+          || safeText(getMeta(db, revisionId, stageSessionKey(parentStageId, checkpointSourceRunId)), 500)
+        : '');
+    const stagePrompt = buildContextGraphWorkflowPrompt(
+      stage.id, prompt, aggregate,
+      agent.provider === 'workbuddy' && !!sessionId,
+    );
+    const stageSchema = buildContextGraphWorkflowSchema(ANALYSIS_SCHEMA, stage.id);
+    const stageStartedAt = Date.now();
+    const stageRun = await runAgentStructured(
+      { provider: agent.provider, model: agent.model },
+      stagePrompt,
+      DEFAULT_CONTEXT_GRAPH_SYSTEM_PROMPT,
+      stageSchema,
+      runId + ':' + stage.id,
+      'context-graph:' + projectId + ':' + revisionId + ':' + runId,
+      taskProfile,
+      {
+        timeoutMs: stageTimeoutMs,
+        ...(agent.provider === 'workbuddy' ? {
+          persistSession: true,
+          ...(sessionId ? { sessionId } : {}),
+          onSessionId: (newSessionId: string) => {
+            stageSessionIds.set(stage.id, newSessionId);
+            saveMeta(db, revisionId, stageSessionKey(stage.id, runId), newSessionId);
+            if (stage.id === 'style') workflowSessionId = newSessionId;
+          },
+        } : {}),
+      },
+    );
+    if (stageRun.usage) logInfo('context-graph', 'B 阶段 ' + stage.id + ' · ' + formatTurnUsageLog(stageRun.usage));
+    if (!stageRun.result || Array.isArray(stageRun.result)) {
+      throw new Error('Context Graph 工作流阶段 ' + stage.id + ' 返回了非对象结果。');
+    }
+    const stageOutput = stageRun.result as Record<string, any>;
+    const missingFields = stage.fields.filter((field) => !Object.prototype.hasOwnProperty.call(stageOutput, field));
+    if (missingFields.length) {
+      throw new Error('Context Graph 工作流阶段 ' + stage.id + ' 缺少结构化字段：' + missingFields.join(', '));
+    }
+    if (stageRun.sessionId && agent.provider === 'workbuddy') {
+      stageSessionIds.set(stage.id, stageRun.sessionId);
+      saveMeta(db, revisionId, stageSessionKey(stage.id, runId), stageRun.sessionId);
+      if (stage.id === 'style') workflowSessionId = stageRun.sessionId;
+    }
+    const stageElapsedMs = Date.now() - stageStartedAt;
+    persistWorkflowStageCheckpoint(
+      db, revisionId, runId, stage.id, stageOutput, stageElapsedMs,
+      sampleIds, samples,
+    );
+    const stageProgress = readRunProgress(db, runId);
+    const stageSummary = Array.isArray(stageProgress.stageResults)
+      ? stageProgress.stageResults.find((item: any) => item.stage === stage.id)
+      : null;
+    store.appendEvent(projectId, runId, 'context-graph.stage.completed', {
+      strategy: 'B', stage: stage.id, stageLabel: stage.label,
+      stageIndex: CONTEXT_GRAPH_WORKFLOW_STAGES.findIndex((item) => item.id === stage.id) + 1,
+      stageCount: CONTEXT_GRAPH_WORKFLOW_STAGES.length,
+      completedStageCount: Array.isArray(stageProgress.completedStages) ? stageProgress.completedStages.length : 0,
+      elapsedMs: stageElapsedMs, outputCounts: stageSummary?.outputCounts || {},
+      waveIndex: waveIndex + 1,
+    });
+    Object.assign(aggregate, stageOutput);
+  };
+
+  for (let waveIndex = 0; waveIndex < CONTEXT_GRAPH_STAGE_WAVES.length; waveIndex++) {
+    const wave = CONTEXT_GRAPH_STAGE_WAVES[waveIndex]!;
+    const stages = wave
+      .map((stageId) => CONTEXT_GRAPH_WORKFLOW_STAGES.find((item) => item.id === stageId) as WorkflowStage | undefined)
+      .filter((stage): stage is WorkflowStage => !!stage);
+    if (!stages.length) continue;
+    // 同波次只写一次 phase：并发阶段各自写会让 UI 的阶段读数来回跳动。
+    db.prepare('UPDATE context_graph_runs SET phase = ? WHERE run_id = ?').run(stages[0]!.phase, runId);
+    if (stages.length > 1) {
+      logInfo('context-graph', '并行波次 ' + (waveIndex + 1) + '/' + CONTEXT_GRAPH_STAGE_WAVES.length +
+        ' · ' + stages.map((stage) => stage.id).join('+'));
+    }
+    // 同波次阶段互不依赖；任一失败即整体失败，已落库的检查点留给下次恢复。
+    await Promise.all(stages.map((stage) => runStage(stage, waveIndex)));
+  }
+
+  const data: Record<string, any> = aggregate;
+  patchRunProgress(db, runId, {
+    strategy: 'B', workflowVersion: CONTEXT_GRAPH_WORKFLOW_VERSION,
+    currentStage: null, workflowElapsedMs: Date.now() - modelAnalysisStartedAt,
+    completedStages: CONTEXT_GRAPH_WORKFLOW_STAGES.map((stage) => stage.id),
+  });
+  return { data, workflowSessionId };
+}
+
+/** A 方案：一次结构化调用产出整本图谱；失败即整体失败，不做部分采纳。 */
+async function runSingleShotAnalysis(input: {
+  db: DatabaseSync;
+  projectId: string;
+  revisionId: string;
+  runId: string;
+  prompt: string;
+  agent: ReturnType<typeof parseAgentModel>;
+  taskProfile: ReturnType<typeof getCodeBuddyTaskProfile>;
+  modelAnalysisStartedAt: number;
+}): Promise<Record<string, any>> {
+  const { db, projectId, revisionId, runId, prompt, agent, taskProfile, modelAnalysisStartedAt } = input;
+  const analysisRun = await runAgentStructured(
+    { provider: agent.provider, model: agent.model },
+    prompt,
+    DEFAULT_CONTEXT_GRAPH_SYSTEM_PROMPT,
+    ANALYSIS_SCHEMA,
+    runId,
+    'context-graph:' + projectId + ':' + revisionId + ':' + runId,
+    taskProfile,
+    { timeoutMs: ANALYSIS_TIMEOUT_MS },
+  );
+  if (analysisRun.usage) logInfo('context-graph', formatTurnUsageLog(analysisRun.usage));
+  const output = analysisRun.result;
+  if (!output || Array.isArray(output)) throw new Error('Context Graph 分析返回了非对象结果。');
+  const data = output as Record<string, any>;
+  patchRunProgress(db, runId, {
+    strategy: 'A', workflowVersion: CONTEXT_GRAPH_WORKFLOW_VERSION,
+    currentStage: null, workflowElapsedMs: Date.now() - modelAnalysisStartedAt,
+  });
+  return data;
+}
+
+/**
+ * 文风字段的定向补全：有些 provider 把 schema 当形状提示，仍会返回空字符串。
+ * 只补这几个字段，补完仍为空则整轮失败——不拿空文风冒充完成。
+ */
+async function completeStyleGuide(input: {
+  db: DatabaseSync;
+  projectId: string;
+  revisionId: string;
+  runId: string;
+  prompt: string;
+  data: Record<string, any>;
+  strategy: ContextGraphAnalysisStrategy;
+  agent: ReturnType<typeof parseAgentModel>;
+  taskProfile: ReturnType<typeof getCodeBuddyTaskProfile>;
+  modelAnalysisStartedAt: number;
+  sampleIds: Set<string>;
+  samples: Segment[];
+  workflowSessionId?: string;
+}): Promise<{
+  styleRepairUsed: boolean;
+  styleFieldCoverage: Record<string, boolean>;
+  styleRuleCount: number;
+  styleAvoidCount: number;
+  styleEvidenceCount: number;
+}> {
+  const { db, projectId, revisionId, runId, prompt, data, strategy, agent, taskProfile, modelAnalysisStartedAt, sampleIds, samples } = input;
+  let workflowSessionId = input.workflowSessionId || '';
+  const styleDimensions = ['narrativeStyle', 'styleRegister', 'styleRhythm', 'styleDialogue', 'styleDiction'];
+  const findMissingStyleFields = (value: Record<string, any>) => [
+    ...styleDimensions.filter((field) => !safeText(value[field], 1000)),
+    ...(!Array.isArray(value.styleRules) || uniqueStrings(value.styleRules, 24, 240).length === 0 ? ['styleRules'] : []),
+  ];
+  let missingStyleDimensions = findMissingStyleFields(data);
+  let styleRepairUsed = false;
+  if (missingStyleDimensions.length) {
+    styleRepairUsed = true;
+    // Some providers treat a JSON schema as shape guidance and still emit empty strings.
+    // Repair only these fields rather than falsely completing a run with an empty style guide.
+    logWarn('context-graph', '文风字段为空，启动定向补全 · strategy=' + strategy + ' · fields=' + missingStyleDimensions.join(','));
+    const repairStartedAt = Date.now();
+    const repairRun = await runAgentStructured(
+      { provider: agent.provider, model: agent.model },
+      buildContextGraphWorkflowPrompt(
+        'style', prompt, data, strategy === 'B' && agent.provider === 'workbuddy' && !!workflowSessionId,
+      ) + '\n\n上次结构化响应中的以下字段为空：' + missingStyleDimensions.join('、') +
+        '。请重新分析并全部填写这些字段；不能返回空字符串或空规则数组。保持其他字段的证据边界，不要编造原文证据。',
+      DEFAULT_CONTEXT_GRAPH_SYSTEM_PROMPT,
+      buildContextGraphWorkflowSchema(ANALYSIS_SCHEMA, 'style'),
+      runId + ':style-repair',
+      'context-graph:' + projectId + ':' + revisionId + ':' + runId,
+      taskProfile,
+      {
+        timeoutMs: Math.min(ANALYSIS_TIMEOUT_MS, 5 * 60 * 1000),
+        ...(strategy === 'B' && agent.provider === 'workbuddy' ? {
+          persistSession: true,
+          ...(workflowSessionId ? { sessionId: workflowSessionId } : {}),
+          onSessionId: (sessionId: string) => {
+            workflowSessionId = sessionId;
+            saveMeta(db, revisionId, workflowSessionKey(runId), sessionId);
+          },
+        } : {}),
+      },
+    );
+    if (!repairRun.result || Array.isArray(repairRun.result)) throw new Error('Context Graph 文风补全返回了非对象结果。');
+    const repairedStyle = repairRun.result as Record<string, any>;
+    Object.assign(data, repairedStyle);
+    missingStyleDimensions = findMissingStyleFields(data);
+    if (missingStyleDimensions.length) {
+      throw new Error('Context Graph 文风补全后仍缺少有效字段（' + missingStyleDimensions.join('、') +
+        '）。本轮未标记为完成；B 方案已保存的其他阶段结果会在重试时复用。');
+    }
+    if (strategy === 'B') {
+      persistWorkflowStageCheckpoint(
+        db, revisionId, runId, 'style',
+        Object.fromEntries(CONTEXT_GRAPH_WORKFLOW_STAGES[0].fields.map((field) => [field, data[field]])),
+        Date.now() - repairStartedAt, sampleIds, samples,
+      );
+    }
+  }
+  const styleFieldCoverage = Object.fromEntries(
+    styleDimensions.map((field) => [field, !!safeText(data[field], 1000)]),
+  ) as Record<string, boolean>;
+  const styleRuleCount = uniqueStrings(data.styleRules, 24, 240).length;
+  const styleAvoidCount = uniqueStrings(data.styleAvoid, 16, 240).length;
+  const styleEvidenceCount = Array.isArray(data.styleEvidence) ? data.styleEvidence.length : 0;
+  patchRunProgress(db, runId, {
+    workflowElapsedMs: Date.now() - modelAnalysisStartedAt,
+    styleRepairUsed, styleFieldCoverage, styleRuleCount, styleAvoidCount, styleEvidenceCount,
+  });
+  return { styleRepairUsed, styleFieldCoverage, styleRuleCount, styleAvoidCount, styleEvidenceCount };
+}
+
 
 /**
  * 幂等地排队并异步启动当前 source revision 的 Context Graph 预处理。

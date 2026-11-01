@@ -261,7 +261,7 @@ export function getMeta(db: DatabaseSync, revisionId: string, key: string): any 
   try { return JSON.parse(row.value); } catch { return null; }
 }
 
-type ContextGraphRunProgress = Record<string, any>;
+export type ContextGraphRunProgress = Record<string, any>;
 
 /**
  * 读取 run 的 progress_json 并解析为对象；失败时返回空对象。
