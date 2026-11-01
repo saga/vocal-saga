@@ -217,6 +217,20 @@ test('failed scope excludes segments repaired and accepted by a later Run', asyn
   });
 });
 
+test('failed scope never selects a segment with a current manual edit', async () => {
+  await withStore((store) => {
+    const project = store.createProject({ title: 'Failed scope manual protection', format: 'epub', segments });
+    const failed = store.createRun(project.projectId, { scope: { type: 'ids', ids: ['ch1-p1'] } });
+    store.markRunSegments(project.projectId, failed.runId, ['ch1-p1'], 'running');
+    store.markRunSegments(project.projectId, failed.runId, ['ch1-p1'], 'failed', 'temporary provider error');
+    store.finishRun(project.projectId, failed.runId);
+    store.saveManualEdit(project.projectId, 'ch1-p1', '用户已经修订的译文。');
+
+    const retry = store.createRun(project.projectId, { scope: { type: 'failed' } });
+    assert.equal(retry.counts.total, 0, 'a current manual edit must not be overwritten by a failed-scope rerun');
+  });
+});
+
 test('failed scope ignores failures from superseded source revisions', async () => {
   await withStore((store) => {
     const project = store.createProject({ title: 'Failed scope source pinning', format: 'epub', segments });
