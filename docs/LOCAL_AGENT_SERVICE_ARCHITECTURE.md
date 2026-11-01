@@ -97,15 +97,16 @@ sequenceDiagram
     end
     Agent->>Store: finishRun（根据候选、失败和未完成片段计算状态）
     Store-->>UI: Run 状态 + 持久化事件轨迹
-    UI->>HTTP: 用户明确采纳
-    HTTP->>Store: acceptCandidates
-    Store->>DB: 写入 accepted 状态并保护人工编辑
+    Agent->>Store: Run 最终化时自动采纳有效候选
+    Store->>DB: 写入 accepted 状态并保护更新的人工编辑
+    UI->>HTTP: 用户可事后修改或拒绝
+    HTTP->>Store: saveManualEdit / persist rejection
 ```
 
 ### 关键边界
 
 - **Run 创建先于后台执行**：持久化 Run 和选中片段后才调用 `startProjectTranslationRun`。后台工作不是 HTTP 请求生命周期的一部分。
-- **候选译文与已采纳译文分离**：`saveCandidates` 写入本次 Run 的候选；只有明确采纳或人工编辑才改变已采纳译文。审校可改进候选，但不绕过采纳门槛。
+- **候选译文与已采纳译文分离**：`saveCandidates` 写入本次 Run 的候选；Run 最终化时自动采纳来源/结构校验通过且未被更新人工编辑覆盖的候选。用户不需要逐段点击确认，可以事后修改或拒绝；审校失败保留有效初译，不绕过来源与版本校验。
 - **状态转换以 SQLite 为准**：内存中的 `activeRuns` 只用于本进程去重，不是持久化状态来源。服务重启后应从 Store 恢复状态或重试失败范围。
 - **停止边界是写入边界**：模型调用前、调用返回后、候选写入前都需要再次检查 Run 状态；数据库事务还会拒绝在取消/暂停后提交迟到结果。
 - **审校不是翻译成功的前置条件**：审校失败会写入 warning，并保留有效初译候选。审校修订和 supporting findings 应一起原子提交。
