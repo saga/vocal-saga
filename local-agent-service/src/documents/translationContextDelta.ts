@@ -53,26 +53,42 @@ export type ContextDeltaDiagnostics = {
   rejectedConflicts: number;
 };
 
+/**
+ * 返回空的已验证 context_delta，用于初始化与合并基底。
+ */
 export function emptyTranslationContextDelta(): ValidatedTranslationContextDelta {
   return { entityCandidates: [], entityMentions: [], relationshipDeltas: [], openQuestions: [], conflicts: [] };
 }
 
+/**
+ * 清洗并截断文本：移除控制字符、折叠空白，按 limit 截断；非字符串返回空。
+ */
 function text(value: unknown, limit = 240): string {
   return typeof value === 'string'
     ? value.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, limit)
     : '';
 }
 
+/**
+ * NFKC 归一化 + 小写 + 空白折叠，用于宽松匹配与去重键。
+ */
 function normalized(value: unknown): string {
   return text(value, 2000).normalize('NFKC').toLocaleLowerCase().replace(/\s+/g, ' ').trim();
 }
 
+/**
+ * 判断 needle（归一化后）是否包含于 haystack（归一化后）。
+ */
 function includesNormalized(haystack: unknown, needle: unknown): boolean {
   const source = normalized(haystack);
   const quote = normalized(needle);
   return !!source && !!quote && source.includes(quote);
 }
 
+/**
+ * 校验并提取原文证据：segmentId 必须存在、quote 长度达标且能在对应原文中找到；
+ * 去重，最多 4 条。
+ */
 function sourceEvidence(raw: unknown, sourceById: Map<string, string>, minimumLength = 8): ContextEvidence[] {
   if (!Array.isArray(raw)) return [];
   const output: ContextEvidence[] = [];
@@ -92,6 +108,9 @@ function sourceEvidence(raw: unknown, sourceById: Map<string, string>, minimumLe
   return output;
 }
 
+/**
+ * 判断 name 是否作为独立词/短语出现在 source 中；拉丁名称按单词边界匹配，CJK 直接子串匹配。
+ */
 function hasName(source: string, name: string): boolean {
   const value = normalized(name);
   if (!value) return false;
@@ -389,6 +408,9 @@ export function combineTranslationContextDeltas(
   return combined;
 }
 
+/**
+ * 归一化实体 kind：将人物别名/称谓/头衔等呈现层形式统一为 'person'，避免绕过冲突保护。
+ */
 function normalizedEntityKind(value: unknown): string {
   const kind = text(value, 40).toLocaleLowerCase();
   // The model may label a person's textual reference as an epithet, nickname or title,

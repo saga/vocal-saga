@@ -37,6 +37,10 @@ void _MAX_BODY_BYTES;
  * task role, model, language direction and prompt profile. Invalid/missing IDs retain the
  * existing one-off/shared behavior instead of creating an unbounded set of arbitrary sessions.
  */
+/**
+ * 构建文档会话作用域键：按文档指纹/角色/模型/语言方向/Prompt 签名隔离会话。
+ * 无效或缺失的 documentSessionId 返回 undefined，保留一次性/共享行为。
+ */
 function buildDocumentSessionScope(
   body: any,
   agent: { provider: string; model: string },
@@ -52,6 +56,7 @@ function buildDocumentSessionScope(
     typeof source.systemPromptOverride === 'string' ? source.systemPromptOverride : '',
     typeof source.userPromptTemplate === 'string' ? source.userPromptTemplate : '',
   ].join('\u0000');
+  // FNV-1a 哈希：Prompt 变化时生成新的会话作用域，避免复用旧系统指令。
   let promptHash = 0x811c9dc5;
   for (let index = 0; index < promptSignature.length; index++) {
     promptHash = Math.imul(promptHash ^ promptSignature.charCodeAt(index), 0x01000193);
@@ -72,13 +77,31 @@ function buildDocumentSessionScope(
 }
 
 /**
- * 通用 HTTP 路由分发入口。文档项目 API 优先委托给 projectRoutes，其他接口由本模块处理。
- * /api 与 /v1 路径在进入业务分支前统一鉴权；本函数只负责请求/响应适配，
- * 持久化、Run 状态转换和长任务生命周期分别归 DocumentProjectStore 与 translationAgent。
+ * 通用 HTTP 路由分发入口（本机 Agent 服务的总路由）。
+ *
+ * 职责划分：
+ *  - 文档项目相关 API（/api/documents/projects/*）优先委托给 projectRoutes.handleDocumentProjectRequest，
+ *    本函数不重复实现其持久化/Run 生命周期。
+ *  - 其余接口（健康检查、模型列表、历史/缓存/会话、翻译批处理规划、任务 Prompt、
+ *    chat completions、文学分析与审校）由本模块直接处理。
+ *  - /api 与 /v1 路径在进入业务分支前统一鉴权（authorize），未通过返回 401。
+ *
+ * 设计约定：
+ *  - 每个分支处理完后立即 sendJson/sendApiError 并 return，避免落入后续分支。
+ *  - 长任务（chat/analyze/review）统一记录 requestId、startedAt，成功/失败均写入 request_history
+ *    并输出结构化日志，便于按 request ID 关联排查。
+ *  - 本函数只做请求/响应适配与参数校验；持久化、Run 状态转换与长任务生命周期
+ *    分别归 DocumentProjectStore 与 translationAgent 模块。
+ *
+ * @param req Express 请求对象
+ * @param res Express 响应对象
  */
 export async function handleRequest(req: Request, res: Response): Promise<void> {
+  // 取得已初始化的 SQLite 连接（启动时由 db.ts 建立）；后续所有分支共享同一连接。
   const db = database!;
+  // 将原始 URL 解析为标准 URL 对象，便于按 pathname/method 分发；host 仅作占位。
   const url = new URL(req.url || '/', 'http://127.0.0.1');
+  // 健康检查：不鉴权，供扩展/CLI/监控探测服务是否存活及基础配置。
   if (req.method === 'GET' && url.pathname === '/health') {
     sendJson(res, 200, {
       ok: true, service: 'vocal-saga-local-agent', version: '1.0.0',
@@ -87,11 +110,13 @@ export async function handleRequest(req: Request, res: Response): Promise<void> 
     });
     return;
   }
+  // 鉴权：/v1/ 与 /api/ 路径在进入业务分支前统一鉴权；未通过返回 401。
   // authorize via middleware.ts
   if ((url.pathname.startsWith('/v1/') || url.pathname.startsWith('/api/')) && !authorize(req)) {
     sendApiError(res, 401, '本机服务 Token 不正确或未提供', { message: '本机服务 Token 不正确或未提供', type: 'authentication_error' });
     return;
   }
+  // 诊断信息：返回服务实际运行配置的路径与存储策略，供设置页展示（不暴露密钥）。
   if (req.method === 'GET' && url.pathname === '/api/settings/diagnostics') {
     sendJson(res, 200, {
       paths: {
@@ -109,8 +134,10 @@ export async function handleRequest(req: Request, res: Response): Promise<void> 
     return;
   }
 
+  // 文档项目 API 优先委托给 projectRoutes：持久化/Run 生命周期由其处理，本函数不重复实现。
   if (await handleDocumentProjectRequest(req, res, url)) return;
 
+  // OpenAI 兼容的模型列表：仅暴露本机两种运行时（workbuddy / opencode）。
   if (req.method === 'GET' && url.pathname === '/v1/models') {
     sendJson(res, 200, { object: 'list', data: [
       { id: 'workbuddy', object: 'model', owned_by: 'local' },
@@ -118,6 +145,7 @@ export async function handleRequest(req: Request, res: Response): Promise<void> 
     ] });
     return;
   }
+  // CodeBuddy 可用模型目录：从本地 catalog 读取，供前端模型选择器使用。
   if (req.method === 'GET' && url.pathname === '/api/codebuddy/models') {
     const catalog = readModelCatalog({ projectRoot: WORK_DIR });
     sendJson(res, 200, {
@@ -128,6 +156,7 @@ export async function handleRequest(req: Request, res: Response): Promise<void> 
   }
   // Context-window tiers are config options, not model-list metadata. Clients should refresh
   // this endpoint whenever the selected model changes and display a selector only when one exists.
+  // CodeBuddy 上下文窗口档位：按所选模型返回可选配置，前端仅在存在时展示选择器。
   if (req.method === 'GET' && url.pathname === '/api/codebuddy/config-options') {
     const catalog = readModelCatalog({ projectRoot: WORK_DIR });
     const requestedModel = (url.searchParams.get('model') || '').trim();
@@ -145,6 +174,7 @@ export async function handleRequest(req: Request, res: Response): Promise<void> 
     });
     return;
   }
+  // 请求历史查询：按时间倒序返回最近 N 条（上限 100），含请求/响应摘要。
   if (req.method === 'GET' && url.pathname === '/api/history') {
     const limit = Math.max(1, Math.min(100, Number.parseInt(url.searchParams.get('limit') || '30', 10)));
     const rows = db.prepare(
@@ -154,12 +184,14 @@ export async function handleRequest(req: Request, res: Response): Promise<void> 
     sendJson(res, 200, { rows, storeContent: STORE_CONTENT });
     return;
   }
+  // 清空请求历史。
   if (req.method === 'DELETE' && url.pathname === '/api/history') {
     db.exec('DELETE FROM request_history;');
     sendJson(res, 200, { cleared: true });
     return;
   }
 
+  // 翻译缓存读取：按 cacheKey 查询，命中返回 value。
   if (req.method === 'POST' && url.pathname === '/api/cache/translation/get') {
     const cacheKey = typeof req.body?.cacheKey === 'string' ? req.body.cacheKey : '';
     if (!cacheKey || cacheKey.length > 500) { sendApiError(res, 400, 'cacheKey 必须是 1-500 字符'); return; }
@@ -167,6 +199,7 @@ export async function handleRequest(req: Request, res: Response): Promise<void> 
     sendJson(res, 200, { hit: value !== null, value });
     return;
   }
+  // 翻译缓存写入：校验 cacheKey/value/ttlMs，ttlMs 为 0 立即过期，最大 365 天。
   if (req.method === 'POST' && url.pathname === '/api/cache/translation/set') {
     const cacheKey = typeof req.body?.cacheKey === 'string' ? req.body.cacheKey : '';
     if (!cacheKey || cacheKey.length > 500 || !Object.prototype.hasOwnProperty.call(req.body || {}, 'value')) {
@@ -182,6 +215,7 @@ export async function handleRequest(req: Request, res: Response): Promise<void> 
     sendJson(res, 200, { saved: true });
     return;
   }
+  // 翻译缓存按 key 删除。
   if (req.method === 'POST' && url.pathname === '/api/cache/translation/delete') {
     const cacheKey = typeof req.body?.cacheKey === 'string' ? req.body.cacheKey : '';
     if (!cacheKey || cacheKey.length > 500) {
@@ -192,11 +226,13 @@ export async function handleRequest(req: Request, res: Response): Promise<void> 
     sendJson(res, 200, { deleted: true });
     return;
   }
+  // 清空全部翻译缓存。
   if (req.method === 'DELETE' && url.pathname === '/api/cache/translation') {
     db.prepare('DELETE FROM translation_cache').run();
     sendJson(res, 200, { cleared: true });
     return;
   }
+  // 文档会话摘要查询：仅返回元信息（不含 payload），供 UI 展示。
   if (req.method === 'POST' && url.pathname === '/api/documents/session/summary') {
     const sessionId = typeof req.body?.sessionId === 'string' ? req.body.sessionId.trim() : '';
     if (!sessionId || sessionId.length > 500) { sendApiError(res, 400, 'sessionId 必须是 1-500 字符'); return; }
@@ -208,6 +244,7 @@ export async function handleRequest(req: Request, res: Response): Promise<void> 
     });
     return;
   }
+  // 文档会话读取：返回完整 payload；损坏数据会被删除并返回 found=false。
   if (req.method === 'POST' && url.pathname === '/api/documents/session/get') {
     const sessionId = typeof req.body?.sessionId === 'string' ? req.body.sessionId.trim() : '';
     if (!sessionId || sessionId.length > 500) { sendApiError(res, 400, 'sessionId 必须是 1-500 字符'); return; }
@@ -223,6 +260,7 @@ export async function handleRequest(req: Request, res: Response): Promise<void> 
     }
     return;
   }
+  // 文档会话保存：支持 mergeExisting 增量合并 checkpoint。
   if (req.method === 'POST' && url.pathname === '/api/documents/session/save') {
     const sessionId = typeof req.body?.sessionId === 'string' ? req.body.sessionId.trim() : '';
     if (!sessionId || sessionId.length > 500) { sendApiError(res, 400, 'sessionId 必须是 1-500 字符'); return; }
@@ -232,6 +270,7 @@ export async function handleRequest(req: Request, res: Response): Promise<void> 
     sendJson(res, 200, { saved: true, updatedAt: new Date().toISOString() });
     return;
   }
+  // 文档会话删除：按路径参数 sessionId 删除。
   if (req.method === 'DELETE' && url.pathname.startsWith('/api/documents/session/')) {
     let sessionId = '';
     try { sessionId = decodeURIComponent(url.pathname.slice('/api/documents/session/'.length)).trim(); }
@@ -241,6 +280,7 @@ export async function handleRequest(req: Request, res: Response): Promise<void> 
     sendJson(res, 200, { deleted: true });
     return;
   }
+  // 翻译批处理规划：按预算（字符数/段数/上下文切换）将分段切分为批次。
   if (req.method === 'POST' && url.pathname === '/api/documents/batches') {
     const segments = normalizeDocumentSegments(req.body?.segments);
     const maxChars = Number.isFinite(req.body?.budget?.maxChars) ? Math.max(100, Math.min(50000, Math.floor(req.body.budget.maxChars))) : 3000;
@@ -250,6 +290,7 @@ export async function handleRequest(req: Request, res: Response): Promise<void> 
     let current: Array<{ id: string }> = [];
     let chars = 0;
     let currentGroup = '';
+    // 贪心分批：超预算或上下文切换时切分新批次。
     for (const segment of segments) {
       const group = segment.contextPath + '|page:' + (segment.page ?? '');
       if (current.length && (chars + segment.text.length > maxChars || current.length >= maxSegments ||
@@ -264,6 +305,7 @@ export async function handleRequest(req: Request, res: Response): Promise<void> 
     return;
   }
 
+  // 任务 Prompt 预览：返回文学分析/审校/Context Graph 的默认系统与用户 Prompt 模板。
   if (req.method === 'GET' && url.pathname === '/api/config/task-prompts') {
     const literaryPrompts = getDefaultLiteraryTaskPromptPreviews();
     sendJson(res, 200, {
@@ -283,18 +325,22 @@ export async function handleRequest(req: Request, res: Response): Promise<void> 
     return;
   }
 
+  // 仅支持的长任务端点；其余路径返回 404。
   const supported = new Set([
     'POST /v1/chat/completions',
     'POST /api/translate/document/literary/analyze',
     'POST /api/translate/document/literary/review',
   ]);
+  // 未知端点返回 404。
   if (!supported.has(req.method + ' ' + url.pathname)) {
     sendApiError(res, 404, '未知端点：' + req.method + ' ' + url.pathname, { message: '未知端点：' + req.method + ' ' + url.pathname, type: 'not_found_error' });
     return;
   }
 
+  // 长任务统一上下文：记录开始时间与请求 ID，用于日志关联与耗时统计。
   const startedAt = Date.now();
   const requestId = randomUUID();
+  // 请求上下文默认值：body/agent/output 在 try 中填充，catch 中复用。
   let body: any = {};
   let agent: { provider: string; model: string } = { provider: 'unknown', model: '' };
   let output = '';
@@ -303,6 +349,7 @@ export async function handleRequest(req: Request, res: Response): Promise<void> 
     if (!body || typeof body !== 'object' || Array.isArray(body)) {
       throw Object.assign(new Error('JSON 请求体必须是对象'), { status: 400 });
     }
+    // OpenAI 兼容的 chat completions：支持文本与 JSON/结构化输出模式。
     if (url.pathname === '/v1/chat/completions') {
       if (typeof body.model !== 'string' || !body.model.trim()) throw Object.assign(new Error('model 是必填字段'), { status: 400 });
       const normalized = normalizeMessages(body.messages);
@@ -331,6 +378,7 @@ export async function handleRequest(req: Request, res: Response): Promise<void> 
         ' structured=' + String(!!jsonSchema) +
         ' storeContent=' + String(STORE_CONTENT),
       );
+      // 为文档任务构建会话作用域，复用同一文档/角色的对话历史。
       const sessionScope = buildDocumentSessionScope(body, agent, 'translation', body.metadata);
       const taskProfiles = body.metadata?.taskProfiles;
       const taskProfile = taskProfiles && typeof taskProfiles === 'object'
@@ -381,6 +429,7 @@ export async function handleRequest(req: Request, res: Response): Promise<void> 
           total_tokens: (usageMeta?.inputTokens ?? 0) + (usageMeta?.outputTokens ?? 0),
         },
       });
+    // 文学分析端点：调用 runLiteraryAnalysis 生成实体/关系等。
     } else if (url.pathname.endsWith('/analyze')) {
       agent = parseAgentModel(body.model || 'auto', body.runtime || body.provider || '');
       logInfo('local-agent',
@@ -391,6 +440,7 @@ export async function handleRequest(req: Request, res: Response): Promise<void> 
         ' segments=' + (Array.isArray(body.segments) ? body.segments.length : 0) +
         ' storeContent=' + String(STORE_CONTENT),
       );
+      // 分析任务的会话作用域（与翻译/审校隔离）。
       const sessionScope = buildDocumentSessionScope(body, agent, 'analysis');
       const result = await runLiteraryAnalysis(body, requestId, sessionScope);
       output = JSON.stringify(result);
@@ -405,6 +455,7 @@ export async function handleRequest(req: Request, res: Response): Promise<void> 
         ' segments=' + (Array.isArray(body.segments) ? body.segments.length : 0) +
         ' storeContent=' + String(STORE_CONTENT),
       );
+      // 审校任务的会话作用域（与翻译/分析隔离）。
       const sessionScope = buildDocumentSessionScope(body, agent, 'review');
       // The legacy standalone Reviewer is still used for explicit "re-review this segment"
       // actions. Give it the same deterministic canonical-name protection as Project Runs,
@@ -412,6 +463,7 @@ export async function handleRequest(req: Request, res: Response): Promise<void> 
       // Standalone re-review is not tied to an immutable server Run. Never trust a client-supplied
       // TranslationBrief/voiceContext; reconstruct both from the current submitted source and
       // the server-filtered, source-grounded literary-memory projection.
+      // 独立审校：重建来源可信的记忆/Context Graph，不信任客户端提供的 TranslationBrief。
       const precedingSegments = Array.isArray(body.precedingSegments)
         ? body.precedingSegments.slice(-4).flatMap((item: any) => {
             if (!item || typeof item.id !== 'string' || typeof item.text !== 'string' || !item.text.trim()) return [];
@@ -460,6 +512,7 @@ export async function handleRequest(req: Request, res: Response): Promise<void> 
       ' durationMs=' + durationMs +
       ' outputChars=' + output.length,
     );
+  // 统一错误处理：记录历史与日志，按端点返回 OpenAI 兼容或标准错误信封。
   } catch (error: any) {
     const status = Number.isInteger(error?.status) ? error.status : 502;
     const message = error instanceof Error ? error.message : String(error);

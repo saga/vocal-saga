@@ -2,6 +2,13 @@ import { DEFAULT_OPENCODE_MODEL, DEFAULT_PROVIDER, DEFAULT_WORKBUDDY_MODEL } fro
 import { logInfo } from './log.ts';
 import { jsonrepair } from 'jsonrepair';
 
+/**
+ * 解析用户/配置传入的模型字符串，拆分出 provider 与 model。
+ *
+ * 支持 "workbuddy:model"、"opencode:model"、"local-workbuddy:model" 等前缀；
+ * 未指定 provider 时根据 hint 或默认 Provider 推断。"auto"/空值回退到 CLI/SDK 默认模型，
+ * OpenCode 的非空模型必须包含 "/"（provider/model 格式）。
+ */
 export function parseAgentModel(modelValue: unknown, providerHint = '') {
   const raw = typeof modelValue === 'string' ? modelValue.trim() : '';
   const hint = typeof providerHint === 'string' ? providerHint.trim().toLowerCase() : '';
@@ -33,6 +40,11 @@ export function parseAgentModel(modelValue: unknown, providerHint = '') {
   return { provider, model };
 }
 
+/**
+ * 将 OpenAI 风格 messages 数组归一化为 system prompt 与 user prompt。
+ * 跳过 role 非法或内容为空的条目；system/developer 合并为系统指令，其余按角色拼接为对话文本。
+ * @throws messages 为空或无有效 user/assistant 内容时抛错。
+ */
 export function normalizeMessages(messages: any) {
   if (!Array.isArray(messages) || messages.length === 0) throw new Error('messages 必须是非空数组');
   const system: string[] = [];
@@ -52,6 +64,10 @@ export function normalizeMessages(messages: any) {
   return { systemPrompt: system.join('\n\n'), userPrompt: conversation.join('\n\n') };
 }
 
+/**
+ * 在 normalizeMessages 基础上，为 JSON 模式追加"只输出严格 JSON"的格式约束。
+ * 返回 { systemPrompt, prompt } 供 Agent 调用使用。
+ */
 export function buildAgentPrompt(messages: any, jsonMode = false) {
   const normalized = normalizeMessages(messages);
   const formatRule = jsonMode
@@ -163,6 +179,10 @@ function containerItemCount(value: Record<string, any> | any[] | null): number {
 }
 
 /** Retain an object-only parser for the literary analysis and Reviewer schemas. */
+/**
+ * 仅保留对象形态的解析器：复用 parseJsonValue，若结果是数组则返回 null。
+ * 用于文学分析与 Reviewer 等必须返回 JSON 对象的场景。
+ */
 export function parseJsonObject(text: unknown, context = ''): Record<string, any> | null {
   const parsed = parseJsonValue(text, context);
   return parsed && !Array.isArray(parsed) ? parsed as Record<string, any> : null;

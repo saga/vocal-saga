@@ -63,6 +63,10 @@ function fingerprint(value: unknown): string {
 
 export type ChineseEditorialProfileReviewAction = 'reject';
 
+/**
+ * 应用中文编辑档案的人工审核动作。当前仅支持 'reject'（停用），将档案标记为 rejected 并清除确认信息。
+ * 任何其它 action 抛错，因为档案默认启用、无需确认。
+ */
 export function applyChineseEditorialProfileReview(
   profile: Record<string, any> | null | undefined,
   action: ChineseEditorialProfileReviewAction,
@@ -76,6 +80,10 @@ export function applyChineseEditorialProfileReview(
 /**
  * Build a book-level Chinese target voice from accepted translations only.
  * Source text is used locally for deterministic sample selection and is never placed in the model prompt.
+ *
+ * 从已采纳译文构建书级中文目标语表达档案：校验运行模式/语言/来源版本，查询采纳样本，
+ * 确定性抽样，调用模型归纳风格档案，证据校验后自动采纳/更新 LiteraryMemory。
+ * 样本指纹 unchanged 或用户拒绝/用户管理时跳过。
  */
 export async function refreshChineseEditorialProfile(projectId: string, runId: string): Promise<void> {
   const store = getDocumentProjectStore();
@@ -333,6 +341,9 @@ export async function refreshChineseEditorialProfile(projectId: string, runId: s
 }
 
 /** Idempotent background trigger used after candidate acceptance and completed runs. */
+/**
+ * 幂等的后台触发器：同一 projectId:runId 不重复启动；失败记录事件但不阻断翻译采纳。
+ */
 export function scheduleChineseEditorialProfileRefresh(projectId: string, runId: string): void {
   const key = projectId + ':' + runId;
   if (activeAnalyses.has(key)) return;

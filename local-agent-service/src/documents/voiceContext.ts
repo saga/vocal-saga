@@ -1,4 +1,9 @@
 /**
+ * 中文：文学声音记忆的服务端清洗器与有界检索器。
+ *
+ * 扩展负责编辑/合并 UX；本地 Agent 服务仍把传入记忆视为不可信数据，保持有界不可变修订，
+ * 并为每批只选择相关的已确认规则。绝不会把该材料放入 contextPath 或当作可执行 prompt。
+ * English:
  * Server-side sanitizer and bounded retrieval for literary voice memory.
  *
  * The extension owns editing/merge UX; the Local Agent service still treats incoming memory as
@@ -14,45 +19,73 @@ const MAX_MEMORY_BYTES = 5 * 1024 * 1024;
 const MAX_RELATION_RULES = 160;
 const MAX_ANCHORS = 240;
 
+/**
+ * 中文：把任意值转为单行、去控制字符、截断到 max 长度的清洗文本；非字符串返回空串。
+ */
 function text(value: unknown, max = 300): string {
   return typeof value === 'string'
     ? value.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max)
     : '';
 }
+/**
+ * 中文：将输入数组清洗为去重、截断后的字符串数组；非数组返回空数组。
+ */
 function list(value: unknown, maxItems: number, maxLength = 180): string[] {
   if (!Array.isArray(value)) return [];
   return Array.from(new Set(value.map((item) => text(item, maxLength)).filter(Boolean))).slice(0, maxItems);
 }
+/**
+ * 中文：若 value 属于 allowed 则返回 value，否则返回 fallback；用于状态字段白名单校验。
+ */
 function status(value: unknown, allowed: string[], fallback = 'candidate'): string {
   return typeof value === 'string' && allowed.includes(value) ? value : fallback;
 }
 
 type ConfirmationSource = 'model-default' | 'user-modified' | 'evidence-verified' | 'user-confirmed' | 'legacy-unknown';
+/**
+ * 中文：仅当 active 为 true 时返回确认来源（白名单校验，未知回退 legacy-unknown）；否则 undefined。
+ */
 function confirmationSource(value: unknown, active: boolean): ConfirmationSource | undefined {
   if (!active) return undefined;
   return value === 'model-default' || value === 'user-modified' || value === 'evidence-verified' || value === 'user-confirmed' || value === 'legacy-unknown'
     ? value : 'legacy-unknown';
 }
+/**
+ * 中文：将输入解析为 [0,1] 范围的有限数值；null/undefined/空串返回 null，非法返回 null。
+ */
 function numericConfidence(value: unknown): number | null {
   if (value === null || value === undefined || value === '') return null;
   const score = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN;
   return Number.isFinite(score) ? Math.max(0, Math.min(1, score)) : null;
 }
+/**
+ * 中文：对字符串做 SHA-256 哈希，用于生成稳定 ID（如 anchorId）。
+ */
 function safeHash(value: string): string {
   return createHash('sha256').update(value, 'utf8').digest('hex');
 }
 
+/**
+ * 中文：按确认来源的优先级（user-confirmed > model-default > evidence-verified > legacy-unknown）合并，
+ * 仅在 incoming 优先级更高时采用 incoming，避免降级。
+ */
 function mergeConfirmationSource(prior: unknown, incoming: unknown): unknown {
   const rank = (value: unknown) => value === 'user-confirmed' ? 4 :
     value === 'model-default' ? 3 : value === 'evidence-verified' ? 2 : value === 'legacy-unknown' ? 1 : 0;
   return rank(incoming) > rank(prior) ? incoming : prior;
 }
 
+/**
+ * 中文：对实体名做 NFKC 归一化、小写化与空白/标点折叠，用于匹配与去重。
+ */
 function normalizeEntityName(value: string): string {
   return value.normalize('NFKC').toLocaleLowerCase().replace(/[\s._'’\-]+/g, ' ').trim();
 }
 
 /**
+ * 中文：名称匹配时避免短拉丁名被当作任意子串（如 "Ann" 不应匹配 "annual"）；
+ * 非拉丁（CJK）名称仍用归一化子串匹配，以支持自然的中文名匹配。
+ * English:
  * Match names without treating a short Latin name as an arbitrary substring
  * (for example, "Ann" must not match "annual"). Non-Latin names retain
  * normalized substring matching so CJK names still work naturally.
@@ -73,6 +106,9 @@ function containsEntityName(sourceText: string, candidateName: string): boolean 
 }
 
 /**
+ * 中文：仅当两个实体的来源/别名集合显式重叠时才合并；保留首个规范来源与译名，
+ * 后续章节可补充别名/证据，但不得静默引入同一人物/对象的竞争译名。
+ * English:
  * Merge entities only when their source/alias sets explicitly overlap.
  * Keep the first canonical source and translation; later chapters may add aliases/evidence,
  * but may not silently introduce a competing translation for the same person or object.
@@ -123,7 +159,10 @@ function mergeProjectEntityRecord(prior: Record<string, any>, candidate: Record<
   };
 }
 
-/** Collapse every explicit alias group, including cases where a new row bridges two old rows. */
+/**
+ * 中文：折叠所有显式别名组，包括新行桥接两个旧行的情况；按 kind/名称重叠合并。
+ * English: Collapse every explicit alias group, including cases where a new row bridges two old rows.
+ */
 function dedupeProjectEntities(entities: Array<Record<string, any>>): Array<Record<string, any>> {
   const merged: Array<Record<string, any>> = [];
   for (const entity of entities) {
@@ -499,6 +538,8 @@ export function sanitizeProjectLiteraryMemory(input: unknown): Record<string, an
   memory.relationships = memory.relationships.filter((relation: any) =>
     !rejectedRelationshipKeys.has([relation.subject, relation.predicate, relation.object].map(normalizeEntityName).join('|')));
 
+  // 中文：上限作用于最终持久化的规范 DTO，而非上面已丢弃的不可信输入字段。
+  // 确定性地裁剪低价值证据；绝不直接切片序列化 JSON（可能破坏记忆 schema）。
   // The cap applies to the canonical DTO that will actually be persisted, not untrusted
   // input fields that are discarded above. Prune lower-value evidence deterministically;
   // never slice serialized JSON (which could corrupt the memory schema).

@@ -44,22 +44,43 @@ export const LITERARY_REVIEW_SCHEMA: Record<string, unknown> = {
   required: ['results'],
 };
 
+/**
+ * 根据人物规范原文名生成稳定的字符 ID（char_ + 8 位十六进制哈希）。
+ * 使用 FNV-1a 32-bit 变体，对 NFKC 规范化并转小写后的名称计算；
+ * 同一规范名在不同章节/运行中得到相同 ID，保证人物身份稳定。
+ * @param name 人物规范原文名（canonicalSourceName）。
+ * @returns 形如 `char_xxxxxxxx` 的稳定 ID。
+ */
 function stableCharacterId(name: string): string {
   let value = 0x811c9dc5;
   const normalized = name.normalize('NFKC').toLocaleLowerCase();
   for (let i = 0; i < normalized.length; i++) value = Math.imul(value ^ normalized.charCodeAt(i), 0x01000193);
   return 'char_' + (value >>> 0).toString(16).padStart(8, '0');
 }
+/**
+ * 将任意输入归一化为 [0,1] 区间的置信度分数；null/undefined/空字符串返回 null。
+ * 非数字或无法转换的值返回 null，最终结果钳制到 [0,1]。
+ * @param value 原始置信度（数字或可转数字字符串）。
+ * @returns 有限且在 [0,1] 的数值，或 null。
+ */
 function confidenceScore(value: unknown): number | null {
   if (value === null || value === undefined || value === '') return null;
   const score = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN;
   return Number.isFinite(score) ? Math.max(0, Math.min(1, score)) : null;
 }
+/**
+ * 将证据文本 NFKC 规范化、合并空白并转小写，用于原文引文的精确包含校验。
+ * @param value 原始证据文本。
+ * @returns 规范化后的证据文本。
+ */
 function normalizeEvidenceText(value: string): string {
   return value.normalize('NFKC').replace(/\s+/g, ' ').trim().toLocaleLowerCase();
 }
 
 /**
+ * 审校 finding 只有在原文引文与译文引文都能在输入原文/初译中逐字定位时，
+ * 才能驱动自动修订；仅凭理由或建议不构成证据。
+ *
  * A Reviewer finding may only drive an automatic correction when both excerpts are grounded
  * in the exact input source and draft. A plausible reason or suggestion alone is not evidence.
  */
@@ -75,6 +96,13 @@ export function isLiteraryReviewFindingGrounded(
     normalizeEvidenceText(source).includes(sourceQuote) &&
     normalizeEvidenceText(draft).includes(draftQuote);
 }
+/**
+ * 为文学分析 Prompt 构建有界大小的书籍记忆上下文。
+ * 对 sanitize 后的记忆做截断与优先级裁剪，确保 JSON 序列化长度不超过 24000 字符；
+ * 低优先级整条记录被丢弃而非截断字符串，保证 JSON 有效。
+ * @param input 原始项目文学记忆（unknown）。
+ * @returns 可直接注入 Prompt 的记忆上下文对象。
+ */
 function buildAnalysisMemoryContext(input: unknown): Record<string, unknown> {
   const memory = sanitizeProjectLiteraryMemory(input);
   const result: Record<string, any> = {
@@ -106,12 +134,22 @@ function buildAnalysisMemoryContext(input: unknown): Record<string, unknown> {
   return result;
 }
 
+/**
+ * 将模型返回的文学分析结果稳定化为可持久化的人物声音画像、关系语言规则、声音锚点与开放问题。
+ * 职责：锁定稳定 characterId、校验原文证据、合并已有确认画像、过滤无效锚点与关系规则。
+ * 边界：无原文证据支撑的人物画像会被丢弃；已确认画像的核心字段不会被新分析静默覆盖，冲突写入 openQuestions。
+ * @param memoryInput 现有项目文学记忆（unknown）。
+ * @param parsed 模型返回的分析 JSON。
+ * @param segments 本章原文片段（含 id/text），用于证据校验。
+ * @returns 稳定化后的人物声音画像、关系语言规则、声音锚点与开放问题。
+ */
 export function stabilizeVoiceAnalysis(
   memoryInput: unknown,
   parsed: Record<string, any>,
   segments: Array<{ id: string; text: string }>,
 ): { characterVoices: any[]; relationshipVoiceRules: any[]; voiceAnchors: any[]; openQuestions: string[] } {
   const existing = sanitizeProjectLiteraryMemory(memoryInput);
+  // 建立片段 ID → 原文映射，后续所有证据引文都必须在对应片段中可定位。
   const validSegments = new Map(segments.map((segment) => [segment.id, segment.text]));
   const normalizeQuote = (segmentId: unknown, quote: unknown): boolean => {
     const sourceText = validSegments.get(typeof segmentId === 'string' ? segmentId : '');
@@ -267,6 +305,16 @@ export function stabilizeVoiceAnalysis(
   return { characterVoices: profiles, relationshipVoiceRules, voiceAnchors, openQuestions: openQuestions.slice(0, 40) };
 }
 
+/**
+ * 校验并规范化传入的翻译/审校片段数组。
+ * 边界：片段数必须在 1-max 之间；审校片段原文/译文长度上限分别为 4000/5000 字符，超出直接拒绝（不截断）；
+ * 分析片段 text 截断到 900 字符。重复 ID 抛出 400 错误。
+ * @param input 原始片段数组。
+ * @param max 允许的最大片段数。
+ * @param type 片段类型：'review' 为审校片段，其他为分析片段。
+ * @returns 规范化后的片段数组。
+ * @throws 片段数不合法、无有效片段或审校片段超长时抛出带 status=400 的错误。
+ */
 export function validateSegments(input: any, max: number, type: string) {
   if (!Array.isArray(input) || input.length < 1 || input.length > max) {
     throw Object.assign(new Error('segments 必须是 1-' + max + ' 个片段的数组'), { status: 400 });
@@ -305,6 +353,7 @@ export function validateSegments(input: any, max: number, type: string) {
   return segments;
 }
 
+/** 文学分析用户 Prompt 模板；占位符为 {{TARGET_LANGUAGE}} 等，单次替换避免源文中的占位符文本被误解释。 */
 export const DEFAULT_LITERARY_ANALYSIS_USER_PROMPT_TEMPLATE = [
   '目标语言：{{TARGET_LANGUAGE}}',
   '章节：{{CHAPTER_TITLE}}',
@@ -314,6 +363,7 @@ export const DEFAULT_LITERARY_ANALYSIS_USER_PROMPT_TEMPLATE = [
   '{{CHAPTER_SEGMENTS_JSON}}',
 ].join('\n\n');
 
+/** 文学分析系统 Prompt：定义书籍记忆分析器的职责、字段与输出约束。 */
 export const DEFAULT_LITERARY_ANALYSIS_SYSTEM_PROMPT = [
   '你是文学作品的书籍记忆分析器，不是翻译器。',
   '只根据给定原文提取记忆，不猜测未出现的事实。新建实体与关系均是建议项，reviewStatus 必须是 suggested；模型不能声称任何条目已经过人工确认。',
@@ -327,8 +377,17 @@ export const DEFAULT_LITERARY_ANALYSIS_SYSTEM_PROMPT = [
   '新人物声音、关系语言规则、声音锚点全部输出 candidate，不能伪称人工审核。只返回 JSON 对象：{ "entities": [], "relationships": [], "styleGuide": {}, "chapterSummary": "", "characterVoices": [], "relationshipVoiceRules": [], "voiceAnchors": [], "openQuestions": [] }。styleGuide 可包含 narrativeVoice、register、rhythm、dialogue、diction、avoid。',
 ].join('\n');
 
+/**
+ * 执行一章的文学分析：校验片段、构建 Prompt、调用模型、稳定化声音画像并返回记忆增量。
+ * 边界：片段数 1-24；实体/关系数组缺失则抛错；summary 截断 420 字符。
+ * @param body 请求体（含 segments、memory、target、chapterTitle、model 等）。
+ * @param requestId 请求 ID，用于日志与模型调用。
+ * @param sessionScope 可选会话范围。
+ * @returns { analyzed, chapterTitle, memory }。
+ */
 export async function runLiteraryAnalysis(body: any, requestId: string, sessionScope?: string) {
   const chapterTitle = typeof body.chapterTitle === 'string' ? body.chapterTitle.slice(0, 160) : '未命名章节';
+  // 校验并规范化本章片段（1-24 个）。
   const segments = validateSegments(body.segments, 24, 'analyze');
   const memory = body.memory && typeof body.memory === 'object' ? body.memory : {};
   const systemPrompt = DEFAULT_LITERARY_ANALYSIS_SYSTEM_PROMPT;
@@ -344,6 +403,7 @@ export async function runLiteraryAnalysis(body: any, requestId: string, sessionS
     (_match, key: string) => promptValues[key] ?? '',
   );
   const agent = parseAgentModel(body.model || 'auto', body.runtime || body.provider || '');
+  // 解析模型并执行 Agent JSON 调用（单次分析）。
   const modelRun = await runAgentJson(
     agent, prompt, systemPrompt, LITERARY_ANALYSIS_SCHEMA, requestId, sessionScope,
     getCodeBuddyTaskProfile(body, 'literaryAnalysis'),
@@ -385,6 +445,13 @@ const REVIEW_FOCUS_CATEGORIES: Record<'accuracy' | 'style' | 'combined', string[
   combined: ['accuracy', 'terminology', 'style'],
 };
 
+/**
+ * 构建文学审校的系统 Prompt 与用户 Prompt。
+ * 职责：按 reviewFocus 生成准确性/文风/合并审校指令，组装目标语言、glossary、voiceContext、Context Graph、
+ * 章节元数据、前文与待审校片段；保持稳定内容前置以利用缓存前缀。
+ * @param input 审校输入（body、segments、reviewFocus、translationBrief、precedingSegments、voiceContext、contextGraph）。
+ * @returns { systemPrompt, prompt, contextChars }。
+ */
 export function buildLiteraryReviewPrompt(input: {
   body: any;
   segments: Array<Record<string, any>>;
@@ -459,6 +526,10 @@ export function buildLiteraryReviewPrompt(input: {
 
 
 /**
+ * 构建仅包含目标语言侧信息的文学记忆视图（用于中文单语文学编辑）。
+ * 故意排除原文名、引文、章节摘要、术语表和源语言证据：
+ * 该上下文服务于中文润色，而非双语正确性审校。
+ *
  * Build a target-language-only view of literary memory. Source names, quotations,
  * chapter summaries, glossary entries and source-linked evidence are intentionally
  * excluded: this context is for Chinese copyediting, not bilingual correctness review.
@@ -528,11 +599,23 @@ export function buildChineseTargetOnlyVoiceContext(input: Record<string, any> | 
   };
 }
 
+/**
+ * 判断中文单语编辑 finding 是否有据：targetExcerpt 必须在 draft 中可逐字定位。
+ * @param draft 中文初译文本。
+ * @param targetExcerpt 模型声称的中文引文。
+ * @returns 引文长度 >=2 且在 draft 中可定位时返回 true。
+ */
 export function isChineseLiteraryFindingGrounded(draft: string, targetExcerpt: unknown): boolean {
   const quote = typeof targetExcerpt === 'string' ? normalizeEvidenceText(targetExcerpt) : '';
   return quote.length >= 2 && normalizeEvidenceText(draft).includes(quote);
 }
 
+/**
+ * 构建中文单语文学编辑的系统 Prompt 与用户 Prompt。
+ * 职责：仅基于中文文本进行保守编辑，使用目标语言侧记忆视图，不暴露源语言。
+ * @param input 编辑输入（body、segments、voiceContext）。
+ * @returns { systemPrompt, prompt, contextChars }。
+ */
 export function buildChineseLiteraryEditingPrompt(input: {
   body: any;
   segments: Array<Record<string, any>>;
@@ -569,7 +652,16 @@ export function buildChineseLiteraryEditingPrompt(input: {
   return { systemPrompt, prompt, contextChars: JSON.stringify(targetOnlyContext).length };
 }
 
+/**
+ * 执行文学审校：校验片段、准备上下文、调用 Reviewer、校验 finding 证据并生成最终译文映射。
+ * 边界：片段数 1-32；候选译文长度 1-5000；无合规译文时回退初译；finding 最多 240 条。
+ * @param body 请求体（含 segments、memory、reviewFocus、translationBrief 等）。
+ * @param requestId 请求 ID。
+ * @param sessionScope 可选会话范围。
+ * @returns 审校结果（translations、reviewedIds、missingIds、findings、usage 等）。
+ */
 export async function runLiteraryReview(body: any, requestId: string, sessionScope?: string) {
+  // 校验并规范化审校片段（1-32 个，原文/译文长度受限）。
   const segments = validateSegments(body.segments, 32, 'review');
   const memory = body.memory && typeof body.memory === 'object' ? body.memory : {};
   const suppliedPrecedingSegments = Array.isArray(body.precedingSegments)
@@ -620,6 +712,7 @@ export async function runLiteraryReview(body: any, requestId: string, sessionSco
     : buildLiteraryReviewPrompt({ body, segments, reviewFocus, translationBrief, precedingSegments, voiceContext, contextGraph });
   const agent = parseAgentModel(body.model || 'auto', body.runtime || body.provider || '');
   const reviewProfile = getCodeBuddyTaskProfile(body, reviewFocus === 'style' ? 'styleReview' : 'accuracyReview');
+  // 解析模型并执行审校调用（带超时保护）。
   const reviewModel = resolveEffectiveTaskModel(agent.model, reviewProfile);
   const modelRun = await runAgentJson(
     agent, prompt, systemPrompt, LITERARY_REVIEW_SCHEMA, requestId, sessionScope,
@@ -643,6 +736,7 @@ export async function runLiteraryReview(body: any, requestId: string, sessionSco
   for (const raw of parsed.results.slice(0, 32)) {
     if (!raw || typeof raw.id !== 'string' || !byId.has(raw.id)) continue;
     const original = byId.get(raw.id);
+    // 候选译文：中文单语编辑取 editedText，其他审校取 finalTranslation；长度 1-5000 才可用。
     let candidateText = (chineseMonolingualEdit
       ? typeof raw.editedText === 'string' ? raw.editedText.trim() : ''
       : typeof raw.finalTranslation === 'string' ? raw.finalTranslation.trim() : '');
@@ -711,6 +805,7 @@ export async function runLiteraryReview(body: any, requestId: string, sessionSco
       candidateText !== original.draft && candidateFindings.length > 0;
     const hasGroundedStyleEdit = reviewFocus !== 'accuracy' && candidateUsable &&
       candidateText !== original.draft && candidateFindings.some((finding) => finding.category === 'style');
+    // 有 must_fix 时采用候选译文；否则仅在有 grounded 文风/中文编辑时才替换，避免无依据改写。
     translations[raw.id] = hasMustFixFinding && candidateUsable
       ? candidateText
       : hasGroundedChineseEdit || hasGroundedStyleEdit ? candidateText : original.draft;
@@ -736,6 +831,11 @@ export async function runLiteraryReview(body: any, requestId: string, sessionSco
 
 
 /** Actual built-in reviewer/analysis prompts used by the service; exposed read-only for the extension UI. */
+/**
+ * 生成内置审校/分析 Prompt 的只读预览，供扩展 UI 展示。
+ * 使用占位符片段构造示例 Prompt，不执行模型调用。
+ * @returns 系统 Prompt 与用户 Prompt 模板预览。
+ */
 export function getDefaultLiteraryTaskPromptPreviews(): {
   systemPrompts: { literaryAnalysis: string; accuracyReview: string; styleReview: string };
   userPromptTemplates: { literaryAnalysis: string; accuracyReview: string; styleReview: string };

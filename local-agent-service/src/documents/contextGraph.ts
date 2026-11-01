@@ -190,6 +190,12 @@ export function readSourceFeatureIndex(db: DatabaseSync, revisionId: string, exp
 // Track the exact live run; a project-level boolean cannot distinguish stale runs from another revision.
 const activeAnalyses = new Map<string, string>();
 
+/**
+ * 协调数据库中残留的陈旧预处理运行记录。
+ * 当进程重启或分析异常终止时， queued/running 状态的 run 可能没有对应执行任务；
+ * 此函数根据 project_events 中的终态事件将其收敛为 completed/failed，或标记为失败并追加失败事件，
+ * 避免 UI 长期显示“分析中”而无法重新分析。
+ */
 function reconcileOrphanedContextGraphRun(projectId: string, db: DatabaseSync, runId: string, reason: string): void {
   db.exec('BEGIN IMMEDIATE');
   try {
@@ -235,6 +241,11 @@ function reconcileOrphanedContextGraphRun(projectId: string, db: DatabaseSync, r
 
 const initializedDbs = new WeakSet<DatabaseSync>();
 
+/**
+ * 确保 Context Graph 相关 SQLite 表与索引存在。
+ * 使用 WeakSet 缓存已初始化的数据库实例，避免每次调用重复执行 DDL；
+ * 表包括 meta、nodes、edges、evidence、chapters、runs、source_features。
+ */
 function ensureSchema(db: DatabaseSync): void {
   if (initializedDbs.has(db)) return;
   db.exec(
@@ -273,6 +284,10 @@ function ensureSchema(db: DatabaseSync): void {
   initializedDbs.add(db);
 }
 
+/**
+ * 将任意值规范化为小写、NFKC 归一化后的字符串。
+ * 统一引号、连字符与空白，用于名称/别名匹配、节点 ID 生成与证据去重。
+ */
 function normalize(value: unknown): string {
   return String(value ?? '').normalize('NFKC')
     .replace(/[‘’‛]/g, "'")
@@ -283,6 +298,11 @@ function normalize(value: unknown): string {
 
 const sourceSegmentsByRevision = new Map<string, Array<{ ordinal: number; text: string }>>();
 
+/**
+ * 读取并缓存指定来源版本的全部源片段（ordinal + text）。
+ * Revisions are immutable，因此可安全缓存；最多保留两份完整索引，
+ * 避免每次候选名称的时间边界检查都重复查询 SQLite。
+ */
 function allSourceSegments(db: any, revisionId: string): Array<{ ordinal: number; text: string }> {
   const cached = sourceSegmentsByRevision.get(revisionId);
   if (cached) {
@@ -304,6 +324,11 @@ function allSourceSegments(db: any, revisionId: string): Array<{ ordinal: number
   return rows;
 }
 
+/**
+ * 判断某个名称是否出现在源文本中。
+ * 英文/拉丁名称要求按单词边界匹配，避免子串误判；
+ * 其他语言退化为子串包含判断。用于实体价值评估、别名可见性与时间边界过滤。
+ */
 function sourceNameMatches(sourceInput: unknown, nameInput: unknown): boolean {
   const source = normalize(sourceInput);
   const name = normalize(nameInput);
@@ -316,27 +341,47 @@ function sourceNameMatches(sourceInput: unknown, nameInput: unknown): boolean {
   return source.includes(name);
 }
 
+/**
+ * 对字符串计算 SHA-256 十六进制摘要，用于生成稳定的节点/边 ID。
+ */
 function hash(value: string): string {
   return createHash('sha256').update(value, 'utf8').digest('hex');
 }
 
+/**
+ * 将任意值安全转换为字符串：移除控制字符、折叠空白、截断到指定长度。
+ * 用于所有模型输出字段的清洗与入库，防止超长或含控制字符的文本破坏存储。
+ */
 function safeText(value: unknown, max = 500): string {
   return typeof value === 'string'
     ? value.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max)
     : '';
 }
 
+/**
+ * 将数组中的字符串清洗、去重并限制数量与长度，返回稳定列表。
+ */
 function uniqueStrings(value: unknown, limit = 12, maxLength = 120): string[] {
   if (!Array.isArray(value)) return [];
   return Array.from(new Set(value.map((item) => safeText(item, maxLength)).filter(Boolean))).slice(0, limit);
 }
 
+/**
+ * 校验引文是否能在源文本中找到（规范化后子串包含）。
+ * 证据校验的基础函数：quote 必须是对应 segment 中连续出现的短引文。
+ */
 function hasQuote(source: string, quote: string): boolean {
   const sourceNorm = normalize(source);
   const quoteNorm = normalize(quote);
   return quoteNorm.length >= 4 && sourceNorm.includes(quoteNorm);
 }
 
+/**
+ * 断言当前没有正在运行的翻译 Run。
+ * 允许忽略一个精确匹配的 queued Run（预处理阶段的自身 Run），
+ * 其余任何 queued/running/paused/awaiting/partial Run 都会阻断图谱修改，
+ * 防止翻译过程中图谱版本发生未记录的漂移。
+ */
 function assertNoActiveTranslation(projectId: string, db: DatabaseSync, ignoreQueuedRunId?: string): void {
   // The worker may prepare Context Graph before moving its own Run from queued to running.
   // Ignore only that exact queued Run; all other active translations still block graph mutation.
@@ -356,6 +401,11 @@ function assertNoActiveTranslation(projectId: string, db: DatabaseSync, ignoreQu
   }
 }
 
+/**
+ * 解析项目对应的 SQLite 数据库与当前（或指定）来源版本 ID。
+ * 若指定的 revisionId 不是当前版本，则校验其存在于 source_revisions，
+ * 保证后续所有读写都在合法的来源版本上进行。
+ */
 function graphContext(projectId: string, sourceRevisionId?: string): { db: DatabaseSync; revisionId: string } {
   const context = getDocumentProjectStore().getProjectContext(projectId);
   ensureSchema(context.db);
@@ -367,6 +417,9 @@ function graphContext(projectId: string, sourceRevisionId?: string): { db: Datab
   return { db: context.db, revisionId };
 }
 
+/**
+ * 读取指定来源版本的全部源片段，并转换为 Segment 结构。
+ */
 function readSegments(projectId: string): { db: DatabaseSync; revisionId: string; segments: Segment[] } {
   const context = graphContext(projectId);
   const rows = context.db.prepare(
@@ -385,6 +438,10 @@ function readSegments(projectId: string): { db: DatabaseSync; revisionId: string
 
 const readySourceFeatureIndexes = new Map<string, Record<string, any>>();
 
+/**
+ * 检查来源特征索引是否已存在且版本/语言/数量均匹配。
+ * 命中内存缓存或数据库 meta + 行数校验；用于避免重复扫描。
+ */
 function hasCurrentSourceFeatureIndex(db: DatabaseSync, revisionId: string, sourceSegmentCount: number, sourceLang = 'auto'): boolean {
   const cached = readySourceFeatureIndexes.get(revisionId);
   if (cached?.indexVersion === BOOK_SCAN_INDEX_VERSION &&
@@ -406,6 +463,11 @@ function hasCurrentSourceFeatureIndex(db: DatabaseSync, revisionId: string, sour
   return true;
 }
 
+/**
+ * 确保数据库中存在当前版本的来源特征索引。
+ * 若已有完整索引则直接返回；否则执行确定性扫描并持久化，
+ * 作为升级旧项目时的低成本回填路径，不触发 LLM 分析。
+ */
 function ensureSourceFeatureIndexInDatabase(
   projectId: string,
   db: DatabaseSync,
@@ -469,6 +531,9 @@ export function ensureSourceFeatureIndex(projectId: string, sourceRevisionId?: s
   return ensureSourceFeatureIndexInDatabase(projectId, db, revisionId, sourceLang);
 }
 
+/**
+ * 按 contextPath 将源片段分组为章节列表，保持出现顺序。
+ */
 function chapterMap(segments: Segment[]): Array<{ key: string; title: string; order: number; segments: Segment[] }> {
   const chapters: Array<{ key: string; title: string; order: number; segments: Segment[] }> = [];
   const byKey = new Map<string, { key: string; title: string; order: number; segments: Segment[] }>();
@@ -486,6 +551,10 @@ function chapterMap(segments: Segment[]): Array<{ key: string; title: string; or
   return chapters;
 }
 
+/**
+ * 为一组章节片段生成抽取式摘要：取前几段正文开头与最后一段结尾拼接，
+ * 用于无模型摘要时的确定性兜底，以及当前章节前缀摘要。
+ */
 function extractiveSummary(chapterSegments: Segment[]): string {
   const body = chapterSegments.filter((segment) => segment.kind !== 'heading');
   if (!body.length) return chapterSegments[0]?.text.slice(0, 480) || '';
@@ -495,6 +564,11 @@ function extractiveSummary(chapterSegments: Segment[]): string {
   return result.slice(0, 600);
 }
 
+/**
+ * 为每个章节写入/更新抽取式摘要快照。
+ * 已有 model 摘要的章节保留模型摘要，其余使用抽取式摘要；
+ * 保证 reanalysis 前重置后仍有可用摘要。
+ */
 function writeChapterSnapshots(db: DatabaseSync, revisionId: string, segments: Segment[]): void {
   const insert = db.prepare(
     'INSERT INTO context_graph_chapters(source_revision_id, chapter_key, chapter_order, chapter_title, summary, summary_kind, segment_ids_json, updated_at) ' +
@@ -531,6 +605,9 @@ export function resetChapterSummariesForReanalysis(
   writeChapterSnapshots(db, revisionId, segments);
 }
 
+/**
+ * 以 upsert 方式保存来源版本级的 meta 键值（JSON 序列化）。
+ */
 function saveMeta(db: DatabaseSync, revisionId: string, key: string, value: unknown): void {
   db.prepare(
     'INSERT INTO context_graph_meta(source_revision_id, key, value, updated_at) VALUES (?, ?, ?, ?) ' +
@@ -538,6 +615,9 @@ function saveMeta(db: DatabaseSync, revisionId: string, key: string, value: unkn
   ).run(revisionId, key, JSON.stringify(value), new Date().toISOString());
 }
 
+/**
+ * 读取来源版本级的 meta 键值，解析失败返回 null。
+ */
 function getMeta(db: DatabaseSync, revisionId: string, key: string): any {
   const row = db.prepare('SELECT value FROM context_graph_meta WHERE source_revision_id = ? AND key = ?').get(revisionId, key) as { value?: string } | undefined;
   if (!row?.value) return null;
@@ -546,6 +626,9 @@ function getMeta(db: DatabaseSync, revisionId: string, key: string): any {
 
 type ContextGraphRunProgress = Record<string, any>;
 
+/**
+ * 读取 run 的 progress_json 并解析为对象；失败时返回空对象。
+ */
 function readRunProgress(db: DatabaseSync, runId: string): ContextGraphRunProgress {
   const row = db.prepare('SELECT progress_json FROM context_graph_runs WHERE run_id = ?').get(runId) as { progress_json?: string } | undefined;
   try {
@@ -561,14 +644,23 @@ function patchRunProgress(db: DatabaseSync, runId: string, patch: Record<string,
   return next;
 }
 
+/**
+ * 生成阶段检查点的 meta key，按 runId + stageId 唯一命名。
+ */
 function workflowCheckpointKey(runId: string, stageId: ContextGraphWorkflowStageId): string {
   return 'contextGraphCheckpoint:' + runId + ':' + stageId;
 }
 
+/**
+ * 生成工作流 Session 的 meta key，style 阶段沿用 run 级 key。
+ */
 function workflowSessionKey(runId: string, stageId?: ContextGraphWorkflowStageId): string {
   return 'contextGraphSession:' + runId + (stageId ? ':' + stageId : '');
 }
 
+/**
+ * 从最近的 run 记录中读取最近一次使用的分析策略（A/B）。
+ */
 function readLatestStrategy(db: DatabaseSync, revisionId: string): ContextGraphAnalysisStrategy | null {
   const rows = db.prepare(
     'SELECT progress_json FROM context_graph_runs WHERE source_revision_id = ? ORDER BY started_at DESC, rowid DESC LIMIT 30'
@@ -582,6 +674,11 @@ function readLatestStrategy(db: DatabaseSync, revisionId: string): ContextGraphA
   return null;
 }
 
+/**
+ * 持久化单个 workflow 阶段的输出检查点与进度。
+ * style 阶段同时写入文风 meta；更新 completedStages/stageResults；
+ * 在事务内完成，失败整体回滚。
+ */
 function persistWorkflowStageCheckpoint(
   db: DatabaseSync,
   revisionId: string,
@@ -637,6 +734,11 @@ function persistWorkflowStageCheckpoint(
 }
 
 
+/**
+ * 校验模型返回的证据数组。
+ * 每条证据必须引用本次样本中的 segmentId，quote 必须能在对应 segment 文本中验证；
+ * 去重并限制数量；通过 onInvalid 回调记录失败原因与计数。
+ */
 function validateEvidence(
   raw: unknown,
   samplesById: Map<string, Segment>,
@@ -678,6 +780,9 @@ function validateEvidence(
   return result;
 }
 
+/**
+ * 根据来源版本、类型与名称生成稳定的节点 ID（SHA-256 截断）。
+ */
 function nodeId(revisionId: string, kind: string, name: string): string {
   return 'cg-' + hash(revisionId + '\n' + kind + '\n' + normalize(name)).slice(0, 32);
 }
@@ -716,6 +821,11 @@ export function clearReplaceableModelGeneratedContextGraphItems(db: DatabaseSync
   ).run(revisionId);
 }
 
+/**
+ * 以 upsert 方式保存一个图谱节点及其证据。
+ * 默认 adoptionSource 为 model-default；已 rejected 或用户确认的节点不会被模型结果覆盖；
+ * 证据去重插入，避免重复记录。
+ */
 function saveNode(
   db: DatabaseSync, revisionId: string, kind: string, name: string,
   attributes: Record<string, unknown>, evidence: Evidence[],
@@ -741,6 +851,10 @@ function saveNode(
   return id;
 }
 
+/**
+ * 以 upsert 方式保存一条图谱边及其证据。
+ * 与 saveNode 相同的采纳优先级与证据去重策略。
+ */
 function saveEdge(
   db: DatabaseSync, revisionId: string, fromId: string, toId: string, kind: string,
   attributes: Record<string, unknown>, evidence: Evidence[],
@@ -765,6 +879,9 @@ function saveEdge(
   return id;
 }
 
+/**
+ * 从节点列表构建 名称/别名 -> 节点 ID 的映射，优先保留先出现的映射。
+ */
 function nameMap(nodes: Array<{ id: string; name: string; aliases: string[]; kind: string }>): Map<string, string> {
   const map = new Map<string, string>();
   for (const node of nodes) for (const name of [node.name, ...node.aliases]) {
@@ -773,6 +890,10 @@ function nameMap(nodes: Array<{ id: string; name: string; aliases: string[]; kin
   return map;
 }
 
+/**
+ * 构建全书分析的 Prompt 文本。
+ * 包含扫描线索、抽样片段与严格的证据要求，指导模型输出结构化 JSON。
+ */
 function graphAnalysisPrompt(projectTitle: string, format: string, sourceLang: string, targetLang: string, samples: Segment[], chapters: Array<{ key: string; title: string; order: number; segments: Segment[] }>, scan: BookScanResult, sampleReasons: Map<string, string[]>): string {
   const chosenChapters = new Set(samples.map((segment) => segment.contextPath));
   const chapterList = chapters.filter((chapter) => chosenChapters.has(chapter.key))
@@ -1848,6 +1969,10 @@ export function startContextGraphAnalysis(
   return { accepted: true, alreadyRunning: false, runId };
 }
 
+/**
+ * 返回轻量的 Context Graph 状态 DTO（不含节点/边/证据载荷）。
+ * 供扩展轮询使用；包含版本、计数、run 状态与文风字段。
+ */
 export function getContextGraphStatus(projectId: string, runId?: string): Record<string, any> {
   const { db, revisionId } = graphContext(projectId);
   const segmentCount = Number((db.prepare(
@@ -1960,6 +2085,10 @@ export function getContextGraphStatus(projectId: string, runId?: string): Record
   };
 }
 
+/**
+ * 返回完整的 Context Graph（节点、边、证据、章节摘要、runs）。
+ * 供管理/调试界面使用；会尝试收敛陈旧 run 状态。
+ */
 export function getContextGraph(projectId: string): Record<string, unknown> {
   const { db, revisionId } = graphContext(projectId);
   const segmentCount = Number((db.prepare('SELECT COUNT(*) AS count FROM source_segments WHERE source_revision_id = ?').get(revisionId) as any)?.count || 0);
@@ -2136,6 +2265,9 @@ export function reviewContextGraphItems(
   return reviewed;
 }
 
+/**
+ * 单条 reviewContextGraphItems 的便捷封装。
+ */
 export function reviewContextGraphItem(
   projectId: string,
   type: 'node' | 'edge',
@@ -2152,6 +2284,10 @@ export function reviewContextGraphItem(
  */
 export type ContextGraphCandidateDisposition = 'no-evidence' | 'persist' | 'valid-limit';
 
+/**
+ * 根据已验证证据数量与当前已持久化数量决定候选处置：
+ * 无有效证据 -> no-evidence；达到上限 -> valid-limit；否则 -> persist。
+ */
 export function contextGraphCandidateDisposition(
   evidenceCount: number,
   persistedCount: number,
@@ -2164,6 +2300,10 @@ export function contextGraphCandidateDisposition(
   return 'persist';
 }
 
+/**
+ * 选择当前章节之前的最多两章完整摘要，
+ * 避免更早章节稀释上下文；当前章节由前缀摘要单独处理。
+ */
 export function selectRecentPriorChapterSummaries(
   chapterRows: Array<{ chapter_title: string; summary: string; summary_kind: string }>,
   currentIndex: number,
@@ -2179,6 +2319,13 @@ export function selectRecentPriorChapterSummaries(
   })).filter((chapter) => chapter.summary.trim().length > 0);
 }
 
+/**
+ * 为一个翻译批次构建按时间边界过滤的 Context Graph 子集。
+ * 节点/边/别名/关系证据必须全部早于当前批次首个 segment；
+ * 章节摘要仅取前两章完整摘要与当前章节前缀摘要；
+ * 规范名称映射在当前/前文可见且有证据时才暴露；
+ * 该函数只检索上下文，不修改图谱事实。
+ */
 export function buildProjectContextGraphBundle(
   projectId: string,
   items: Array<{ id: string; text: string; contextPath?: string }>,

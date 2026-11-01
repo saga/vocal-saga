@@ -39,6 +39,10 @@ function normalized(value: unknown): string {
     : '';
 }
 
+/**
+ * 将模型输出的 kind 归一化为规范 CanonicalEntityKind：人物/地点/组织/物件等同义词映射，
+ * 未知 kind 保留若合法否则 'other'。
+ */
 export function normalizeCanonicalEntityKind(value: unknown): CanonicalEntityKind {
   const kind = normalized(value).replace(/\s+/g, '_');
   if (['person', 'character', 'human', 'character_epithet', 'nickname'].includes(kind)) return 'person';
@@ -70,6 +74,9 @@ export function splitCompoundCanonicalName(value: unknown): CompoundNameParts {
   return { parts, delimiter };
 }
 
+/**
+ * 判断名称是否包含复合分隔符（/、|、／ 或分号/逗号分隔），用于拒绝多目标清单式译名。
+ */
 export function hasCompoundCanonicalSyntax(value: unknown): boolean {
   return splitCompoundCanonicalName(value) !== null ||
     (typeof value === 'string' && /\s+[;,]\s+/.test(value.trim()));
@@ -119,6 +126,9 @@ export function isWorthCanonicalEntityMapping(input: EntityWorthInput): boolean 
 }
 
 /** A source name with two distinct normalized targets is ambiguous; do not choose by output order. */
+/**
+ * 判断两个目标译名是否冲突（规范化后不同且非空）；用于检测同一源名出现不同译名。
+ */
 export function canonicalTargetsConflict(left: unknown, right: unknown): boolean {
   const a = normalized(left);
   const b = normalized(right);

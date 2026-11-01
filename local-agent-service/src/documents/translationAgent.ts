@@ -155,11 +155,13 @@ const CONFIGURED_REVIEW_CONCURRENCY = positiveIntegerEnv('LOCAL_AGENT_DOCUMENT_R
 // 想保留翻译期那种克制行为的机器可以调小。
 const CONFIGURED_REVIEW_DRAIN_CONCURRENCY = positiveIntegerEnv('LOCAL_AGENT_DOCUMENT_REVIEW_DRAIN_CONCURRENCY', 64);
 
+/** 批次角色：'translation' 为翻译批次，'review' 为审校批次。 */
 export type DocumentBatchRole = 'translation' | 'review';
 
 /**
  * Select only complete style revisions that have a matching, source-grounded style finding.
  * Chinese monolingual edits are intentionally deferred until the following bilingual review.
+ * 仅接受带有对应、已验证 style finding 的完整修订；中文单语编辑延后到后续双语审校处理。
  */
 export function selectVerifiedStyleReviewCandidates(
   styleReview: Record<string, any>,
@@ -181,6 +183,7 @@ export function selectVerifiedStyleReviewCandidates(
 /**
  * A Chinese-only edit is provisional until the bilingual source comparison covers that segment.
  * Missing, malformed, or failed review results fall back to the original first-pass translation.
+ * 中文单语编辑在双语审校明确覆盖并返回完整译文后才可写入候选；未覆盖则恢复初译。
  */
 export function resolveBilingualVerifiedChineseEdits(
   initialDrafts: Map<string, string>,
@@ -213,6 +216,7 @@ export function resolveBilingualVerifiedChineseEdits(
   return { candidates, verified, fallbacks };
 }
 
+/** Run 级并发预算：池大小、翻译/审校并发上限与是否拆分审校。 */
 export interface DocumentRunConcurrencyBudget {
   poolSize: number;
   translationConcurrency: number;
@@ -220,7 +224,7 @@ export interface DocumentRunConcurrencyBudget {
   detachReviews: boolean;
 }
 
-/** Allocate run-level workers without exceeding the actual session-pool capacity. */
+/** Allocate run-level workers without exceeding the actual session-pool capacity. 分配 Run 级并发预算，翻译与审校共享会话池且不超容量。 */
 export function resolveDocumentRunConcurrencyBudget(
   requestedPoolSize: number,
   reviewEnabled: boolean,
@@ -244,7 +248,7 @@ export function resolveDocumentRunConcurrencyBudget(
   };
 }
 
-/** Stable for retries of one batch, distinct across batches and runs. */
+/** Stable for retries of one batch, distinct across batches and runs. 生成批次会话作用域，同批次重试稳定、跨批次/Run 唯一。 */
 export function buildDocumentBatchSessionScope(input: {
   projectId: string;
   runId: string;
@@ -265,6 +269,7 @@ export function buildDocumentBatchSessionScope(input: {
  * Run a finite list with a fixed worker count. Worker errors do not cause Promise.all to reject
  * early while sibling workers are still committing; all workers settle before the first error
  * is re-thrown. shouldStop prevents new work from starting after pause/cancel.
+ * 以固定并发执行有限列表；worker 出错不提前拒绝，所有 worker 完成后抛出首个错误；shouldStop 可阻止新任务启动。
  */
 export async function runWithConcurrency<T>(
   items: readonly T[],
@@ -316,6 +321,11 @@ export interface ConcurrencyLimiter {
   pending(): number;
 }
 
+/**
+ * 创建可动态调整上限的 FIFO 并发闸门。
+ * @param concurrency 初始并发上限
+ * @returns 并发闸门函数，附带 setConcurrency/getConcurrency/pending 方法
+ */
 export function createConcurrencyLimiter(concurrency: number): ConcurrencyLimiter {
   let limit = Math.max(1, Math.floor(concurrency) || 1);
   let active = 0;
@@ -418,17 +428,26 @@ const activeRuns = new Set<string>();
 // run.finished / run.failed 时随事件透出并清理。Review/审校轮各有独立事件，不计入这里。
 const runUsageTotals = new Map<string, TurnUsage | null>();
 
+/** 累加某 Run 的 token 消耗（初译口径）。 */
 function addRunUsage(runId: string, usage: TurnUsage | null): void {
   if (!usage) return;
   runUsageTotals.set(runId, addTurnUsage(runUsageTotals.get(runId) ?? null, usage));
 }
 
+/** 取出并清除某 Run 的累计 token 消耗。 */
 function takeRunUsage(runId: string): TurnUsage | null {
   const usage = runUsageTotals.get(runId) ?? null;
   runUsageTotals.delete(runId);
   return usage;
 }
 
+/**
+ * 将待翻译片段按策略分批，可选在章节边界强制切分，并合并过短尾批。
+ * @param items 待翻译片段列表
+ * @param respectChapterBoundaries 是否在章节边界强制切批
+ * @param strategyInput 分批策略（可选，缺省归一化）
+ * @returns 分批后的二维数组
+ */
 export function buildBatches(
   items: TranslationItem[],
   respectChapterBoundaries = false,
@@ -496,7 +515,7 @@ export function mergeShortTailBatch(
   return merged;
 }
 
-/** Split translation items into bounded groups for callers that explicitly need chunking. */
+/** Split translation items into bounded groups for callers that explicitly need chunking. 将待翻译片段按固定大小切分为有界分组。 */
 export function chunkMissingTranslationItems<T>(items: readonly T[], chunkSize = 4): T[][] {
   const size = Math.max(1, Math.floor(chunkSize) || 1);
   const groups: T[][] = [];
@@ -504,12 +523,14 @@ export function chunkMissingTranslationItems<T>(items: readonly T[], chunkSize =
   return groups;
 }
 
+/** 强规范译名保护信息：占位标记、源形式与目标译名。 */
 export interface CanonicalTermProtection {
   marker: string;
   sourceForm: string;
   target: string;
 }
 
+/** 规范化专名：NFKC、小写、统一撇号与空白。 */
 function normalizeCanonicalTerm(value: string): string {
   return value.normalize('NFKC').toLocaleLowerCase().replace(/[’]/g, "'").replace(/\s+/g, ' ').trim();
 }
@@ -520,6 +541,7 @@ const NON_CANONICAL_NAME_FORMS = new Set([
   'sir', 'madam', 'madame', 'captain', 'lady', 'samurai',
 ]);
 
+/** 判断是否为通用头衔/称谓，不作为规范译名保护。 */
 function isGenericCanonicalNameForm(value: string): boolean {
   const normalized = normalizeCanonicalTerm(value)
     .replace(/^(?:the|a|an)\s+/, '')
@@ -527,12 +549,14 @@ function isGenericCanonicalNameForm(value: string): boolean {
   return NON_CANONICAL_NAME_FORMS.has(normalized);
 }
 
+/** 提取专名身份 token，忽略冠词与通用头衔。 */
 function canonicalIdentityTokens(value: string): string[] {
   const ignored = new Set(['the', 'a', 'an', 'lord', 'general', 'sire', 'sir', 'lady', 'madam', 'madame', 'captain', 'master', 'mr', 'mrs', 'ms', 'san', 'sama', 'of']);
   return normalizeCanonicalTerm(value).replace(/['’]s\b/g, '')
     .match(/[a-z0-9]+/g)?.filter((token) => !ignored.has(token)) || [];
 }
 
+/** 判断别名与规范源名是否身份兼容。 */
 function isCompatibleCanonicalAlias(canonicalSource: string, alias: string): boolean {
   const sourceTokens = canonicalIdentityTokens(canonicalSource);
   const aliasTokens = canonicalIdentityTokens(alias);
@@ -541,10 +565,12 @@ function isCompatibleCanonicalAlias(canonicalSource: string, alias: string): boo
     sourceToken === aliasToken || sourceToken.startsWith(aliasToken) || aliasToken.startsWith(sourceToken)));
 }
 
+/** 转义正则特殊字符。 */
 function escapeCanonicalTermRegex(value: string): string {
   return value.split('').map((char) => '.^$*+?()[]{}|\\'.includes(char) ? '\\' + char : char).join('');
 }
 
+/** 构建专名匹配正则（拉丁词边界/CJK 子串）。 */
 function canonicalTermPattern(value: string): string {
   const escaped = value.trim().split(/\s+/).map(escapeCanonicalTermRegex).join('\\s+').replace(/['’]/g, "['’]");
   // Latin names require token boundaries (King must not match Kingfisher); CJK terms use
@@ -557,6 +583,7 @@ function canonicalTermPattern(value: string): string {
 /**
  * Only map terms backed by a source-visible, operational mapping. Prefer confirmed LiteraryMemory
  * targets over Context Graph targets; contradictory mappings at the same authority level fail closed.
+ * 仅保护源文可见、可操作的规范译名映射；确认记忆优先于图谱；同级矛盾映射失败闭合。
  */
 export function buildCanonicalTermProtections(
   items: Array<{ id: string; text: string }>,
@@ -674,6 +701,12 @@ export function normalizeContextDeltaCanonicalTargets(
   return normalizedCount;
 }
 
+/**
+ * 将源文中出现的强规范译名替换为占位标记，避免模型翻译/改写。
+ * @param text 原文
+ * @param protections 保护列表
+ * @returns 替换后的文本
+ */
 export function maskCanonicalTermText(text: string, protections: CanonicalTermProtection[]): string {
   if (!text || !protections.length) return text;
   const byName = new Map(protections.map((item) => [normalizeCanonicalTerm(item.sourceForm), item]));
@@ -684,6 +717,13 @@ export function maskCanonicalTermText(text: string, protections: CanonicalTermPr
   );
 }
 
+/**
+ * 将文本中的占位标记还原为源形式或目标译名。
+ * @param text 含占位标记的文本
+ * @param protections 保护列表
+ * @param mode 'source' 还原源形式，'target'（默认）还原目标译名
+ * @returns 还原后的文本
+ */
 export function restoreCanonicalTermMarkers(
   text: string,
   protections: CanonicalTermProtection[],
@@ -697,7 +737,7 @@ export function restoreCanonicalTermMarkers(
 }
 
 /** Verify every protected marker occurs in the output exactly as often as it occurs
- * in the masked source. A mere includes() check lets the model drop repeated mentions silently. */
+ * in the masked source. A mere includes() check lets the model drop repeated mentions silently. 校验每个受保护标记在输出中的出现次数与掩码源一致，避免模型静默丢弃重复提及。 */
 export function canonicalMarkerCountsMatch(
   maskedSource: string,
   maskedTranslation: string,
@@ -706,6 +746,7 @@ export function canonicalMarkerCountsMatch(
   return describeCanonicalMarkerMismatch(maskedSource, maskedTranslation, protections).length === 0;
 }
 
+/** 占位标记出现次数不匹配的明细。 */
 export interface CanonicalMarkerMismatch {
   marker: string;
   sourceForm: string;
@@ -765,6 +806,12 @@ export function buildCanonicalMarkerReminder(
     '。标记不是文字，不要翻译、改写、拆分或删除；少一个就会导致整段译文被丢弃重译。';
 }
 
+/**
+ * 将目标译文中出现的强规范译名替换为占位标记（用于 Reviewer 草稿保护）。
+ * @param text 目标译文
+ * @param protections 保护列表
+ * @returns 替换后的文本
+ */
 export function maskCanonicalTargetText(text: string, protections: CanonicalTermProtection[]): string {
   if (!text || !protections.length) return text;
   const byTarget = new Map<string, CanonicalTermProtection>();
@@ -781,7 +828,7 @@ export function maskCanonicalTargetText(text: string, protections: CanonicalTerm
 }
 
 /** Mask both source names and their canonical target in Reviewer drafts, preventing review from
- * reintroducing an alternative rendering after the first translation was already corrected. */
+ * reintroducing an alternative rendering after the first translation was already corrected. 在 Reviewer 草稿中同时掩码源名称与规范译名，防止审校在初译已修正后重新引入替代译法。 */
 export function protectCanonicalReviewSegments<T extends { id: string; source: string; draft: string }>(
   segments: T[],
   contextGraph: Record<string, unknown> | null,
@@ -805,6 +852,13 @@ export function protectCanonicalReviewSegments<T extends { id: string; source: s
   };
 }
 
+/**
+ * 递归还原对象/数组/字符串中的占位标记；sourceExcerpt 字段按源形式还原。
+ * @param value 任意值
+ * @param protections 保护列表
+ * @param mode 还原模式
+ * @returns 还原后的值
+ */
 export function restoreCanonicalMarkersDeep(
   value: unknown,
   protections: CanonicalTermProtection[],
@@ -832,6 +886,7 @@ export function restoreCanonicalMarkersDeep(
  * evidence that can be verified against the exact current/preceding source text. In particular,
  * never pass book-wide summaries, recent examples, free-text descriptions, or voice profiles
  * synthesized from unseen future segments into this legacy endpoint.
+ * 独立审校请求的客户端记忆不可信，仅保留可对照当前/前文原文验证的证据；不传递书级摘要等未来信息。
  */
 export function buildStandaloneReviewMemory(input: Record<string, any>): Record<string, any> {
   const rawMemory = sanitizeProjectLiteraryMemory(input.memory);
@@ -946,6 +1001,11 @@ export function buildStandaloneReviewMemory(input: Record<string, any>): Record<
   });
 }
 
+/**
+ * 为独立审校请求构建项目声音上下文（先清洗记忆再构建）。
+ * @param input 审校请求输入
+ * @returns 声音上下文对象
+ */
 export function buildStandaloneReviewVoiceContext(input: Record<string, any>): Record<string, unknown> {
   const memory = buildStandaloneReviewMemory(input);
   const segments = (Array.isArray(input.segments) ? input.segments : []).flatMap((item: any) => {
@@ -962,7 +1022,7 @@ export function buildStandaloneReviewVoiceContext(input: Record<string, any>): R
 
 /** Build a bounded name-only Context Graph for legacy standalone Review requests.
  * Only explicit mappings visible in this request's source/preceding text are included; future
- * aliases from book memory are not serialized into the Reviewer prompt. */
+ * aliases from book memory are not serialized into the Reviewer prompt. 为独立审校请求构建仅含名称的有界 Context Graph，只包含当前/前文可见的显式映射。 */
 export function buildStandaloneReviewContextGraph(input: Record<string, any>): Record<string, any> {
   // Do not accept a client-supplied Context Graph or TranslationBrief here. This endpoint has
   // no immutable server-side Run snapshot; reconstruct a name-only graph from the source-grounded
@@ -1014,6 +1074,10 @@ export function buildStandaloneReviewContextGraph(input: Record<string, any>): R
   };
 }
 
+/**
+ * 构建批次的用户 Prompt：注入上下文、保护强规范译名、序列化 segments/glossary/brief。
+ * @returns 完整用户 Prompt 字符串
+ */
 export function buildUserPrompt(template: string, items: TranslationItem[], context: any, precedingSegments: TranslationItem[] = [], contextGraph: Record<string, unknown> | null = null, translationBrief?: TranslationBrief): string {
   const promptPrecedingSegments = translationBrief?.precedingSegments ?? precedingSegments.slice(-6).map((item) => ({
     id: item.id, text: item.text, contextPath: item.contextPath || '',
@@ -1399,6 +1463,7 @@ async function translateBatch(context: any, items: TranslationItem[], requestId:
  * initial translation. Reviewers also get the run-pinned project-memory snapshot; retain explicit
  * confirmed names even if a graph snapshot has pruned that mapping. Protections still require a
  * name or alias to occur in the source of one of the segments currently under review.
+ * Reviewer 专用的安全合并：保留图谱快照中可能被裁剪的确认译名，并要求名称/别名出现在当前审校源文中。
  */
 export function mergeConfirmedMemoryNameMappings(
   contextGraph: Record<string, unknown> | null | undefined,
@@ -1657,6 +1722,7 @@ export async function runLiteraryReviewWithMissingRetry(input: Record<string, an
 
 /**
  * Readiness is pinned to this Run's immutable source revision, analysis version and language pair.
+ * 就绪状态绑定到 Run 的不可变原文版本、分析版本与语言对。
  */
 export function isContextGraphReadyForTranslationRun(
   graph: Record<string, any> | null | undefined,
@@ -1679,6 +1745,10 @@ export function isContextGraphReadyForTranslationRun(
     String(progress.targetLang || 'zh') === String(run.targetLang || 'zh');
 }
 
+/**
+ * 文学模式下阻塞等待全书预处理（Context Graph）就绪；非文学模式直接通过。
+ * @returns true 表示已就绪可继续翻译，false 表示 Run 已终止/取消
+ */
 async function ensureLiteraryPreprocessingBeforeRun(
   projectId: string,
   runId: string,
@@ -2360,6 +2430,7 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
       }
     };
 
+    /** 单批次翻译流程：构建 brief、有界重试、保存候选与 context delta、调度审校。 */
     const processBatch = async (batch: TranslationItem[], zeroBasedIndex: number, batchContext: any): Promise<void> => {
       const batchIndex = zeroBasedIndex + 1;
       const status = store.getRunStatus(projectId, runId);
@@ -2889,6 +2960,7 @@ export function startProjectTranslationRun(projectId: string, runId: string): { 
   return { accepted: true, alreadyRunning: false };
 }
 
+/** 判断某 Run 是否在当前进程内处于活跃执行状态。 */
 export function isProjectRunActive(runId: string): boolean {
   return activeRuns.has(runId);
 }

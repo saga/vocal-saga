@@ -455,6 +455,10 @@ export class DocumentProjectStore {
     this.rootDir = path.resolve(rootDir);
   }
 
+  /**
+   * 初始化项目目录与 catalog 数据库。
+   * 启动时会从磁盘修复 catalog，并恢复被中断的运行，保证服务重启后状态一致。
+   */
   initialize(): void {
     if (this.catalog) return;
     mkdirSync(this.rootDir, { recursive: true });
@@ -470,6 +474,10 @@ export class DocumentProjectStore {
     this.recoverInterruptedRuns();
   }
 
+  /**
+   * 服务重启后恢复处于 awaiting_acceptance 的 Run。
+   * 先在事务内完成文学记忆增量合并（仅 literary 模式且原文未变化），再采纳候选译文，保证最终化幂等。
+   */
   private recoverAwaitingAcceptanceRun(projectId: string, runId: string): void {
     const db = this.openProjectDb(projectId);
     db.exec('BEGIN IMMEDIATE');
@@ -520,16 +528,22 @@ export class DocumentProjectStore {
     });
   }
 
+  /** 返回 catalog 数据库实例，必要时先初始化。 */
   private catalogDb(): DatabaseSync {
     this.initialize();
     return this.catalog!;
   }
 
+  /** 根据 projectId 计算项目数据库文件路径，并校验 ID 格式。 */
   private projectPath(projectId: string): string {
     if (!/^[0-9a-f-]{36}$/i.test(projectId)) throw Object.assign(new Error('documentId 格式不正确'), { status: 400 });
     return path.join(this.rootDir, projectId, 'project.sqlite');
   }
 
+  /**
+   * 创建项目数据库的全部表结构与索引，并对旧版本数据库执行增量列迁移。
+   * 迁移只增列、不删数据，保证历史项目可继续读取。
+   */
   private createProjectSchema(db: DatabaseSync): void {
     db.exec('PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;');
     db.exec(
@@ -617,6 +631,10 @@ export class DocumentProjectStore {
     if (!segmentColumns.has('end_time')) db.exec('ALTER TABLE source_segments ADD COLUMN end_time TEXT');
   }
 
+  /**
+   * 打开（或创建）项目数据库，带缓存。
+   * 非创建模式下会校验项目存在于 catalog 且未归档，避免打开孤儿数据库。
+   */
   private openProjectDb(projectId: string, create = false): DatabaseSync {
     const cached = this.projectDbs.get(projectId);
     if (cached) return cached;
@@ -631,6 +649,10 @@ export class DocumentProjectStore {
     return db;
   }
 
+  /**
+   * 扫描磁盘上的项目目录，将缺失的 catalog 记录补回 catalog.sqlite。
+   * 用于服务重启或数据库损坏恢复，避免已持久化的项目在列表中消失。
+   */
   private repairCatalogFromDisk(): void {
     const catalog = this.catalog!;
     for (const entry of readdirSync(this.rootDir, { withFileTypes: true })) {
@@ -659,6 +681,11 @@ export class DocumentProjectStore {
     }
   }
 
+  /**
+   * 服务启动时恢复被中断的运行。
+   * 将 running 片段归一化为 pending，根据终态事件或缺失终态事件把 Run/Context Graph
+   * 收敛到明确状态，并恢复所有 awaiting_acceptance 的最终化流程。
+   */
   private recoverInterruptedRuns(): void {
     const rows = this.catalogDb().prepare('SELECT project_id FROM document_projects WHERE archived = 0').all() as Array<{ project_id: string }>;
     for (const row of rows) {
@@ -858,10 +885,15 @@ export class DocumentProjectStore {
     }
   }
 
+  /** 写入或更新项目元数据键值。 */
   private projectMeta(db: DatabaseSync, key: string, value: string): void {
     db.prepare('INSERT INTO project_meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, value);
   }
 
+  /**
+   * 向数据库插入一个新的不可变来源版本及其片段。
+   * 仅写入数据，不切换 catalog；调用方负责事务与 catalog 更新。
+   */
   private insertSourceRevision(
     db: DatabaseSync, projectId: string, title: string, format: DocumentFormat, fileName: string,
     segments: ProjectSegment[], revisionId: string = randomUUID(),
@@ -1096,6 +1128,10 @@ export class DocumentProjectStore {
     return { saved: true, size: copied.byteLength, sha256: sourceHash, sourceRevisionId: currentSourceRevisionId };
   }
 
+  /**
+   * 保存 Prompt 修订。相同 fingerprint 的修订会复用已有记录，避免重复写入。
+   * 文学记忆不参与 Prompt fingerprint，必须通过独立接口更新。
+   */
   private savePromptRevision(projectId: string, prompt: ProjectPrompt & { name?: string }): any {
     if (prompt.literaryMemory !== undefined) {
       throw Object.assign(
@@ -1129,6 +1165,7 @@ export class DocumentProjectStore {
     return db.prepare('SELECT * FROM prompt_revisions WHERE prompt_revision_id = ?').get(id);
   }
 
+  /** 保存 Prompt 修订并记录 prompt.saved 事件，更新项目 updated_at。 */
   savePrompt(projectId: string, prompt: ProjectPrompt & { name?: string }): any {
     const result = this.savePromptRevision(projectId, prompt);
     if (prompt.literaryMemory !== undefined) this.saveLiteraryMemory(projectId, prompt.literaryMemory);
@@ -1142,7 +1179,10 @@ export class DocumentProjectStore {
    * 角色画像按证据与状态维护；每个 Run 固定引用一个 memory revision，方便复现。
    */
   /**
-   * The Project Store is the trust boundary for persistent literary memory.
+   * 文学记忆的项目级校验与规范化。
+   * Project Store 是持久化文学记忆的信任边界：客户端的 confirmed/approved 标志不可信，
+   * 证据必须匹配当前原文版本，锚点 target 必须存在于已采纳译文。
+   * English note: The Project Store is the trust boundary for persistent literary memory.
    * Do not trust a client-side "confirmed"/"approved" flag: its evidence must still match
    * this project's current source revision and an anchor's target must exist in an accepted translation.
    */
@@ -1368,6 +1408,9 @@ export class DocumentProjectStore {
     return { memoryRevisionId, fingerprint, version: existing?.version || 2, createdAt };
   }
 
+  /**
+   * 读取当前文学记忆 revision；兼容旧版本把记忆嵌入 Prompt 的情况，并在必要时升级为新 revision。
+   */
   getCurrentLiteraryMemory(projectId: string): any {
     const db = this.openProjectDb(projectId);
     let revisionId = db.prepare('SELECT value FROM project_meta WHERE key = ?').get('current_literary_memory_revision_id') as { value?: string } | undefined;
@@ -1402,11 +1445,13 @@ export class DocumentProjectStore {
     return { memoryRevisionId: row.memory_revision_id, fingerprint: row.fingerprint, memory: validated, createdAt: row.created_at };
   }
 
+  /** 列出最近的文学记忆修订（最多 100 条）。 */
   listLiteraryMemoryRevisions(projectId: string): any[] {
     return (this.openProjectDb(projectId).prepare('SELECT memory_revision_id, version, fingerprint, created_at FROM literary_memory_revisions ORDER BY created_at DESC LIMIT 100').all() as any[])
       .map((row) => ({ memoryRevisionId: row.memory_revision_id, version: row.version, fingerprint: row.fingerprint, createdAt: row.created_at }));
   }
 
+  /** 将 prompt_revisions 数据库行转换为对外返回的 Prompt 结构。 */
   private publicPrompt(row: any): any {
     return {
       promptRevisionId: row.prompt_revision_id,
@@ -1419,13 +1464,16 @@ export class DocumentProjectStore {
     };
   }
 
+  /** 列出项目的所有 Prompt 修订，按创建时间倒序。 */
   listPrompts(projectId: string): any[] {
     const db = this.openProjectDb(projectId);
     return (db.prepare('SELECT * FROM prompt_revisions ORDER BY created_at DESC, rowid DESC').all() as any[]).map((row) => this.publicPrompt(row));
   }
 
   /**
-   * Hash the exact graph state used by literary retrieval. A graph update must invalidate
+   * 计算 Context Graph 的 fingerprint，用于文学检索版本追踪。
+   * 图谱更新必须像 Prompt/记忆修订一样使已采纳输出失效；旧版数据库可能没有图谱表，此时返回 null 而不报错。
+   * English note: Hash the exact graph state used by literary retrieval. A graph update must invalidate
    * accepted output just like a Prompt or voice-memory revision. Older project DBs may not
    * have Context Graph tables yet; those remain valid projects without an artificial failure.
    */
@@ -1468,6 +1516,10 @@ export class DocumentProjectStore {
     return hash(JSON.stringify({ analysisIdentity, meta, nodes, edges, evidence, chapters }));
   }
 
+  /**
+   * 计算 Run 指纹，综合 Prompt、记忆、图谱、语言方向、Provider/模型与 Pipeline 版本。
+   * 用于判断已有译文是否因上下文变化而过期。
+   */
   private makeRunFingerprint(
     projectId: string, sourceRevisionId: string, promptRow: any,
     config: any, literaryMemoryFingerprint: string | null,
@@ -1490,7 +1542,9 @@ export class DocumentProjectStore {
   }
 
   /**
-   * Explicit validation helper for callers that require an already-prepared project.
+   * 文学预处理就绪性显式校验辅助函数，供调用方要求项目已预处理时使用。
+   * 不应在 Run 创建时调用：queued 文学 Run 必须进入服务端 executeRun 门禁，由其启动预处理并持久化等待/失败事件。
+   * English note: Explicit validation helper for callers that require an already-prepared project.
    * Do not call this during Run creation: queued literary Runs must reach the server-owned
    * executeRun gate, which can start preprocessing and persist wait/failure events.
    */
@@ -1622,6 +1676,7 @@ export class DocumentProjectStore {
     const idSet = new Set((scope.ids || []).map(String));
     const chapter = (scope.chapter || '').trim();
     const runFingerprint = this.makeRunFingerprint(projectId, sourceRevisionId, promptRow, config, currentMemory.fingerprint || null);
+    // 根据 scope 类型筛选本次 Run 需要翻译的片段：all 全部、ids 指定、chapter 章节、failed 失败重试、stale 过期重译。
     const selected = currentSegments.filter((segment) => {
       if (scopeType === 'all') return true;
       if (scopeType === 'ids') return idSet.has(segment.segment_id);
@@ -1691,6 +1746,7 @@ export class DocumentProjectStore {
     return this.getRun(projectId, runId);
   }
 
+  /** 直接写入一条项目事件，不打印工作流日志。 */
   private addEvent(projectId: string, runId: string | null, type: string, payload: unknown): void {
     const db = this.openProjectDb(projectId);
     db.prepare('INSERT INTO project_events(run_id, event_type, payload_json, created_at) VALUES (?, ?, ?, ?)').run(runId, type, JSON.stringify(payload ?? {}), isoNow());
@@ -1831,6 +1887,7 @@ export class DocumentProjectStore {
     }));
   }
 
+  /** 列出 Run 的 TranslationBrief 快照，可选包含完整内容。 */
   listTranslationBriefSnapshots(projectId: string, runId: string, includeContent = false): any[] {
     const db = this.openProjectDb(projectId);
     const rows = db.prepare(
@@ -1846,6 +1903,7 @@ export class DocumentProjectStore {
     }));
   }
 
+  /** 保存质量审计报告（按 auditId 幂等更新）。 */
   saveQualityAudit(projectId: string, report: Record<string, any>): void {
     const db = this.openProjectDb(projectId);
     db.prepare(
@@ -1854,6 +1912,7 @@ export class DocumentProjectStore {
     ).run(report.auditId, report.sourceRevisionId, report.runId || null, JSON.stringify(report), report.createdAt || isoNow());
   }
 
+  /** 读取质量审计报告（未指定 auditId 时取最新）。 */
   getQualityAudit(projectId: string, auditId?: string): any | null {
     const db = this.openProjectDb(projectId);
     const row = auditId
@@ -1862,6 +1921,7 @@ export class DocumentProjectStore {
     return row?.report_json ? parseJson(row.report_json, null) : null;
   }
 
+  /** 保存质量对照评测（M4 A/B 映射与盲评）。 */
   saveQualityEvaluation(projectId: string, report: Record<string, any>, blindMapping: Record<string, unknown>, blindReviews: unknown[] = []): void {
     const db = this.openProjectDb(projectId);
     const now = isoNow();
@@ -1871,6 +1931,7 @@ export class DocumentProjectStore {
     ).run(report.evaluationId, report.sourceRevisionId, report.beforeRunId, report.afterRunId, JSON.stringify(report), JSON.stringify(blindMapping), JSON.stringify(blindReviews), now, now);
   }
 
+  /** 读取质量对照评测。 */
   getQualityEvaluation(projectId: string, evaluationId: string): any | null {
     const db = this.openProjectDb(projectId);
     const row = db.prepare('SELECT report_json, blind_mapping_json, blind_reviews_json FROM quality_evaluations WHERE evaluation_id = ?').get(evaluationId) as any;
@@ -1882,6 +1943,7 @@ export class DocumentProjectStore {
     };
   }
 
+  /** 更新质量对照评测的盲评结果。 */
   updateQualityEvaluationReviews(projectId: string, evaluationId: string, reviews: unknown[]): any {
     const db = this.openProjectDb(projectId);
     const row = db.prepare('SELECT blind_mapping_json, report_json FROM quality_evaluations WHERE evaluation_id = ?').get(evaluationId) as any;
@@ -1895,6 +1957,7 @@ export class DocumentProjectStore {
     };
   }
 
+  /** 读取项目事件，支持按 runId/after 游标分页。 */
   getEvents(projectId: string, runId?: string, after = 0, limit = 200, latest = false): any[] {
     const db = this.openProjectDb(projectId);
     const maxLimit = latest && after <= 0 ? 5000 : 1000;
@@ -1910,13 +1973,16 @@ export class DocumentProjectStore {
     return (rows as any[]).map((row) => ({ eventId: row.event_id, runId: row.run_id, type: row.event_type, payload: parseJson(row.payload_json, {}), createdAt: row.created_at }));
   }
 
+  /** 列出项目（默认排除已归档）。 */
   listProjects(includeArchived = false): ProjectSummary[] {
     const sql = 'SELECT * FROM document_projects ' + (includeArchived ? '' : 'WHERE archived = 0 ') + 'ORDER BY updated_at DESC';
     return (this.catalogDb().prepare(sql).all() as any[]).map((row) => this.summaryFromCatalog(row));
   }
 
   /**
-   * Resolve a parsed document to an existing durable project without trusting the extension's
+   * 将解析后的文档解析到已有持久化项目，不信任扩展本地项目映射。
+   * 精确 source fingerprint 可安全水合；同名/标题匹配仅作为变更候选，不得继承新文档的旧译文。
+   * English note: Resolve a parsed document to an existing durable project without trusting the extension's
    * local project map. An exact source fingerprint is safe to hydrate; a same-name/title match
    * is only a change candidate and must not receive the new document's old translations.
    */
@@ -1947,7 +2013,9 @@ export class DocumentProjectStore {
   }
 
   /**
-   * Check whether an imported file is byte-for-byte the original already attached to the
+   * 检查导入文件是否与当前来源版本已附带的原始文件字节完全一致。
+   * 用于区分解析器版本变化与真正的文档变化，不信任文件名或浏览器生成的片段指纹。
+   * English note: Check whether an imported file is byte-for-byte the original already attached to the
    * current source revision. This distinguishes a parser-version change from a genuinely
    * changed document without trusting a filename or a browser-generated segment fingerprint.
    */
@@ -1961,12 +2029,14 @@ export class DocumentProjectStore {
     return digest === row.source_file_hash;
   }
 
+  /** 读取项目摘要。 */
   getProject(projectId: string): ProjectSummary | null {
     const row = this.catalogDb().prepare('SELECT * FROM document_projects WHERE project_id = ? AND archived = 0').get(projectId) as any;
     if (!row) return null;
     return this.summaryFromCatalog(row);
   }
 
+  /** 从 catalog 行与项目库元数据组装 ProjectSummary。 */
   private summaryFromCatalog(row: any): ProjectSummary {
     const db = this.openProjectDb(row.project_id);
     const meta = new Map((db.prepare('SELECT key, value FROM project_meta').all() as Array<{ key: string; value: string }>).map((item) => [item.key, item.value]));
@@ -1987,6 +2057,7 @@ export class DocumentProjectStore {
     };
   }
 
+  /** 返回项目、数据库实例与当前来源版本 ID 的上下文。 */
   getProjectContext(projectId: string): any {
     const project = this.getProject(projectId);
     if (!project) throw Object.assign(new Error('找不到文档项目'), { status: 404 });
@@ -1995,6 +2066,7 @@ export class DocumentProjectStore {
     return { project, db, currentSourceRevisionId: meta.get('current_source_revision_id') || '' };
   }
 
+  /** 分页读取当前来源版本的片段，并附带已采纳/候选译文。 */
   getSegments(projectId: string, options: { limit?: number; offset?: number; runId?: string } = {}): any[] {
     const { db, currentSourceRevisionId } = this.getProjectContext(projectId);
     const limit = Math.max(1, Math.min(1000, Math.floor(options.limit || 250)));
@@ -2012,7 +2084,7 @@ export class DocumentProjectStore {
     }));
   }
 
-  /** Return the immutable segment membership of a Run without loading source/translation bodies. */
+  /** 返回 Run 的不可变片段成员列表，不加载原文/译文正文。 / Return the immutable segment membership of a Run without loading source/translation bodies. */
   getRunSegmentIds(projectId: string, runId: string): string[] {
     const { db } = this.getProjectContext(projectId);
     const exists = db.prepare('SELECT 1 FROM translation_runs WHERE run_id = ?').get(runId);
@@ -2022,6 +2094,7 @@ export class DocumentProjectStore {
     ).all(runId) as Array<{ segment_id: string }>).map((row) => row.segment_id);
   }
 
+  /** 读取 Run 中待处理（pending/failed）的片段及其原文信息，供执行器使用。 */
   getRunSegmentsForExecution(projectId: string, runId: string): any[] {
     const { db } = this.getProjectContext(projectId);
     return db.prepare(
@@ -2106,12 +2179,14 @@ export class DocumentProjectStore {
     };
   }
 
+  /** 列出项目的翻译运行，按创建时间倒序。 */
   listRuns(projectId: string, limit = 50): any[] {
     const db = this.openProjectDb(projectId);
     return (db.prepare('SELECT * FROM translation_runs ORDER BY created_at DESC LIMIT ?').all(Math.max(1, Math.min(200, limit))) as any[])
       .map((row) => this.runSummary(db, row));
   }
 
+  /** 读取单个 Run 的详细信息（含片段与审校发现）。 */
   getRun(projectId: string, runId: string): any {
     const db = this.openProjectDb(projectId);
     const row = db.prepare('SELECT * FROM translation_runs WHERE run_id = ?').get(runId) as any;
@@ -2119,6 +2194,7 @@ export class DocumentProjectStore {
     return this.runSummary(db, row, true);
   }
 
+  /** 将 translation_runs 数据库行转换为 Run 摘要，可选包含片段与审校发现。 */
   private runSummary(db: DatabaseSync, row: any, includeSegments = false): any {
     const counts = db.prepare('SELECT status, COUNT(*) AS count FROM run_segments WHERE run_id = ? GROUP BY status').all(row.run_id) as Array<{ status: string; count: number }>;
     const byStatus = Object.fromEntries(counts.map((entry) => [entry.status, Number(entry.count)]));
@@ -2148,6 +2224,7 @@ export class DocumentProjectStore {
     };
   }
 
+  /** 读取 Run 当前状态。 */
   getRunStatus(projectId: string, runId: string): RunStatus {
     const row = this.openProjectDb(projectId).prepare('SELECT status FROM translation_runs WHERE run_id = ?').get(runId) as any;
     if (!row) throw Object.assign(new Error('找不到翻译运行'), { status: 404 });
@@ -2192,6 +2269,7 @@ export class DocumentProjectStore {
     return true;
   }
 
+  /** 批量更新 Run 片段状态；running 状态会递增 attempts。 */
   markRunSegments(projectId: string, runId: string, segmentIds: string[], status: string, error?: string | null): boolean {
     const db = this.openProjectDb(projectId);
     const stmt = db.prepare(
@@ -2221,7 +2299,9 @@ export class DocumentProjectStore {
   }
 
   /**
-   * Atomically commit one model batch only while the Run is active.
+   * 原子提交一个模型批次的候选译文与审校发现，仅在 Run 活动时允许。
+   * 状态检查与所有写入共享 BEGIN IMMEDIATE，防止取消/暂停请求在检查与迟到写入之间交错。
+   * English note: Atomically commit one model batch only while the Run is active.
    * The status check and all candidate writes share BEGIN IMMEDIATE so a cancel/pause
    * request cannot interleave between the caller's check and a late candidate insert.
    */
@@ -2315,6 +2395,7 @@ export class DocumentProjectStore {
     }
   }
 
+  /** 保存单条候选译文；Run 非活动时抛出 409。 */
   saveCandidate(projectId: string, runId: string, segmentId: string, text: string): void {
     const committed = this.saveCandidates(projectId, runId, [{ segmentId, text }]);
     if (!committed) {
@@ -2322,12 +2403,15 @@ export class DocumentProjectStore {
     }
   }
 
+  /** 保存审校发现（委托 saveCandidates，仅 findings）。 */
   saveFindings(projectId: string, runId: string, findings: Array<{ segmentId: string; finding: any }>): boolean {
     return this.saveCandidates(projectId, runId, [], findings);
   }
 
   /**
-   * Mark source-blind Chinese editing proposals only after the corresponding bilingual
+   * 仅在对应双语准确性审校返回完整结果后，标记中文单语编辑提案。
+   * 最终经验证的候选替换预审提案，避免用户应用过期的中间编辑。
+   * English note: Mark source-blind Chinese editing proposals only after the corresponding bilingual
    * accuracy review has returned a complete result. The final verified candidate replaces
    * the pre-review proposal so the user never applies a stale intermediate edit.
    */
@@ -2421,6 +2505,7 @@ export class DocumentProjectStore {
     }
   }
 
+  /** 保存单条审校发现；Run 非活动时抛出 409。 */
   saveFinding(projectId: string, runId: string, segmentId: string, finding: any): void {
     const committed = this.saveFindings(projectId, runId, [{ segmentId, finding }]);
     if (!committed) {
@@ -2429,7 +2514,8 @@ export class DocumentProjectStore {
   }
 
   /**
-   * Apply or dismiss an optional style proposal. Applying is an explicit user decision and
+   * 采纳或驳回可选文风建议。采纳是显式用户决策，仅当建议仍针对当前原文时才记录新的已采纳人工译文。
+   * English note: Apply or dismiss an optional style proposal. Applying is an explicit user decision and
    * records a new accepted manual translation only when the finding still targets the current source.
    */
   setReviewFindingDisposition(
@@ -2661,7 +2747,8 @@ export class DocumentProjectStore {
           'SELECT rowid AS seq, source_hash FROM translation_results WHERE result_id = ? AND run_id = ?',
         ).get(row.candidate_result_id, runId) as { seq?: number; source_hash?: string } | undefined;
         if (!candidate) throw Object.assign(new Error('候选译文记录已丢失，拒绝采纳片段：' + row.segment_id), { status: 409 });
-        const sameSourceManual = db.prepare(
+        // 保护同一来源 hash 上的用户手动译文：若存在手动译文，则跳过采纳并标记为已保留。
+       const sameSourceManual = db.prepare(
           "SELECT result_id FROM translation_results WHERE segment_id = ? AND accepted = 1 AND origin = 'manual' AND source_hash = ? ORDER BY rowid DESC LIMIT 1",
         ).get(row.segment_id, candidate.source_hash);
         const newerAccepted = db.prepare(
@@ -2789,6 +2876,7 @@ export class DocumentProjectStore {
     return { imported, skipped };
   }
 
+  /** 保存用户手动编辑的译文，origin=manual 且自动采纳。 */
   saveManualEdit(projectId: string, segmentId: string, text: string): any {
     if (typeof text !== 'string' || !text.trim() || text.length > 20000) throw Object.assign(new Error('译文不能为空或超过 20000 字符'), { status: 400 });
     const { db, currentSourceRevisionId } = this.getProjectContext(projectId);
@@ -2804,6 +2892,7 @@ export class DocumentProjectStore {
     return { resultId, segmentId, text, origin: 'manual', accepted: true };
   }
 
+  /** 校验项目翻译完整性：缺失、旧来源、旧 Prompt 等。 */
   verifyProject(projectId: string): any {
     const project = this.getProject(projectId);
     if (!project) throw Object.assign(new Error('找不到文档项目'), { status: 404 });
@@ -2847,6 +2936,7 @@ export class DocumentProjectStore {
     };
   }
 
+  /** 归档项目（catalog 标记 archived=1）。 */
   archiveProject(projectId: string): void {
     const result = this.catalogDb()
       .prepare('UPDATE document_projects SET archived = 1, updated_at = ? WHERE project_id = ? AND archived = 0')
@@ -2856,6 +2946,7 @@ export class DocumentProjectStore {
     }
   }
 
+  /** 根据项目数据库元数据修复 catalog 行。 */
   private repairCatalogRow(projectId: string): void {
     const db = this.openProjectDb(projectId);
     const meta = new Map((db.prepare('SELECT key, value FROM project_meta').all() as Array<{ key: string; value: string }>).map((row) => [row.key, row.value]));

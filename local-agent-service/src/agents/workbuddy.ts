@@ -22,6 +22,9 @@ export interface WorkbuddyAgent {
   model: string;
 }
 
+/**
+ * 将 system 与 user prompt 合并为 SDK 所需的单一 prompt 文本，system 部分带 "SYSTEM INSTRUCTIONS:" 前缀。
+ */
 export function buildCombinedPrompt(prompt: string, systemPrompt: string): string {
   return [systemPrompt ? 'SYSTEM INSTRUCTIONS:\n' + systemPrompt : '', 'USER REQUEST:\n' + prompt]
     .filter(Boolean).join('\n\n');
@@ -31,6 +34,9 @@ export function buildCombinedPrompt(prompt: string, systemPrompt: string): strin
  * query() exposes the documented Options contract (thinking/effort/fallbackModel).
  * V2 SessionOptions currently documents a narrower contract, so task profiles use query()
  * rather than silently passing unsupported fields to unstable_v2_createSession().
+ *
+ * 构造 CodeBuddy SDK 的调用选项：无 schema 时禁用工具、maxTurns=1；有 schema 时启用 StructuredOutput 工具
+ * 并通过 json_schema 约束输出。canUseTool 仅允许 StructuredOutput，拒绝其余工具。
  */
 export function buildWorkbuddyOptions(
   agent: WorkbuddyAgent,
@@ -67,6 +73,10 @@ export function buildWorkbuddyOptions(
   };
 }
 
+/**
+ * 底层 Workbuddy 调用：动态导入 SDK，发起 query，流式消费消息，提取文本/structuredOutput/usage/sessionId。
+ * 带超时、心跳日志、中断与临时 context window 工作区清理；contextWindow 指定时校验模型档位并创建临时 cwd。
+ */
 async function queryWorkbuddyRaw(
   agent: WorkbuddyAgent,
   prompt: string,
@@ -199,6 +209,10 @@ async function queryWorkbuddyRaw(
   }
 }
 
+/**
+ * 为指定 context window 档位创建临时工作目录：复制 models.json（mode 0o600）并写入 settings.json，
+ * 调用结束后由 cleanup 删除。失败时清理目录并抛错。
+ */
 function createCodeBuddyContextWindowWorkspace(contextWindow: number): { cwd: string; cleanup: () => void } {
   const cwd = mkdtempSync(path.join(tmpdir(), 'vocal-saga-codebuddy-context-window-'));
   try {
@@ -222,6 +236,10 @@ function createCodeBuddyContextWindowWorkspace(contextWindow: number): { cwd: st
   return { cwd, cleanup: () => rmSync(cwd, { recursive: true, force: true }) };
 }
 
+/**
+ * 文本模式 Workbuddy 调用：有 taskProfile 时走 query()（支持 thinking/effort），否则走共享文本池。
+ * 返回文本与 usage；空输出抛错。
+ */
 export async function runWorkbuddy(
   agent: WorkbuddyAgent,
   prompt: string,
@@ -253,6 +271,9 @@ export async function runWorkbuddy(
   }
 }
 
+/**
+ * 优先使用 SDK 返回的 structuredOutput；否则从文本中解析 JSON（含数组）。解析失败抛错。
+ */
 export function resolveWorkbuddyStructured(structuredOutput: unknown, text: string, context = ''): Record<string, any> | any[] {
   if (structuredOutput && typeof structuredOutput === 'object') {
     return structuredOutput as Record<string, any> | any[];
@@ -262,6 +283,9 @@ export function resolveWorkbuddyStructured(structuredOutput: unknown, text: stri
   throw new Error('Workbuddy 返回内容不是有效 JSON');
 }
 
+/**
+ * 在 resolveWorkbuddyStructured 基础上要求结果为 JSON 对象（非数组）。
+ */
 export function resolveWorkbuddyJson(structuredOutput: unknown, text: string, context = ''): Record<string, any> {
   const parsed = resolveWorkbuddyStructured(structuredOutput, text, context);
   if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
@@ -270,6 +294,10 @@ export function resolveWorkbuddyJson(structuredOutput: unknown, text: string, co
   throw new Error('Workbuddy 返回内容不是预期 JSON 对象');
 }
 
+/**
+ * 结构化 Workbuddy 调用：根据 taskProfile/sessionScope 决定走 query() 或共享池，支持超时与 session 恢复。
+ * 返回 parsed + usage + sessionId。
+ */
 export async function runWorkbuddyStructured(
   agent: WorkbuddyAgent,
   prompt: string,
@@ -319,6 +347,9 @@ export async function runWorkbuddyStructured(
   };
 }
 
+/**
+ * 在 runWorkbuddyStructured 基础上要求结果为 JSON 对象。
+ */
 export async function runWorkbuddyJson(
   agent: WorkbuddyAgent,
   prompt: string,

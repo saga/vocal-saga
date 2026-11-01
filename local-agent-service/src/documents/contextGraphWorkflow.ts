@@ -56,6 +56,9 @@ export const CONTEXT_GRAPH_STAGE_SESSION_PARENT: Partial<Record<ContextGraphWork
 };
 
 /** 阶段所属波次序号；未知阶段返回 -1。 */
+/**
+ * 返回给定阶段所在的波次索引（0-based），用于调度并行/串行顺序；未知阶段返回 -1。
+ */
 export function contextGraphStageWave(stageId: string): number {
   for (let index = 0; index < CONTEXT_GRAPH_STAGE_WAVES.length; index++) {
     if ((CONTEXT_GRAPH_STAGE_WAVES[index] as readonly string[]).includes(stageId)) return index;
@@ -91,6 +94,10 @@ const STAGE_INSTRUCTIONS: Record<ContextGraphWorkflowStageId, string> = {
   ].join('\n'),
 };
 
+/**
+ * 为后续阶段压缩前序输出：relationships 阶段仅保留 characters/entities 的名称/别名/译名，
+ * chapters 阶段仅保留 bookSummary，避免重发大量字段。
+ */
 function compactPriorOutputs(stageId: ContextGraphWorkflowStageId, prior: Record<string, any>): Record<string, unknown> {
   const compact: Record<string, unknown> = {};
   if (stageId === 'relationships' || stageId === 'chapters') {
@@ -106,6 +113,9 @@ function compactPriorOutputs(stageId: ContextGraphWorkflowStageId, prior: Record
 }
 
 /** Build a stage-scoped prompt. Persistent sessions reuse the initial source/sample payload instead of resending it. */
+/**
+ * 构造阶段限定的 Prompt：持久化 session 时复用已有样本 payload，仅发送增量指令与前序压缩结果。
+ */
 export function buildContextGraphWorkflowPrompt(
   stageId: ContextGraphWorkflowStageId,
   basePrompt: string,
@@ -129,6 +139,9 @@ export function buildContextGraphWorkflowPrompt(
 }
 
 /** Return a schema containing only this stage's fields, all of which are required by structured output. */
+/**
+ * 从完整分析 schema 中裁剪出当前阶段所需的字段子 schema，所有字段 required。
+ */
 export function buildContextGraphWorkflowSchema(
   analysisSchema: Record<string, any>,
   stageId: ContextGraphWorkflowStageId,
@@ -152,6 +165,9 @@ export function buildContextGraphWorkflowSchema(
  * roughly twice as fast as A and shows per-stage progress. A is a single monolithic call that
  * produces ~42K output tokens in one turn with no intermediate progress, so it is kept only as
  * an explicit control/fallback via `LOCAL_AGENT_CONTEXT_GRAPH_STRATEGY=a`.
+ */
+/**
+ * 策略选择：mode 显式为 'a' 时用单体 A，否则默认 B（分阶段并行+checkpoint）。
  */
 export function chooseContextGraphStrategy(
   mode: unknown,

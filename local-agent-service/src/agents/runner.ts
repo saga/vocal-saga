@@ -83,6 +83,10 @@ export interface AgentRunResult<T> {
 }
 
 /** Unified model invocation; document tasks can supply immutable per-task settings. */
+/**
+ * 统一的文本模型调用入口：按 provider 分派到 Workbuddy/OpenCode，应用 taskProfile 的 Prompt/模型覆盖，
+ * 记录开始/完成/失败日志，返回文本与 usage。
+ */
 export async function runAgent(
   agent: AgentSpec,
   prompt: string,
@@ -117,6 +121,9 @@ export async function runAgent(
   }
 }
 
+/**
+ * 统一的 JSON 对象模型调用入口：要求返回 JSON 对象（数组视为失败），应用 taskProfile，记录日志。
+ */
 export async function runAgentJson(
   agent: AgentSpec,
   prompt: string,
@@ -156,6 +163,9 @@ export async function runAgentJson(
   }
 }
 
+/**
+ * 统一的结构化 JSON 模型调用入口：允许返回对象或数组，支持持久化 session 与超时覆盖，记录日志。
+ */
 export async function runAgentStructured(
   agent: AgentSpec,
   prompt: string,

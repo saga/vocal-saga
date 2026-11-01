@@ -1,6 +1,10 @@
 import { spawn } from 'node:child_process';
 import { REQUEST_TIMEOUT_MS, WORK_DIR } from '../config.ts';
 
+/**
+ * 构造 OpenCode CLI 的配置 JSON：在现有配置基础上注册/覆盖 "fanyi-local-translation" Agent，
+ * 禁用其工具与权限（仅允许纯文本回答），避免本地翻译触发额外工具调用。
+ */
 export function buildOpenCodeConfig() {
   let existing: Record<string, any> = {};
   if (process.env.OPENCODE_CONFIG_CONTENT?.trim()) {
@@ -24,6 +28,10 @@ export function buildOpenCodeConfig() {
   });
 }
 
+/**
+ * 通过 spawn 调用 opencode CLI 执行一次翻译请求，解析其 JSON 事件流提取文本答案。
+ * 超时/非零退出/无输出时 reject；stderr 保留末尾 8000 字符用于错误诊断。
+ */
 export function runOpenCode(agent: { provider: string; model: string }, prompt: string, systemPrompt: string, timeoutMs = REQUEST_TIMEOUT_MS): Promise<string> {
   return new Promise((resolve, reject) => {
     const fullPrompt = [

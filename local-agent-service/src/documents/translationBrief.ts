@@ -1,4 +1,7 @@
 /**
+ * 中文：一个有界、内存不可变的上下文包，由初译与两个 Reviewer 共享。
+ * 持久化快照只包含引用与紧凑记忆，不包含整本小说或完整草稿。
+ * English:
  * One bounded, immutable-in-memory context bundle shared by translation and both reviewers.
  * The persisted snapshot contains references and compact memory, not the full novel or draft text.
  */
@@ -46,6 +49,10 @@ export interface TranslationBrief {
   contextHash: string;
 }
 
+/**
+ * 中文：将任意输入归一化为可比较的源文本：NFKC 归一化、统一引号/破折号、转小写并折叠空白。
+ * 用于源文匹配、别名兼容性判断与证据引文校验，避免因标点/大小写差异导致误判。
+ */
 function normalizedSourceText(value: unknown): string {
   return String(value || '').normalize('NFKC')
     .replace(/[‘’‛]/g, "'")
@@ -54,6 +61,10 @@ function normalizedSourceText(value: unknown): string {
     .toLocaleLowerCase().replace(/\s+/g, ' ').trim();
 }
 
+/**
+ * 中文：判断 quote 是否为 source 中的连续子串（归一化后），且引文长度至少 8 个字符。
+ * 用于证据引文的可验证性校验，防止短片段/伪造引用通过。
+ */
 function sourceQuoteMatches(source: unknown, quote: unknown): boolean {
   const sourceText = normalizedSourceText(source);
   const quoteText = normalizedSourceText(quote);
@@ -69,20 +80,33 @@ const CANONICAL_ALIAS_STOPWORDS = new Set([
   'madam', 'madame', 'captain', 'master', 'mr', 'mrs', 'ms', 'san', 'sama',
 ]);
 
+/**
+ * 中文：对规范实体源名做进一步归一化：去掉冠词、所有格后缀与尾部标点，便于别名兼容性比较。
+ */
 function normalizedCanonicalSourceName(value: unknown): string {
   return normalizedSourceText(value).replace(/^(?:the|a|an)\s+/, '')
     .replace(/(?:['’]s)\b/g, '').replace(/[.!?]+$/g, '').trim();
 }
 
+/**
+ * 中文：判断源名是否为通用称谓（如 lord/general/captain），这类名称不应直接作为规范映射注入。
+ */
 function isGenericCanonicalSourceName(value: unknown): boolean {
   return GENERIC_CANONICAL_SOURCE_FORMS.has(normalizedCanonicalSourceName(value));
 }
 
+/**
+ * 中文：提取规范源名的身份 token（去除停用词），用于别名兼容性判断。
+ */
 function canonicalSourceIdentityTokens(value: string): string[] {
   return normalizedCanonicalSourceName(value).replace(/['’]s\b/g, '')
     .match(/[a-z0-9]+/g)?.filter((token) => !CANONICAL_ALIAS_STOPWORDS.has(token)) || [];
 }
 
+/**
+ * 中文：判断 alias 是否与 source 在身份上兼容（token 有重叠/前缀关系）；非拉丁文本默认兼容。
+ * 防止把属于他人的别名挂到当前实体上。
+ */
 function isCompatibleCanonicalSourceAlias(source: string, alias: string): boolean {
   if (!/^[a-z0-9 ._'’-]+$/iu.test(source) || !/^[a-z0-9 ._'’-]+$/iu.test(alias)) return true;
   const sourceTokens = canonicalSourceIdentityTokens(source);
@@ -93,6 +117,9 @@ function isCompatibleCanonicalSourceAlias(source: string, alias: string): boolea
     sourceToken === aliasToken || sourceToken.startsWith(aliasToken) || aliasToken.startsWith(sourceToken)));
 }
 
+/**
+ * 中文：从别名输入中过滤掉通用称谓、与源名相同项及不兼容别名，按归一化文本去重。
+ */
 function safeCanonicalSourceAliases(source: string, aliasesInput: unknown): string[] {
   const aliases = (Array.isArray(aliasesInput) ? aliasesInput : [])
     .filter((alias): alias is string => typeof alias === 'string' && alias.trim().length > 0)
@@ -106,6 +133,10 @@ function safeCanonicalSourceAliases(source: string, aliasesInput: unknown): stri
 const firstSourceOccurrenceCache = new Map<string, number>();
 const sourceRowsByRevision = new Map<string, Array<{ ordinal: number; text: string }>>();
 
+/**
+ * 中文：按来源版本读取全部 source_segments（ordinal/text），带两版本 LRU 缓存。
+ * 来源版本不可变，缓存可避免每个别名都重新扫描 SQLite。
+ */
 function sourceRowsForRevision(db: any, revisionId: string): Array<{ ordinal: number; text: string }> {
   const cached = sourceRowsByRevision.get(revisionId);
   if (cached) {
@@ -127,6 +158,10 @@ function sourceRowsForRevision(db: any, revisionId: string): Array<{ ordinal: nu
   return rows;
 }
 
+/**
+ * 中文：在指定来源版本中查找 term 首次出现的 ordinal（name 或 quote 匹配）。
+ * 结果缓存；用于时间边界判定（某名称/引文是否在当前批次之前已出现）。
+ */
 function firstMatchingSourceOrdinal(
   db: any,
   revisionId: string,
@@ -154,6 +189,9 @@ function firstMatchingSourceOrdinal(
   return ordinal;
 }
 
+/**
+ * 中文：判断 name 是否作为完整词/子串出现在 source 中（拉丁名按词边界，非拉丁按子串）。
+ */
 function sourceNameMatches(source: unknown, nameInput: unknown): boolean {
   const sourceText = normalizedSourceText(source);
   const name = normalizedSourceText(nameInput);
@@ -167,6 +205,9 @@ function sourceNameMatches(source: unknown, nameInput: unknown): boolean {
 }
 
 /**
+ * 中文：文学记忆是全书级快照，但并非所有断言在源文任意位置都可用。
+ * 仅保留来源 ordinal 早于当前批次的证据；移除无可靠时间来源的自由文本摘要/译例，避免后文剧透泄漏。
+ * English:
  * Literary memory is a book-level snapshot, but not all its claims are available at every point
  * in the source. Only evidence whose source ordinal precedes this batch may survive retrieval.
  * Unscoped free-text summaries/examples are removed because they have no trustworthy temporal
@@ -190,6 +231,7 @@ function buildTemporallyVisibleMemory(
   const sourceRevisionExists = !!revisionId && !!projectContext.db.prepare(
     'SELECT 1 FROM source_revisions WHERE revision_id = ?'
   ).get(revisionId);
+  // 中文：缺少项目/来源版本/批次时，无法建立时间边界，直接返回空记忆，避免泄漏。
   if (!projectId || !sourceRevisionExists || !items.length) return empty;
 
   const rows = projectContext.db.prepare(
@@ -200,11 +242,13 @@ function buildTemporallyVisibleMemory(
   const itemOrdinals = rows.map((row) => Number(row.ordinal)).filter(Number.isFinite);
   if (!itemOrdinals.length) return empty;
   const firstOrdinal = Math.min(...itemOrdinals);
+  // 中文：firstOrdinal 是当前批次第一个源段的 ordinal，作为时间边界基准。
 
   const rawMemory = context?.memory && typeof context.memory === 'object'
     ? JSON.parse(JSON.stringify(context.memory)) as Record<string, any>
     : empty;
   const editorialProfile = rawMemory.chineseEditorialProfile;
+  // 中文：编辑画像仅在来源版本匹配且未被拒绝时启用；机器默认采纳，证据仅作元数据。
   if (!editorialProfile || editorialProfile.status === 'rejected' ||
       editorialProfile.sourceRevisionId !== revisionId) {
     rawMemory.chineseEditorialProfile = null;
@@ -663,6 +707,10 @@ function buildTemporallyVisibleMemory(
   return rawMemory;
 }
 
+/**
+ * 中文：按当前批次的时间边界过滤术语表：仅保留源名在前文或本批次出现的术语；
+ * 若术语的某个别名首次出现在本批次之后，则整体丢弃，避免未来揭示泄漏到当前译文。
+ */
 function filterGlossaryForBatch(context: any, items: BriefSegment[]): unknown {
   const configured = context?.prompt?.config?.glossary ?? context?.prompt?.glossary ?? null;
   if (context?.run?.translationMode !== 'literary') return configured;
@@ -724,6 +772,9 @@ function filterGlossaryForBatch(context: any, items: BriefSegment[]): unknown {
   };
 }
 
+/**
+ * 中文：将 TranslationBrief 的关键字段序列化为稳定字符串，用于计算 contextHash。
+ */
 function serializedContext(brief: Pick<TranslationBrief,
   'policyVersion' | 'sourceRevisionId' | 'promptRevisionId' | 'memoryRevisionId' |
   'sourceSegmentIds' | 'chapterPath' | 'glossary' | 'precedingSegments' | 'contextGraph' | 'voiceContext' | 'contextDeltaCount'
@@ -743,6 +794,11 @@ function serializedContext(brief: Pick<TranslationBrief,
   });
 }
 
+/**
+ * 中文：构造并持久化一个版本固定的 TranslationBrief：
+ * 解析项目/来源/Prompt/记忆 revision，按策略裁剪前文，构造时间可见记忆与 Context Graph，
+ * 过滤术语表，并计算 contextHash。初译与两个 Reviewer 共用此快照。
+ */
 export function buildTranslationBrief(
   context: any,
   items: BriefSegment[],

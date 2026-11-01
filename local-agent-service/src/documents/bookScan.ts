@@ -280,6 +280,9 @@ function quoteSpans(text: string): Array<{ start: number; end: number }> {
   }
   return spans.sort((a, b) => a.start - b.start || a.end - b.end);
 }
+/**
+ * 判断片段是否为对白段：依据引号数量、破折号对白或源语言的引语动词。
+ */
 export function isDialogueSegment(segment: Pick<BookScanSegment, 'text'>, sourceLang = 'en'): boolean {
   const text = segment.text || '';
   const language = sourceLanguageCode(sourceLang, text);
@@ -528,6 +531,10 @@ export interface BookScanFeatureChunk {
   quantityMentionsDiscovered: number;
 }
 
+/**
+ * 对给定片段集合做确定性特征扫描（实体提及、文本单元、对白索引、数量提及），返回可合并的 chunk。
+ * 输入按 ordinal 排序，不改变原数组。
+ */
 export function scanBookSegmentFeatures(segmentsInput: BookScanSegment[], sourceLang = 'en'): BookScanFeatureChunk {
   const segments = segmentsInput.slice().sort((a, b) => a.ordinal - b.ordinal);
   const entities = collectEntityMentions(segments, sourceLang);
@@ -653,6 +660,10 @@ async function scanFeatureChunkInWorker(segments: BookScanSegment[], sourceLang 
  * Worker 只计算可由原文重现的词项/对白/重复表达/数量等特征，最终由主线程按 ordinal 合并；
  * 输出应与 scanBookSegments 的同步实现语义一致，且所有 span/segmentId 必须仍指向原文。
  */
+/**
+ * 大文档的并发特征扫描：按配置/环境决定是否启用 Worker 并行；小文档回退到同步 scanBookSegments。
+ * 结果按 source order 合并，保持确定性。
+ */
 export async function scanBookSegmentsConcurrent(
   segmentsInput: BookScanSegment[],
   options: BookScanOptions = {},
@@ -686,6 +697,9 @@ export async function scanBookSegmentsConcurrent(
  * 同步扫描实现，作为小文档路径、测试基线和 Worker 结果一致性参照。
  * 该索引是词面/结构特征，不是语义解析器，也不能独立证明人物身份或关系。
  */
+/**
+ * 同步全书扫描：单 chunk 特征提取 + 组装，作为小文档路径与并发结果的一致性基线。
+ */
 export function scanBookSegments(segmentsInput: BookScanSegment[], options: BookScanOptions = {}): BookScanResult {
   const segments = segmentsInput.slice().sort((a, b) => a.ordinal - b.ordinal);
   return assembleBookScan(segments, [scanBookSegmentFeatures(segments, options.sourceLang || 'en')], options);
@@ -695,6 +709,10 @@ export function scanBookSegments(segmentsInput: BookScanSegment[], options: Book
  * 根据全书特征索引制定有界抽样计划。
  * 计划综合章节/早中晚位置、对白、候选实体和重复表达覆盖；所有被选内容最终仍以原文 segment 为证据，
  * 统计分数只负责提高覆盖率，不得被下游当作模型事实。
+ */
+/**
+ * 根据全书特征索引制定有界抽样计划：覆盖开头/中部/结尾、分布式章节、高重要性名称与重复表达/对白密集片段。
+ * 短文档全量采样；长文档最多 MAX_SAMPLES 个样本，单样本最多 SAMPLE_TEXT_LIMIT 字符。
  */
 export function planBookSamples(segmentsInput:BookScanSegment[],scanInput?:BookScanResult,sampleLimit=MAX_SAMPLES):BookSamplePlan {
   const segments=segmentsInput.slice().sort((a,b)=>a.ordinal-b.ordinal),scan=scanInput||scanBookSegments(segments);

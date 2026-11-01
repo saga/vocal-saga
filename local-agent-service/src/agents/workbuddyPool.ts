@@ -5,29 +5,52 @@ import { logInfo, logWarn, summarizeError } from '../log.ts';
 
 // SDK 会话的最小使用面：正式用 Session，测试用假对象。
 export interface PooledSession {
+  /** 向会话发送一轮用户消息（prompt）。 */
   send(message: string): Promise<void>;
+  /** 流式读取会话输出事件（assistant/result 等）。 */
   stream(): AsyncGenerator<any, void>;
+  /** 请求中断当前运行；不保证底层进程立即退出。 */
   interrupt(): Promise<void>;
+  /** 关闭会话并释放底层 CLI 进程资源。 */
   close(): void;
+  /** 热切换模型（若 SDK 支持）；不支持时调用方会重建会话。 */
   setModel?(model: string): Promise<void>;
   /** 只 boot CLI 进程，不调模型（SDK Session.connect 的预热语义）。 */
   connect?(): Promise<void>;
 }
 
+/** 会话工厂：根据选项创建并返回一个 PooledSession（可同步或异步）。 */
 export type SessionFactory = (options: Record<string, any>) => PooledSession | Promise<PooledSession>;
 
 interface Slot {
+  /** 当前槽位持有的 SDK 会话；null 表示未创建或已丢弃。 */
   session: PooledSession | null;
+  /** 当前会话实际使用的模型标识；空字符串表示未设置/运行时默认。 */
   model: string;
   /** Complete scope key; document batches add run, role, prompt revision, lane and batch index to isolate history. */
   scopeKey: string;
+  /** 当前会话对应的 schema 序列化键；空字符串表示纯文本模式。 */
   schemaKey: string;
+  /** 已复用的轮数；达到 maxUses 后重建会话。 */
   uses: number;
+  /** 是否正在被某个请求独占。 */
   busy: boolean;
+  /** 最近一次使用/释放的时间戳（毫秒），用于 LRU 驱逐。 */
   lastUsedAt: number;
 }
 
 /**
+ * 为日志生成 scope 的简短描述。
+ *
+ * 职责：scopeKey 可能是 JSON 数组（含整份 schema），直接打印会淹没一行；
+ * 只取第一个元素（真正的作用域名）并截断到 80 字符。shared-slot 会话返回固定标签。
+ *
+ * 参数：
+ * - `scopeKey`：原始 scope 键。
+ *
+ * 返回值：string，适合单行日志的简短描述。
+ * 边界：空字符串返回 `'<空>'`；非 JSON 数组按原文截断；不修改输入。
+ *
  * 日志里描述 scope：scopeKey 可能是 JSON 数组（含整份 schema），直接打印会淹没一行。
  * 只取第一个元素（真正的作用域名）并截断。
  */
@@ -45,6 +68,18 @@ function describeScope(scopeKey: string): string {
 
 /**
  * 跑完一轮会话并聚合文本、结构化输出与 token 计量。
+ *
+ * 职责：发送 `combinedPrompt`，遍历 `session.stream()` 聚合 assistant 文本，
+ * 在收到 `result` 事件时提取 structured_output 与 usage 并结束；遇到错误子类型或
+ * 执行失败时抛错。
+ *
+ * 参数：
+ * - `session`：已就绪的 PooledSession。
+ * - `combinedPrompt`：本轮发送的完整 Prompt。
+ *
+ * 返回值：Promise<{ text, structuredOutput, usage }>。
+ * 边界：若 stream() 永不结束，本函数不会返回，需外层 Promise.race 接管；
+ *       不负责超时或会话关闭。
  *
  * 单独抽出来是为了让超时能通过 Promise.race 接管：如果 CLI 卡住或事件流已断，
  * stream() 不会自己结束，外层的超时只能靠竞速，不能靠 interrupt() 的副作用。
@@ -101,15 +136,41 @@ export class WorkbuddySessionPool {
   private waiters: Array<() => void> = [];
   private closed = false;
 
+  /**
+   * 断言池未关闭。
+   *
+   * 职责：在所有可能影响会话生命周期的操作前检查 `closed` 标志，
+   * 防止关闭后继续创建/复用 CLI 进程或唤醒排队请求。
+   *
+   * 参数：无。
+   * 返回值：无；池已关闭时抛出 `Error('Workbuddy session pool is closed')`。
+   * 边界：仅检查内存标志，不等待或清理；调用方需自行处理抛出的异常。
+   */
   private assertOpen(): void {
     if (this.closed) throw new Error('Workbuddy session pool is closed');
   }
 
+  /**
+   * 构造有界会话池。
+   *
+   * 职责：按 `size` 预分配固定数量的 Slot（不提前启动 CLI 进程），
+   * 并记录最大复用轮数 `maxUses` 与会话工厂 `factory`。
+   *
+   * 参数：
+   * - `size`：池容量，即同时在途的最大会话数，对齐扩展侧扇出（默认 6）。
+   * - `maxUses`：单个会话最多复用的轮数，达到后销毁并懒重建，避免历史上下文无限增长。
+   * - `factory`：创建 SDK Session 的工厂函数，返回 `PooledSession` 或其 Promise。
+   *
+   * 返回值：无（构造函数）。
+   * 边界：不启动任何进程；空闲槽位的 CLI 进程需由 `prewarm` 或首单懒创建。
+   *       `size <= 0` 时池为空，所有 `acquire` 将永久排队，调用方应保证合法容量。
+   */
   constructor(
     private readonly size: number,
     private readonly maxUses: number,
     private readonly factory: SessionFactory,
   ) {
+    // 预分配固定数量的槽位，避免运行时动态扩容导致无界进程增长。
     this.slots = Array.from({ length: size }, () => ({
       session: null, model: '', scopeKey: '', schemaKey: '', uses: 0, busy: false, lastUsedAt: 0,
     }));
@@ -118,8 +179,20 @@ export class WorkbuddySessionPool {
   // 取一个空闲槽位并保证会话就绪；全忙时排队等（不另起进程，避免无界膨胀）。
   /**
    * 获取与 provider/model/session scope/schema 匹配的空闲会话。
-   * 池满时通过 waiter 排队而非无限创建进程；scopeKey 正在执行中的会话不可被第二个请求并发复用。
-   * 会话达到 maxUses 或模型/schema 不匹配时应重建，避免历史上下文持续增长或类型约束串线。
+   *
+   * 职责：为普通文本请求走共享槽位；为带 scope/schema 的请求复用或创建独立会话。
+   * 池满时通过 waiter 排队而非无限创建进程；同一 scopeKey 正在执行中的会话
+   * 不可被第二个请求并发复用，避免轮次交错写入同一对话历史。
+   *
+   * 参数：
+   * - `agent`：Agent 配置（provider/model）。
+   * - `scopeKey`：会话作用域键，默认 `'shared-text-translation'`；文档批次应传入包含
+   *   run/role/prompt revision/lane/batch 的稳定键。
+   * - `schema`：可选 JSON Schema，用于结构化输出；影响 schemaKey 与会话重建。
+   *
+   * 返回值：Promise<number>，分配到的槽位索引。
+   * 边界：池已关闭时抛错；会话创建失败会释放槽位并向上抛出；
+   *       达到 `maxUses` 或模型/schema 不匹配时重建会话。
    */
   async acquire(
     agent: WorkbuddyAgent,
@@ -188,6 +261,20 @@ export class WorkbuddySessionPool {
     }
   }
 
+  /**
+   * 获取可复用的共享文本槽位（普通网页/短文本翻译路径）。
+   *
+   * 职责：优先复用空闲且 schema 为空的 `shared-slot:` 会话；
+   * 无可用复用会话时在空闲/可驱逐槽位上创建新会话；池满时排队等待。
+   * 共享槽位按模型资格复用，模型切换时重建，避免历史上下文串线。
+   *
+   * 参数：
+   * - `agent`：本次请求的 Agent 配置，主要使用 `agent.model`。
+   *
+   * 返回值：Promise<number>，分配到的槽位索引。
+   * 边界：同一槽位同时只允许一个请求运行；池关闭时抛出错误；
+   *       会话创建失败会释放槽位并唤醒下一个等待者，异常向上抛出。
+   */
   private async acquireSharedTextSlot(agent: WorkbuddyAgent): Promise<number> {
     for (;;) {
       this.assertOpen();
@@ -240,14 +327,40 @@ export class WorkbuddySessionPool {
     }
   }
 
+  /**
+   * 判断槽位中的会话是否为尚未使用过的新会话。
+   *
+   * 职责：当 `uses === 0` 时，下一轮需要重新注入稳定系统指令（prompt），
+   * 因为会话尚未承载过任何对话轮次。
+   *
+   * 参数：
+   * - `index`：槽位索引。
+   *
+   * 返回值：boolean；索引越界或槽位不存在时返回 `false`（uses 为 undefined）。
+   * 边界：仅读取内存计数，不触发会话创建或状态变更。
+   */
   /** True when the next turn must seed a fresh session with stable system instructions. */
   isFresh(index: number): boolean {
     return this.slots[index]?.uses === 0;
   }
 
+  /**
+   * 释放槽位的独占权，允许下一个排队请求进入。
+   *
+   * 职责：将 `busy` 置为 false、更新 `lastUsedAt`，并唤醒一个等待中的 `acquire`。
+   * `runPrompt` 不会自动释放独占权，调用方必须在 `runPrompt` 完成
+   * （无论成功或失败）后显式调用 `release(index)`，否则槽位将一直被占用。
+   *
+   * 参数：
+   * - `index`：槽位索引；越界时静默返回。
+   *
+   * 返回值：无。
+   * 边界：不关闭会话、不重置 `uses`；会话复用状态保持不变。
+   */
   release(index: number): void {
     const slot = this.slots[index];
     if (!slot) return;
+    // 释放独占权，允许下一个排队请求进入该槽位。
     slot.busy = false;
     slot.lastUsedAt = Date.now();
     this.wakeNext();
@@ -256,9 +369,23 @@ export class WorkbuddySessionPool {
   // 在指定槽位跑一轮：发 prompt、收文本与 structured_output，超时则中断。
   // 成功用满 maxUses 轮即重建；失败/超时直接丢弃会话（状态不可信），下次懒重建。
   /**
-   * 在独占槽位中执行一次 Prompt，并在 finally 路径释放槽位。
-   * 同一 scope 的重试可以复用会话，但调用方仍须传入完整、显式的当前批次上下文；
-   * 不能把 SDK 对话历史当作权威记忆或跨批次的安全上下文。
+   * 在独占槽位中执行一次 Prompt。
+   * 调用方负责在完成后 release(index) 释放独占权；本方法不自动 release。
+   *
+   * 职责：发送 `combinedPrompt`，聚合文本/结构化输出/token 计量；超时通过
+   * `Promise.race` 接管并丢弃会话；空响应或失败时丢弃会话以便下次重建；
+   * 成功用满 `maxUses` 轮后销毁会话。
+   *
+   * 参数：
+   * - `index`：已 acquire 的槽位索引。
+   * - `combinedPrompt`：本轮发送的完整 Prompt（含稳定系统指令与动态上下文）。
+   * - `requestId`：请求/批次 ID，用于日志关联。
+   * - `timeoutMs`：超时阈值，默认 `REQUEST_TIMEOUT_MS`。
+   *
+   * 返回值：Promise<{ text, structuredOutput, usage }>。
+   * 边界：调用前槽位必须已 acquire 且持有会话；超时/失败会抛错并丢弃会话；
+   *       空响应（text 与 structuredOutput 均缺失）视为失败。
+   *       注意：slot 释放由调用方负责（acquire/release 配对），本方法不自动 release。
    */
   async runPrompt(
     index: number,
@@ -327,7 +454,14 @@ export class WorkbuddySessionPool {
   // 关停/测试用：关闭全部 CLI 子进程并清空。
   /**
    * 关闭池内全部活动/空闲 SDK 会话并清空可复用状态。
-   * 用于服务关闭、测试隔离和故障恢复；关闭后不得继续使用旧 Slot 中的 session 引用。
+   *
+   * 职责：标记池为 `closed`，丢弃并关闭每个槽位的会话，唤醒所有排队的
+   * `acquire`（使其抛出“池已关闭”而非继续循环）。
+   *
+   * 参数：无。
+   * 返回值：无。
+   * 边界：幂等——重复调用无额外效果；关闭后池实例不可再用，
+   *       旧 Slot 中的 `session` 引用必须丢弃。
    */
   closeAll(): void {
     if (this.closed) return;
@@ -338,6 +472,20 @@ export class WorkbuddySessionPool {
     this.waiters.splice(0).forEach((wake) => { wake(); });
   }
 
+  /**
+   * 后台预热空闲槽位的 CLI 进程。
+   *
+   * 职责：对所有空闲且无会话的槽位调用 `ensureSession` + `connect()`，
+   * 提前拉起 CLI 进程以减少首单冷启动延迟；单个槽位失败只丢弃该会话，
+   * 不影响池的可用性（首单仍走懒创建）。
+   *
+   * 参数：
+   * - `agent`：预热使用的 Agent 配置（模型等）。
+   *
+   * 返回值：Promise<void>；所有预热任务完成（或各自失败处理）后 resolve。
+   * 边界：默认关闭预热（`LOCAL_AGENT_PREWARM`）；池已关闭时 `ensureSession` 抛错；
+   *       预热只 boot 进程，不调用模型、不消耗 token。
+   */
   // 服务启动后后台调用一次：把空闲槽位的 CLI 进程提前拉起。
   // connect 只 boot 进程、不发 prompt（不调模型、不花 token）；initialize 留给首单。
   // 单个失败只丢该槽——首单仍走懒创建，不影响可用性。
@@ -364,6 +512,25 @@ export class WorkbuddySessionPool {
     await Promise.all(jobs);
   }
 
+  /**
+   * 保证槽位拥有可用会话，并在需要时创建或重建。
+   *
+   * 职责：
+   * - 槽位无会话时创建新会话；
+   * - `scopeKey` 不匹配时丢弃旧会话并重建（scope 切换）；
+   * - 模型不一致时优先热切换（`setModel`），SDK 不支持则重建；
+   * - 记录模型、schema、uses 等槽位元数据。
+   *
+   * 参数：
+   * - `index`：槽位索引。
+   * - `agent`：本次请求的 Agent 配置。
+   * - `requestedKey`：完整的 scope 键（含 scope/模型/schema）。
+   * - `schema`：可选的 JSON Schema，用于结构化输出模式。
+   *
+   * 返回值：Promise<void>。
+   * 边界：池已关闭时抛出；会话创建失败会记录详细入参并向上抛出；
+   *       创建过程中池关闭会关闭刚创建的会话并抛出。
+   */
   // 保证槽位有可用会话；模型与槽位不一致时热切换（控制请求，无需重启进程）。
   private async ensureSession(
     index: number,
@@ -443,8 +610,18 @@ export class WorkbuddySessionPool {
   /**
    * 丢弃并关闭槽位会话。
    *
-   * 传入 error 时会把它写进日志：会话生命周期是排查「调用卡住/空响应」的关键线索，
-   * 只说「调用失败」而不说失败原因，等于没记。
+   * 职责：关闭底层 SDK 会话，清空槽位的会话/计数/scope/schema/model 等状态，
+   * 便于下次懒重建；根据是否传入 `error` 选择 warn/info 日志级别。
+   *
+   * 参数：
+   * - `index`：槽位索引；越界时 `slots[index]` 为 undefined 会抛错（调用方应保证合法）。
+   * - `reason`：丢弃原因，用于日志与排查。
+   * - `error`：可选的失败原因；传入时按 warn 级别记录。
+   *
+   * 返回值：无。
+   * 边界：关闭失败仅记录日志，不阻断状态清空；槽位可能残留僵尸进程风险已留痕。
+   *       传入 error 时会把它写进日志：会话生命周期是排查「调用卡住/空响应」的关键线索，
+   *       只说「调用失败」而不说失败原因，等于没记。
    */
   private dropSession(index: number, reason = '关闭', error?: unknown): void {
     const slot = this.slots[index];
@@ -469,13 +646,32 @@ export class WorkbuddySessionPool {
     slot.lastUsedAt = Date.now();
   }
 
+  /**
+   * 唤醒一个等待中的 `acquire` 请求。
+   *
+   * 职责：从 `waiters` 队列取出最早的等待者并调用其 resolve，
+   * 使其重新进入 acquire 循环尝试获取槽位。
+   *
+   * 参数：无。
+   * 返回值：无；队列为空时无操作。
+   * 边界：仅唤醒一个等待者，避免惊群；不保证被唤醒者一定能成功获取槽位。
+   */
   private wakeNext(): void {
     const wake = this.waiters.shift();
     if (wake) wake();
   }
 
   /**
-   * 等一个空闲槽位。
+   * 等待一个空闲槽位。
+   *
+   * 职责：将当前请求挂入 `waiters` 队列并 await，直到被 `wakeNext` 唤醒；
+   * 等待超过 2s 时记录排队日志。
+   *
+   * 参数：无。
+   * 返回值：Promise<void>。
+   * 边界：池关闭时 `closeAll` 会唤醒所有等待者，其后续 `assertOpen` 抛错；
+   *       不保证唤醒后一定能获取到槽位，调用方需循环重试。
+   *
    * 池满时请求会停在这里，日志里必须能看出「不是模型慢，而是在排队」；
    * 只有真正等久了才输出，避免正常排队刷屏。
    */
@@ -487,6 +683,20 @@ export class WorkbuddySessionPool {
   }
 }
 
+/**
+ * 构建复用会话的 SDK 选项。
+ *
+ * 职责：基于 `buildWorkbuddyOptions` 生成单次 query 的选项，
+ * 但移除 `maxTurns`（按进程生命周期计的预算，不适合复用会话）；
+ * 单轮护栏由 `tools: []`（无工具可循环）与超时共同承担。
+ *
+ * 参数：
+ * - `agent`：Agent 配置（provider/model 等）。
+ * - `schema`：可选 JSON Schema，用于结构化输出模式。
+ *
+ * 返回值：Record<string, any>，可直接传给 SessionFactory 的选项对象。
+ * 边界：不校验 agent/schema 的合法性；`maxTurns` 被解构丢弃，其余字段原样透传。
+ */
 // 复用会话的 options：与单次 query 一致，但去掉 maxTurns。
 // --max-turns 是按进程（会话生命周期）计的预算，不适合复用会话；
 // 单轮护栏由 tools:[]（无工具可循环）+ 超时承担。
@@ -495,11 +705,25 @@ export function buildTextSessionOptions(agent: WorkbuddyAgent, schema?: Record<s
   return rest;
 }
 
+/**
+ * 获取文本翻译会话池单例（懒创建）。
+ *
+ * 职责：首次调用时创建 `WorkbuddySessionPool`，使用默认容量/最大轮数与
+ * SDK 会话工厂；后续调用返回同一实例。可传入 `factory` 覆盖（测试用）。
+ *
+ * 参数：
+ * - `factory`：可选的 SessionFactory，仅在首次创建时生效；后续调用忽略。
+ *
+ * 返回值：WorkbuddySessionPool 单例。
+ * 边界：非线程安全的懒初始化，假设单进程/单事件循环；池关闭后需调用
+ *       `closeTextPool` 清空单例才能重新创建。
+ */
 // 文本翻译池单例：懒创建，首单才启动 CLI 进程。
 let textPool: WorkbuddySessionPool | null = null;
 
 export function getTextPool(factory?: SessionFactory): WorkbuddySessionPool {
   if (!textPool) {
+    // 默认工厂动态导入 SDK，避免在非 Workbuddy 路径下加载重型依赖。
     const create: SessionFactory = factory ?? (async (options) => {
       const sdk = await import('@tencent-ai/agent-sdk');
       return sdk.unstable_v2_createSession(options);
@@ -509,6 +733,15 @@ export function getTextPool(factory?: SessionFactory): WorkbuddySessionPool {
   return textPool;
 }
 
+/**
+ * 关闭文本翻译会话池单例（测试隔离/进程关停用）。
+ *
+ * 职责：若单例存在则 `closeAll()` 并置空，便于下次 `getTextPool` 重建。
+ *
+ * 参数：无。
+ * 返回值：无。
+ * 边界：关闭后旧引用失效；不等待已排队请求完成，它们会因池关闭而抛错。
+ */
 // 测试隔离与进程关停用。
 export function closeTextPool(): void {
   if (textPool) {

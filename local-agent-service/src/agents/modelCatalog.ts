@@ -43,6 +43,9 @@ function positiveInteger(value: unknown): number | undefined {
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
 }
 
+/**
+ * 将 token 数格式化为可读档位字符串：百万级用 M，千级用 K，其余显示完整数字+tokens。
+ */
 export function formatCodeBuddyContextWindow(tokens: number): string {
   if (tokens % 1_000_000 === 0) return String(tokens / 1_000_000) + 'M';
   if (tokens % 1_000 === 0) return String(tokens / 1_000) + 'K';
@@ -50,6 +53,10 @@ export function formatCodeBuddyContextWindow(tokens: number): string {
 }
 
 /** A selector only exists for >=2 valid tiers, all bounded by the model's physical limit. */
+/**
+ * 归一化模型的 context window 配置：校验 supportedLengths 全为正整数且 <= maxInputTokens，
+ * 至少 2 个档位；defaultLength 不合法时回退到最小档位。不满足则返回 undefined（不提供选择器）。
+ */
 export function normalizeCodeBuddyContextWindow(model: CatalogModel | null | undefined): {
   maxInputTokens: number; supportedLengths: number[]; defaultLength: number;
 } | undefined {
@@ -69,6 +76,9 @@ export function normalizeCodeBuddyContextWindow(model: CatalogModel | null | und
   return { maxInputTokens, supportedLengths, defaultLength };
 }
 
+/**
+ * 校验 requested 是否为该模型支持的 context window 档位；合法返回该值，否则 undefined。
+ */
 export function resolveCodeBuddyContextWindow(
   model: CatalogModel | null | undefined,
   requested: unknown,
@@ -81,6 +91,9 @@ export function resolveCodeBuddyContextWindow(
   return value;
 }
 
+/**
+ * 生成前端可渲染的 context window 选择器；无有效配置时返回 undefined。
+ */
 export function getCodeBuddyContextWindowOption(
   model: CatalogModel | null | undefined,
   currentValue?: unknown,

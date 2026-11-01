@@ -13,18 +13,30 @@ const MAX_REPEATED_EXPRESSION_GROUPS = 300;
 const MAX_REPEATED_EXPRESSION_LOCATIONS_PER_FINDING = 500;
 const MAX_BULK_REPAIR_SEGMENTS = 100;
 
+/**
+ * 抛出带 HTTP 状态码的错误，用于 API/业务校验失败时中断流程。
+ */
 function fail(message: string, status = 400): never {
   throw Object.assign(new Error(message), { status });
 }
 
+/**
+ * 将输入标准化为 NFKC 归一化、小写、空格折叠后的字符串，用于文本比较。
+ */
 function normalized(value: unknown): string {
   return String(value ?? '').normalize('NFKC').toLocaleLowerCase().replace(/\s+/g, ' ').trim();
 }
 
+/**
+ * 在 normalized 基础上移除非字母数字字符，得到适合短语匹配的字符串。
+ */
 function normalizedPhrase(value: unknown): string {
   return normalized(value).replace(/[^\p{L}\p{N}]+/gu, ' ').replace(/\s+/g, ' ').trim();
 }
 
+/**
+ * 判断源文本中是否包含指定名称（拉丁语系按词边界，其他按子串）。
+ */
 function containsName(source: string, name: string): boolean {
   const candidate = normalized(name);
   if (!candidate) return false;
@@ -36,6 +48,9 @@ function containsName(source: string, name: string): boolean {
   return Array.from(candidate).length >= 2 && normalized(source).includes(candidate);
 }
 
+/**
+ * 判断译文中是否出现了目标术语/名称（拉丁语系按词边界，其他按归一化子串）。
+ */
 function targetPresent(translation: string, target: string): boolean {
   const latinTarget = /^[\p{Script=Latin}\p{M}\p{N} ._'’-]+$/u.test(target);
   if (latinTarget) {
@@ -109,6 +124,9 @@ const CHINESE_COUNT_UNIT = /^(?:个|只|件|位|本|支|张|颗|条|头|匹|座|
 const CHINESE_DIGITS: Record<string, number> = {
   零:0, 〇:0, 一:1, 二:2, 两:2, 三:3, 四:4, 五:5, 六:6, 七:7, 八:8, 九:9,
 };
+/**
+ * 根据语言值与样本文本推断审计使用的源语言代码。
+ */
 function normalizeAuditLanguage(value: string, sampleText = ''): string {
   const raw = String(value || '').trim().toLocaleLowerCase();
   const primary = raw.split(/[-_]/u)[0] || '';
@@ -138,6 +156,9 @@ function normalizeAuditLanguage(value: string, sampleText = ''): string {
   }
   return primary || 'en';
 }
+/**
+ * 解析中文数字字符串为整数值（支持十/百/千/万/亿）。
+ */
 function parseChineseNumber(value: string): number {
   let total=0, section=0, digit=0;
   for (const char of value) {
@@ -150,6 +171,9 @@ function parseChineseNumber(value: string): number {
   }
   return total+section+digit;
 }
+/**
+ * 从 token 序列中解析一段本地化数字短语，返回数值与结束位置。
+ */
 function parseLocalizedNumberRun(
   tokens: Array<{ token: string; index: number }>,
   start: number,
@@ -179,6 +203,9 @@ function parseLocalizedNumberRun(
   }
   return sawNumber ? { value:total+current, end:index, hasScale } : null;
 }
+/**
+ * 按语言习惯将数字字面量标准化为点小数形式。
+ */
 function normalizeNumericLiteralToken(value: string, language: string): string {
   // Spanish, French, German and Italian conventionally use comma decimals and dot grouping.
   if (['es','fr','de','it'].includes(language)) {
@@ -192,6 +219,9 @@ function normalizeNumericLiteralToken(value: string, language: string): string {
   }
   return value.replace(/,/g, '');
 }
+/**
+ * 从文本中提取可比较的数字 token 列表，支持多语言与中文量词。
+ */
 function numericTokens(value: unknown, allowImplicitChineseClassifierOne = true, sourceLang = 'en'): string[] {
   // Unsupported source-language words are not guessed. Only recognized numerals and explicit digits
   // are compared; an unrecognized number phrase must not be treated as a source value of zero.
@@ -259,6 +289,9 @@ const LOCALIZED_QUANTITY_UNIT_PATTERNS: Record<string, RegExp> = {
   es: /(?:\d+(?:[,.]\d+)*|cero|un|uno|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce|trece|catorce|quince|dieciséis|dieciseis|diecisiete|dieciocho|diecinueve|veinte|veintiuno|veintiún|veintiun|veintiuna|veintidós|veintidos|veintitrés|veintitres|veinticuatro|veinticinco|veintiséis|veintiseis|veintisiete|veintiocho|veintinueve|treinta|cuarenta|cincuenta|sesenta|setenta|ochenta|noventa|cien|ciento|mil|millón|millones)(?:[\s-]+(?:y[\s-]+)?(?:un|uno|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce|trece|catorce|quince|veinte|veintidós|veintidos|veintitrés|veintitres|treinta|cuarenta|cincuenta|sesenta|setenta|ochenta|noventa|cien|ciento|mil|millón|millones))*[\s-]+([\p{Script=Latin}\p{M}]+)/giu,
   ja: /(?:\d+(?:[,.]\d+)*|[零〇一二两三四五六七八九十百千万億]+)\s*([\p{Script=Katakana}ー]+)/gu,
 };
+/**
+ * 提取文本中的数量单位并映射为规范化单位键。
+ */
 function numericQuantityUnits(value: unknown, sourceLang = 'en'): string[] {
   const source=String(value??'').normalize('NFKC').toLocaleLowerCase();
   const found:Array<{index:number;unit:string}>=[];
@@ -289,6 +322,9 @@ function numericQuantityUnits(value: unknown, sourceLang = 'en'): string[] {
   for (const item of found) unique.set(item.index + ':' + item.unit, item);
   return Array.from(unique.values()).sort((a,b)=>a.index-b.index).map((item)=>item.unit);
 }
+/**
+ * 比较原文与译文的数字序列/计量单位，生成 numeric-token-mismatch 发现。
+ */
 export function numericFindings(
   segments: Array<{ id: string; text: string; contextPath: string }>,
   translations: Map<string, string>,
@@ -325,6 +361,9 @@ export function numericFindings(
   return findings;
 }
 
+/**
+ * 从 project_events 中的 batch.output.validation 事件提取输出校验发现。
+ */
 function translationOutputValidationFindings(
   db: any,
   runId: string | undefined,
@@ -392,6 +431,9 @@ function translationOutputValidationFindings(
   return findings;
 }
 
+/**
+ * 基于类型、ID 与详情生成稳定的 findingId（FNV-1a 32 位哈希）。
+ */
 function stableFindingId(type: string, ids: string[], detail: string): string {
   let hash = 0x811c9dc5;
   const input = type + ':' + ids.join(',') + ':' + detail;
@@ -399,6 +441,9 @@ function stableFindingId(type: string, ids: string[], detail: string): string {
   return 'qf_' + (hash >>> 0).toString(16).padStart(8, '0');
 }
 
+/**
+ * 读取当前来源版本的全部 source_segments。
+ */
 function currentSource(projectId: string) {
   const store = getDocumentProjectStore();
   const context = store.getProjectContext(projectId);
@@ -416,6 +461,9 @@ function currentSource(projectId: string) {
   };
 }
 
+/**
+ * 读取当前来源版本已采纳的译文映射（按 segment_id 去重，取最新）。
+ */
 function acceptedTranslations(db: any, revisionId: string): Map<string, string> {
   const rows = db.prepare(
     'SELECT r.segment_id AS id, r.translation_text AS text, r.source_hash AS sourceHash ' +
@@ -428,6 +476,9 @@ function acceptedTranslations(db: any, revisionId: string): Map<string, string> 
   return result;
 }
 
+/**
+ * 用指定 Run 的候选译文覆盖当前已采纳译文映射，供审计候选对比。
+ */
 function overlayRunCandidates(db: any, revisionId: string, runId: string, translations: Map<string, string>): void {
   const run = db.prepare('SELECT source_revision_id FROM translation_runs WHERE run_id = ?').get(runId) as any;
   if (!run) fail('找不到质量审计指定的翻译运行：' + runId, 404);
@@ -442,10 +493,16 @@ function overlayRunCandidates(db: any, revisionId: string, runId: string, transl
   }
 }
 
+/**
+ * 计算译文文本的 SHA-256 哈希。
+ */
 function hashTranslationText(value: unknown): string {
   return createHash('sha256').update(String(value ?? ''), 'utf8').digest('hex');
 }
 
+/**
+ * 计算来源片段与译文映射的聚合快照哈希，用于返工前的一致性校验。
+ */
 function translationSnapshotHash(segments: Array<{ id: string }>, translations: Map<string, string>): string {
   const hashes = segments.map((segment) => [
     segment.id,
@@ -454,6 +511,9 @@ function translationSnapshotHash(segments: Array<{ id: string }>, translations: 
   return createHash('sha256').update(JSON.stringify(hashes), 'utf8').digest('hex');
 }
 
+/**
+ * 将 glossary 中的术语合并进 literary memory 的 entities 列表（去重、跳过候选/建议/拒绝状态）。
+ */
 function memoryWithGlossary(memoryInput: Record<string, any>, glossary: unknown): Record<string, any> {
   const memory = memoryInput && typeof memoryInput === 'object' ? memoryInput : {};
   const existing = Array.isArray(memory.entities) ? [...memory.entities] : [];
@@ -482,6 +542,9 @@ function memoryWithGlossary(memoryInput: Record<string, any>, glossary: unknown)
   return { ...memory, entities: existing };
 }
 
+/**
+ * 加载项目的 literary memory，并叠加最新 prompt revision 的 glossary。
+ */
 function loadMemory(projectId: string, runId?: string): Record<string, any> {
   const store = getDocumentProjectStore();
   if (runId) {
@@ -496,6 +559,9 @@ function loadMemory(projectId: string, runId?: string): Record<string, any> {
   return memoryWithGlossary(memory, glossary);
 }
 
+/**
+ * 读取指定/最新 style review 运行的 review_findings，过滤过期候选。
+ */
 function currentReviewFindings(
   db: any,
   revisionId: string,
@@ -563,6 +629,9 @@ function currentReviewFindings(
   return { reviewRunId, findings };
 }
 
+/**
+ * 聚合 chinese-monolingual style-review 阶段事件中的编辑指标。
+ */
 function chineseEditorialStageMetrics(
   db: any,
   revisionId: string,
@@ -595,6 +664,9 @@ function chineseEditorialStageMetrics(
   return totals;
 }
 
+/**
+ * 读取指定运行的中文单语编辑 findings。
+ */
 function chineseEditorialFindingsForRun(db: any, revisionId: string, runId: string | null): any[] {
   if (!runId) return [];
   const rows = db.prepare(
@@ -627,20 +699,32 @@ const CANONICAL_NAME_STOPWORDS = new Set([
   'madam', 'madame', 'captain', 'master', 'mr', 'mrs', 'ms', 'san', 'sama',
 ]);
 
+/**
+ * 规范化规范名（去掉冠词、所有格后缀、尾部标点）。
+ */
 function normalizedCanonicalName(value: unknown): string {
   return normalized(value).replace(/^(?:the|a|an)\s+/, '')
     .replace(/(?:['’]s)\b/g, '').replace(/[.!?]+$/g, '').trim();
 }
 
+/**
+ * 判断是否为通用规范名（如 lord/general 等），这类不参与审计。
+ */
 function isGenericCanonicalName(value: unknown): boolean {
   return GENERIC_CANONICAL_NAME_FORMS.has(normalizedCanonicalName(value));
 }
 
+/**
+ * 提取规范名的身份 token（去除停用词）。
+ */
 function canonicalIdentityTokens(value: string): string[] {
   return normalizedCanonicalName(value).replace(/['’]s\b/g, '')
     .match(/[\p{Script=Latin}\p{M}\p{N}]+/gu)?.filter((token) => !CANONICAL_NAME_STOPWORDS.has(token)) || [];
 }
 
+/**
+ * 判断别名与源规范名是否兼容（共享 token 或前缀）。
+ */
 function isCompatibleCanonicalAlias(source: string, alias: string): boolean {
   if (!/^[\p{Script=Latin}\p{M}\p{N} ._'’-]+$/u.test(source) || !/^[\p{Script=Latin}\p{M}\p{N} ._'’-]+$/u.test(alias)) return true;
   const sourceTokens = canonicalIdentityTokens(source);
@@ -651,6 +735,9 @@ function isCompatibleCanonicalAlias(source: string, alias: string): boolean {
     sourceToken === aliasToken || sourceToken.startsWith(aliasToken) || aliasToken.startsWith(sourceToken)));
 }
 
+/**
+ * 生成规范名及其兼容别名的候选形式列表。
+ */
 function canonicalNameForms(source: string, aliases: unknown): string[] {
   const candidates = [source, ...(Array.isArray(aliases) ? aliases : [])]
     .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
@@ -669,6 +756,9 @@ type CanonicalNameAuditMapping = {
   mappingSources: string[];
 };
 
+/**
+ * 从 literary memory entities 与 characterVoices 提取已确认的规范名映射。
+ */
 function canonicalNameAuditMappings(memory: Record<string, any>): CanonicalNameAuditMapping[] {
   const mappings: CanonicalNameAuditMapping[] = [];
   const add = (sourceValue: unknown, targetValue: unknown, aliasesValue: unknown, kindValue: unknown, mappingSource: string) => {
@@ -702,6 +792,9 @@ function canonicalNameAuditMappings(memory: Record<string, any>): CanonicalNameA
   return mappings;
 }
 
+/**
+ * 检测同一规范源存在多个不同译名的冲突。
+ */
 function canonicalNameMappingConflictFindings(
   segments: Array<{ id: string; text: string; contextPath: string }>,
   memory: Record<string, any>,
@@ -748,6 +841,9 @@ function canonicalNameMappingConflictFindings(
   return { findings, conflictedSources };
 }
 
+/**
+ * 检测原文含已确认规范名但译文未出现对应译名的术语漂移。
+ */
 export function terminologyFindings(
   segments: Array<{ id: string; text: string; contextPath: string }>,
   translations: Map<string, string>,
@@ -812,6 +908,9 @@ const FUNCTION_WORDS_BY_SOURCE_LANG: Record<string, Set<string>> = {
   it: new Set(['io','tu','lui','lei','noi','voi','loro','il','lo','la','i','gli','le','un','una','di','da','e','ma','non','che','per','con','è','era','sono','ha']),
   es: new Set(['yo','tú','él','ella','ellos','ellas','nosotros','nosotras','ustedes','vosotros','vosotras','el','la','los','las','un','una','unos','unas','de','del','al','y','o','pero','porque','por','para','con','sin','en','sobre','entre','que','quien','quién','quienes','quiénes','como','cómo','cuando','cuándo','donde','dónde','no','sí','si','es','son','está','están','era','fue','ser','estar','se','me','te','nos','os','lo','le','les','mi','mis','su','sus','muy','más','menos','también','todo','cada']),
 };
+/**
+ * 检测中文译文中残留的源语言词语/短语。
+ */
 export function englishResidueFindings(
   segments: Array<{ id: string; text: string; contextPath: string }>,
   translations: Map<string, string>,
@@ -863,6 +962,9 @@ export function englishResidueFindings(
   return findings;
 }
 
+/**
+ * 检测 context_delta 中同一实体提出不同译名的冲突。
+ */
 function translationContextDeltaFindings(db: any, runId: string | undefined, validSourceIds: Set<string>, sourceRevisionId: string): any[] {
   if (!runId) return [];
   const run = db.prepare('SELECT source_revision_id FROM translation_runs WHERE run_id = ?').get(runId) as { source_revision_id?: string } | undefined;
@@ -948,6 +1050,9 @@ function translationContextDeltaFindings(db: any, runId: string | undefined, val
 }
 
 
+/**
+ * 检测同一实体在不同片段的译文表面形式不一致。
+ */
 function entityMentionDriftFindings(
   db: any,
   runId: string | undefined,
@@ -1088,6 +1193,9 @@ function entityMentionDriftFindings(
   return findings;
 }
 
+/**
+ * 从来源特征索引中聚合重复文本单元候选。
+ */
 function repeatedPhraseCandidatesFromSourceIndex(
   segments: Array<{ id: string; text: string; contextPath: string }>,
   sourceFeatureIndex: StoredSourceFeatureIndex,
@@ -1150,6 +1258,9 @@ function repeatedPhraseCandidatesFromSourceIndex(
     .slice(0, MAX_REPEATED_EXPRESSION_GROUPS);
 }
 
+/**
+ * 提取译文中的引号跨度内容。
+ */
 function targetQuotationSpans(text: string): Array<{ start: number; end: number; text: string }> {
   const patterns = [
     /“([^”]{1,3000})”/gu,
@@ -1168,6 +1279,9 @@ function targetQuotationSpans(text: string): Array<{ start: number; end: number;
   return spans.sort((a, b) => a.start - b.start);
 }
 
+/**
+ * 检测重复原文表达在不同位置的译法差异。
+ */
 function repeatedExpressionFindings(
   segments: Array<{ id: string; text: string; contextPath: string; ordinal?: number }>,
   translations: Map<string, string>,
@@ -1311,6 +1425,9 @@ function repeatedExpressionFindings(
   return findings;
 }
 
+/**
+ * 计算单个 Run 的确定性质量指标与发现集合。
+ */
 function runMetrics(projectId: string, runId: string): any {
   const store = getDocumentProjectStore();
   const { db, currentSourceRevisionId } = store.getProjectContext(projectId);
@@ -1415,6 +1532,9 @@ function runMetrics(projectId: string, runId: string): any {
   };
 }
 
+/**
+ * 从 Run 或最新 prompt revision 推断审计目标语言。
+ */
 function auditTargetLanguage(db: any, runId?: string): string {
   if (runId) {
     const row = db.prepare('SELECT target_lang AS targetLang FROM translation_runs WHERE run_id = ?').get(runId) as any;
@@ -1428,6 +1548,9 @@ function auditTargetLanguage(db: any, runId?: string): string {
   return 'zh';
 }
 
+/**
+ * 从 Run 或最新 prompt revision 推断审计源语言。
+ */
 function auditSourceLanguage(db: any, runId?: string): string {
   if (runId) {
     const row = db.prepare('SELECT source_lang AS sourceLang FROM translation_runs WHERE run_id = ?').get(runId) as any;
@@ -1768,6 +1891,9 @@ export function createQualityRepairRun(
   return { auditId, run, segmentIds: selected, humanAcceptanceRequired: options.automatic !== true, automatic: options.automatic === true };
 }
 
+/**
+ * 读取 Run 的指标、上下文与译文映射，供对照评测使用。
+ */
 function runComparisonData(projectId: string, runId: string) {
   const store = getDocumentProjectStore();
   const metrics = runMetrics(projectId, runId);
@@ -1945,6 +2071,9 @@ export function createProjectQualityEvaluation(projectId: string, beforeRunId: s
   };
 }
 
+/**
+ * 提交人工盲评结果，全部完成时汇总偏好。
+ */
 export function submitProjectQualityEvaluationReviews(
   projectId: string,
   evaluationId: string,
@@ -2025,6 +2154,9 @@ export function submitProjectQualityEvaluationReviews(
   };
 }
 
+/**
+ * 读取质量对照评测的公开视图。
+ */
 export function getProjectQualityEvaluation(projectId: string, evaluationId: string): Record<string, any> {
   const loaded = getDocumentProjectStore().getQualityEvaluation(projectId, evaluationId) as any;
   if (!loaded) fail('找不到质量对照评测：' + evaluationId, 404);

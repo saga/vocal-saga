@@ -129,6 +129,10 @@ export function normalizeCodeBuddyTaskProfile(
   };
 }
 
+/**
+ * 将外部配置归一化为五类任务（translation/accuracyReview/styleReview/literaryAnalysis/contextGraph）的完整 profile，
+ * 缺失项按 normalizeCodeBuddyTaskProfile 回退到默认值。
+ */
 export function normalizeCodeBuddyTaskProfiles(input: unknown): CodeBuddyTaskProfiles {
   const raw = input && typeof input === 'object' && !Array.isArray(input)
     ? input as Record<string, unknown>
@@ -143,6 +147,10 @@ export function normalizeCodeBuddyTaskProfiles(input: unknown): CodeBuddyTaskPro
 }
 
 /** Get an effective profile from either the UI's taskProfiles object or a legacy request body. */
+/**
+ * 从 UI taskProfiles 或旧版 request body 中取出指定任务的 profile，并归一化。
+ * 兼容 root.taskProfiles 与 root.taskProfile 两种传入形态。
+ */
 export function getCodeBuddyTaskProfile(input: unknown, task: CodeBuddyTaskKey): CodeBuddyTaskProfile {
   const root = input && typeof input === 'object' && !Array.isArray(input)
     ? input as Record<string, unknown>

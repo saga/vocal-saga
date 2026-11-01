@@ -83,6 +83,9 @@ function xmlAttributes(source: string): Record<string, string> {
   return output;
 }
 
+/**
+ * 解析 ZIP 中央目录，返回条目 Map；执行路径安全与展开体积上限校验，不支持加密/ZIP64/跨磁盘。
+ */
 function zipDirectory(buffer: Buffer): Map<string, ZipEntry> {
   let eocd = -1;
   const lower = Math.max(0, buffer.length - 65_557);
@@ -124,6 +127,9 @@ function zipDirectory(buffer: Buffer): Map<string, ZipEntry> {
   return entries;
 }
 
+/**
+ * 读取并解压单个 ZIP 条目；校验本地头与大小，解压失败/超限抛错。
+ */
 function zipRead(buffer: Buffer, entries: Map<string, ZipEntry>, entryName: string): Buffer {
   const entry = entries.get(path.posix.normalize(entryName.replace(/\\/g, '/')));
   if (!entry) fail('压缩文档缺少必要文件：' + entryName);
@@ -179,6 +185,9 @@ function htmlBlocks(html: string): Array<{ text: string; kind: string; level?: n
 }
 
 /** Keep long no-blank-line input and unusually large EPUB/DOCX paragraphs within batch limits. */
+/**
+ * 将超长文本按标点/空白切分为 <= maxChars 的块；避免拆分 UTF-16 代理对。
+ */
 function splitLongText(value: string, maxChars = 1800): string[] {
   let remaining = value.trim();
   const chunks: string[] = [];
@@ -314,6 +323,9 @@ function parsePlainDocument(bytes: Buffer, format: DocumentFormat, fileName: str
   return segments;
 }
 
+/**
+ * 解析 DOCX：读取 word/document.xml，按段落提取文本，识别 Heading 样式为章节标题。
+ */
 function parseDocx(bytes: Buffer, fileName: string): ProjectSegment[] {
   const entries = zipDirectory(bytes);
   const documentXml = zipRead(bytes, entries, 'word/document.xml').toString('utf8');
@@ -340,6 +352,9 @@ function parseDocx(bytes: Buffer, fileName: string): ProjectSegment[] {
   );
 }
 
+/**
+ * 解析 EPUB：读 container.xml→OPF，按 spine 顺序提取 XHTML 块，保留章节/路径与稳定片段 ID。
+ */
 function parseEpub(bytes: Buffer, fileName: string): ProjectSegment[] {
   const entries = zipDirectory(bytes);
   if (!entries.has('META-INF/container.xml')) fail('EPUB 缺少 META-INF/container.xml。');
@@ -408,6 +423,9 @@ function parseEpub(bytes: Buffer, fileName: string): ProjectSegment[] {
   return segments;
 }
 
+/**
+ * 通过 pdftotext 提取 PDF 文本层；超时/无 pdftotext/无文本层时抛错（不执行 OCR）。
+ */
 async function extractPdfText(bytes: Buffer): Promise<string> {
   return await new Promise<string>((resolve, reject) => {
     const child = spawn('pdftotext', ['-layout', '-', '-'], { stdio: ['pipe', 'pipe', 'pipe'] });
@@ -460,6 +478,9 @@ async function extractPdfText(bytes: Buffer): Promise<string> {
   });
 }
 
+/**
+ * 根据文件扩展名推断格式，仅支持 epub/pdf/txt/md/html/docx，否则抛 415。
+ */
 export function inferDocumentFormat(fileName: string): DocumentFormat {
   const extension = path.extname(path.basename(fileName)).toLowerCase().replace(/^\./, '');
   if (['epub', 'pdf', 'txt', 'md', 'html', 'docx'].includes(extension)) return extension as DocumentFormat;
