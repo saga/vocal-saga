@@ -65,7 +65,7 @@
 - 维护合成小说质量回归集，至少覆盖漏译、名称/别名漂移、重复台词不一致、后文揭秘泄漏；人物声音需另有人工盲审样例，不能用自动流畅度或一个总分代替。合成样本只能验证确定性规则和失败控制，不得冒称是真实模型效果基线。
 - 翻译时动态检索只注入当前批次真正匹配的人物/实体、相关关系与当前及之前章节摘要；禁止将整本书的所有记忆无差别塞入每个 Prompt，禁止注入后续章节摘要造成剧透。上下文必须设预算并有可观测的命中计数。
 - Context Graph 的来源版本、节点/边状态、结构化属性、证据和章节摘要必须影响文学运行指纹；图谱预处理或人工审核不能在翻译 Run 执行期间修改图谱，避免同一个 Run 的不同批次看到不同版本的上下文。
-- 每个文学批次必须构造并持久化一个版本固定的 TranslationBrief；初译、accuracy/terminology Reviewer 和 style/character-voice Reviewer 共用同一快照。快照包括受时间边界过滤的 glossary、前文、Context Graph 与 voice context，并记录 source/prompt/memory revision、source segment IDs、context hash、context size、知识边界和检索条目计数。检索按原文证据、时间边界、相关性与冗余决定注入内容，不按固定画像数、译例数或 18,000 字符目标静默裁剪关键上下文；当前序列化字符上限是 1,000,000 的异常安全阈值，不是检索目标。若 Provider 的实际上下文窗口拒绝请求，应显式记录该限制，而不是悄悄改写 TranslationBrief；Reviewer 不得重建更宽的前文上下文。
+- 每个文学批次必须构造并持久化一个版本固定的 TranslationBrief；初译、accuracy/terminology Reviewer 和 style/character-voice Reviewer 共用同一快照。快照包括受时间边界过滤的 glossary、前文、Context Graph 与 voice context，并记录 source/prompt/memory revision、source segment IDs、context hash、context size、知识边界和检索条目计数。检索按原文证据、时间边界、相关性与冗余决定注入内容；当前序列化字符上限是 1,000,000 的异常安全阈值，不是检索目标。可选的历史译例是明确例外：最多 8 条、最高 4,000 字符，实际预算按 `contextBudgetChars` 的 25% 缩放，并排除已作为 preceding segment 注入的片段。该预算只裁剪可选历史译例，不得扩展为整个 TranslationBrief 的硬截断，也不得因此裁剪当前原文、前文、术语、当前可见名称映射或有证据的人物声音信息。若 Provider 的实际上下文窗口拒绝请求，应显式记录该限制，而不是悄悄改写 TranslationBrief；Reviewer 不得重建更宽的前文上下文。
 - 时间边界按来源 ordinal 定义，而不只按章节名：图谱节点/关系只有在所有存储证据都早于当前批次第一个 source segment 时才能注入。只允许前两章的完整摘要；当前章节只允许用批次之前的原文片段构建前缀摘要，禁止使用包含当前批次之后内容的完整章节摘要。
 - 质量审计必须能在整书范围内定位缺失译文、用户确认术语漂移、重复原文表达译法差异，以及已有 Reviewer 标注的人物声线/文风问题。启发式发现只定位问题，不自动统一重复表达；有原文/译文证据的 Reviewer 修改自动形成 Run 候选，Run 最终化自动采纳有效候选，用户可事后修改或拒绝。
 - 定点返工必须创建新的 selected-ID Run，不覆盖较新的已采纳/人工译文；有效候选在 Run 最终化时自动采纳，用户修改/确认/拒绝优先。返工报告与 Run 必须保存来源版本及父运行关联，来源变化后旧报告不得发起返工。
