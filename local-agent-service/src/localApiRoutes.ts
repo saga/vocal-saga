@@ -36,6 +36,7 @@ import {
   getDefaultContextGraphUserPromptTemplate,
 } from './documents/contextGraph.ts';
 
+/** 已初始化的数据库句柄类型，去掉 undefined，省去调用点的空判断。 */
 type SqliteDb = NonNullable<typeof database>;
 
 /**

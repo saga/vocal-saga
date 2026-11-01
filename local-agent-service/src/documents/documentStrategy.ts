@@ -7,11 +7,12 @@
 /** 支持的源文格式。epub/docx/html 走结构化解析，pdf/txt/md 走纯文本切分。 */
 export type DocumentFormat = 'epub' | 'pdf' | 'txt' | 'md' | 'html' | 'docx' | 'srt' | 'vtt' | 'json';
 
+/** 环境变量里的原始配置值，可能缺失或非法，需与下限一起校验后才使用。 */
+const configuredSourceLimitMb = Number.parseInt(process.env.LOCAL_AGENT_MAX_DOCUMENT_SOURCE_MB || '512', 10);
 /**
  * 单份源文的体积上限，由 `LOCAL_AGENT_MAX_DOCUMENT_SOURCE_MB` 配置（默认 512 MB）。
- * 低于 20 MB 的配置视为误填，直接回落默认值——上限给小了会让正常书稿无法导入。
+ * 低于 20 MB 的配置视为误填并回落默认值——上限给小了会让正常书稿无法导入。
  */
-const configuredSourceLimitMb = Number.parseInt(process.env.LOCAL_AGENT_MAX_DOCUMENT_SOURCE_MB || '512', 10);
 export const MAX_DOCUMENT_SOURCE_BYTES =
   (Number.isFinite(configuredSourceLimitMb) && configuredSourceLimitMb >= 20 ? configuredSourceLimitMb : 512) * 1024 * 1024;
 
@@ -135,11 +136,13 @@ export function normalizeDocumentTranslationStrategy(input: unknown): DocumentTr
 /** 文风是提示词的一部分：随项目保存，重新生成提示词时保持同一文风。 */
 const DOCUMENT_PROMPT_STYLES = ['default', 'jinyong', 'acheng', 'wangxiaobo', 'ja-source-natural'] as const;
 
+/** 把外部传入的提示词风格收敛到白名单值；无法识别时回落默认风格，不抛错。 */
 export function normalizePromptStyle(input: unknown): string {
   const value = String(input ?? '').trim();
   return (DOCUMENT_PROMPT_STYLES as readonly string[]).includes(value) ? value : 'default';
 }
 
+/** 项目级提示词覆盖。留空的字段由默认提示词补齐；套用后即成为 run 的快照。 */
 export interface ProjectPrompt {
   name?: string;
   systemPrompt?: string;

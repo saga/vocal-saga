@@ -39,6 +39,7 @@ import {
   saveQualityAudit, getQualityAudit, saveQualityEvaluation, getQualityEvaluation, updateQualityEvaluationReviews,
 } from './projectStoreQuality.ts';
 
+/** 项目列表用的摘要视图，不含片段正文，只带计数与指纹。 */
 export interface ProjectSummary {
   projectId: string;
   title: string;
@@ -54,6 +55,7 @@ export interface ProjectSummary {
   sourceFileSize: number | null;
 }
 
+/** 建项目入参。`segments` 会先过 validateSegments 才落库；`title` 必填，缺省值由调用方（路由/CLI）给出。 */
 export interface CreateProjectInput {
   title: string;
   format: string;
@@ -62,6 +64,10 @@ export interface CreateProjectInput {
   prompt?: ProjectPrompt;
 }
 
+/**
+ * 建运行入参。`scope` 决定处理哪些片段：默认 stale（源文或提示词已变的），
+ * 也可指定 all / failed / ids / chapter；`prompt` 不填则沿用项目当前提示词。
+ */
 export interface CreateRunInput {
   promptRevisionId?: string;
   prompt?: ProjectPrompt;
@@ -69,6 +75,10 @@ export interface CreateRunInput {
   scope?: { type?: 'all' | 'stale' | 'failed' | 'ids' | 'chapter'; ids?: string[]; chapter?: string };
 }
 
+/**
+ * 文档项目的门面。实作按域分布在同一目录的 projectStore* 模块里，这里只做转发与单例管理。
+ * 每个项目一个独立 SQLite 文件，`catalog` 是记录项目清单的总库。
+ */
 export class DocumentProjectStore {
   catalog?: DatabaseSync;
 

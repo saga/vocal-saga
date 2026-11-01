@@ -37,6 +37,7 @@ export interface TurnUsage {
   numTurns: number | null;
 }
 
+/** 把未知值收敛为非负整数；非法值返回 0，用于 token 计数这类不该抛错的地方。 */
 function nonNegativeInt(value: unknown): number {
   const n = Number(value);
   return Number.isFinite(n) && n > 0 ? Math.round(n) : 0;

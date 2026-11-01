@@ -24,7 +24,9 @@ import {
 } from './contextGraphStore.ts';
 import { CONTEXT_GRAPH_ANALYSIS_VERSION, ensureSourceFeatureIndexInDatabase } from './contextGraphSchema.ts';
 
+/** 快照所需的片段最小视图，只带检索与分章要用的字段。 */
 type BundleSegment = { id: string; text: string; contextPath?: string };
+/** 一次图节点命中：原始行、匹配得分、已解析的属性 JSON。 */
 type MatchedNode = { row: any; score: number; attributes: any };
 
 /** 一次快照共享的检索边界与判定函数；所有筛选阶段都只读它。 */
@@ -190,6 +192,10 @@ function nodeNames(row: any): string[] {
     .map((name) => normalize(name)).filter(Boolean);
 }
 
+/**
+ * 节点是否被人工拒绝过。判据是「类型 + 名字（含别名）」任一对上墓碑记录，
+ * 类型比较用 normalize 后全等，不做通配——同名不同类（人物与地点同名）不该互相牵连。
+ */
 function isRejectedGraphNode(row: any, rejectedEntityTombstones: any[]): boolean {
   let attributes: any = {};
   try { attributes = JSON.parse(row.attributes_json || '{}'); } catch { attributes = {}; }
@@ -204,6 +210,10 @@ function isRejectedGraphNode(row: any, rejectedEntityTombstones: any[]): boolean
   });
 }
 
+/**
+ * 边是否被人工拒绝过。两端节点必须都在本次快照内才参与判定，
+ * 缺任一端直接返回 false——无法确认三元组的边不该被墓碑静默吞掉。
+ */
 function isRejectedGraphEdge(
   edge: any,
   input: { graphNodesById: Map<string, any>; rejectedRelationshipTombstones: any[] },
@@ -535,6 +545,7 @@ function nameAppearsIn(value: unknown, haystackText: string): boolean {
   return normalize(haystackText).includes(name);
 }
 
+/** 从图谱 meta 汇总文风基准的六个维度，缺项返回空串由下游自行降级。 */
 function readStyleGuide(db: any, revisionId: string): Record<string, any> {
   return {
     narrativeStyle: safeText(getMeta(db, revisionId, 'narrativeStyle'), 1000),

@@ -65,6 +65,7 @@ function canonicalNameForms(source: string, aliases: unknown): string[] {
   return Array.from(new Map(candidates.map((value) => [normalized(value), value])).values());
 }
 
+/** 专名审计用的映射视图：源名、目标名与各自的确认状态。 */
 type CanonicalNameAuditMapping = {
   source: string;
   target: string;

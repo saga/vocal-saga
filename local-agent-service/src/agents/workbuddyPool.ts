@@ -22,6 +22,7 @@ export interface PooledSession {
 /** 会话工厂：根据选项创建并返回一个 PooledSession（可同步或异步）。 */
 export type SessionFactory = (options: Record<string, any>) => PooledSession | Promise<PooledSession>;
 
+/** 池中的一个槽位：会话实例、累计复用轮数与最近使用时间。 */
 interface Slot {
   /** 当前槽位持有的 SDK 会话；null 表示未创建或已丢弃。 */
   session: PooledSession | null;
@@ -721,6 +722,7 @@ export function buildTextSessionOptions(agent: WorkbuddyAgent, schema?: Record<s
 // 文本翻译池单例：懒创建，首单才启动 CLI 进程。
 let textPool: WorkbuddySessionPool | null = null;
 
+/** 取进程级的文本会话池单例；测试可传入自建 factory 隔离状态。 */
 export function getTextPool(factory?: SessionFactory): WorkbuddySessionPool {
   if (!textPool) {
     // 默认工厂动态导入 SDK，避免在非 Workbuddy 路径下加载重型依赖。

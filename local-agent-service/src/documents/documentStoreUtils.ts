@@ -26,6 +26,7 @@ export function formatFailedSegmentSummary(count: number): string {
  * 因此 acceptCandidates 另用插入顺序（rowid）作为判据。
  */
 let lastStampMs = 0;
+/** 见上方注释：同进程内保证严格递增，跨进程仍可能打平。 */
 export function isoNow(): string {
   const now = Math.max(Date.now(), lastStampMs + 1);
   lastStampMs = now;

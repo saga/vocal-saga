@@ -19,8 +19,10 @@ import {
 } from './literaryShared.ts';
 import { buildChineseLiteraryEditingPrompt, buildLiteraryReviewPrompt } from './literaryPrompts.ts';
 
+/** 审校关注点：只查准确性、只查文风，或两者合并成一次调用。 */
 type ReviewFocus = 'accuracy' | 'style' | 'combined';
 
+/** 一次审校调用组装好的输入快照，后续不再回查数据库。 */
 type PreparedReview = {
   segments: Array<Record<string, any>>;
   precedingSegments: Array<{ id: string; text: string; contextPath: string }>;

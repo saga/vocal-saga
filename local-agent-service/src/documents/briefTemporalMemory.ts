@@ -36,6 +36,7 @@ interface TemporalBoundary {
   appearsAsEarlierEvidence(quote: unknown): boolean;
 }
 
+/** 一条历史已采纳示例。`origin` 记录它是模型产出还是人工修订。 */
 interface AcceptedExample {
   segmentId: string;
   source: string;
@@ -44,6 +45,10 @@ interface AcceptedExample {
   origin: string;
 }
 
+/**
+ * 示例检索的完整结果，含被预算裁掉的示例与各项计数。
+ * 诊断字段保留下来是为了解释「示例为什么变少了」，而不是只给最终列表。
+ */
 interface AcceptedExampleRetrieval {
   retrievedExamples: AcceptedExample[];
   scoredExamples: Array<Record<string, any>>;
@@ -57,6 +62,10 @@ interface AcceptedExampleRetrieval {
   acceptedExamplesTrimmedByBudget: number;
 }
 
+/**
+ * 构建本次运行可见的记忆视图：只纳入当前位置之前已确认的实体、关系与已采纳示例，
+ * 未来章节的信息不得泄漏进来。`exampleBudgetChars` 是示例的总字符预算。
+ */
 export function buildTemporallyVisibleMemory(
   context: any,
   items: BriefSegment[],
@@ -154,6 +163,7 @@ function prepareRunMemory(context: any, revisionId: string): Record<string, any>
   return rawMemory;
 }
 
+/** 统计记忆里各类条目的数量，用于运行前后的增量对比。 */
 function countMemoryEntries(rawMemory: Record<string, any>): {
   entities: number; relationships: number; characterVoices: number;
 } {

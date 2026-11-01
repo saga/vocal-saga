@@ -9,10 +9,12 @@
 export const TRANSLATION_BRIEF_POLICY_VERSION = 'translation-brief-v10-bounded-examples';
 // 历史示例是文风证据，不是章节逐字记录。
 export const MAX_ACCEPTED_EXAMPLES = 8;
+/** 单个已采纳示例的字符上限；超出部分截断，保证示例总量可控。 */
 export const MAX_ACCEPTED_EXAMPLE_CHARS = 4_000;
 // 序列化安全上限的绝对天花板。
 export const MAX_TRANSLATION_BRIEF_CHARS = 1_000_000;
 
+/** 组翻译简报时用的片段视图，带版式元信息以便还原结构。 */
 export interface BriefSegment {
   id: string;
   text: string;
@@ -23,6 +25,10 @@ export interface BriefSegment {
   marker?: string | null;
 }
 
+/**
+ * 一次翻译批次的自包含输入：策略版本、源文版本、记忆版本与各类参考数据。
+ * 它被持久化并在重放时原样复用，因此字段只增不改、不改语义。
+ */
 export interface TranslationBrief {
   version: 1;
   policyVersion: string;

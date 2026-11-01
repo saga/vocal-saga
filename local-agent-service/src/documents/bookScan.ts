@@ -384,6 +384,11 @@ function collectQuantityMentions(segments: BookScanSegment[], sourceLang = 'en')
   }
   return {mentions,discovered};
 }
+/**
+ * 把提及聚合成人名候选并打分。两条门槛：提及数 ≥ 2，或至少有一次出现在对白段——
+ * 只出现一次且不在对白里的名字，绝大多数是章节标题或误命中。
+ * 结果按分数降序（同分依次比提及数、词数、名字字典序）取前 160 个。
+ */
 function collectNameCandidates(segments: BookScanSegment[], mentions: BookEntityMention[]): BookNameCandidate[] {
   // 保留精确的出现位置索引，与「按片段去重」的排序索引分开。
   // 大书上要避免为每个不同拼写都扫一遍完整的提及数组。
@@ -453,6 +458,7 @@ function collectRepeatedPhrases(segments:BookScanSegment[],units:BookTextUnit[],
     chapterKeys:value.chapterKeys.slice(0,12),
   })).sort((a,b)=>b.count-a.count||b.chapterKeys.length-a.chapterKeys.length).slice(0,Math.max(1,maxGroups));
 }
+/** 扫描选项。`sourceLang` 可为 auto/unknown，此时按原文特征逐段推断语言。 */
 export interface BookScanOptions {
   sourceLang?: string;
   maxRepeatedPhraseSegmentIds?: number;

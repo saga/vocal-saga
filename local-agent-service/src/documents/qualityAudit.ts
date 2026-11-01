@@ -260,6 +260,7 @@ function countManuallyOverriddenAfterApply(db: any, revisionId: string, findings
   }).length;
 }
 
+/** 每百段发生率，保留一位小数；总数为 0 时返回 0，避免除零。 */
 function ratePer100Segments(count: number, total: number): number {
   return total ? Math.round(count / total * 1000) / 10 : 0;
 }
@@ -341,6 +342,7 @@ function buildAuditMetrics(input: {
   };
 }
 
+/** 把九组 finding 合并成一个扁平列表；指标统计与修复流程都从这里取数，保证口径一致。 */
 function allAuditFindings(section: ReturnType<typeof collectAuditFindings>): any[] {
   return [
     ...section.missing, ...section.mappingConflict.findings, ...section.terminology, ...section.residue,

@@ -71,6 +71,7 @@ type EvidenceStats = {
 /** 已落库的节点，关系与审计都靠它做端点解析与计数。 */
 type PersistedNode = { id: string; name: string; aliases: string[]; kind: string };
 
+/** 关系落库的逐类丢弃计数，用来说明「模型给了 N 条关系，为什么只存了 M 条」。 */
 type RelationshipDiagnostics = {
   processedCount: number;
   droppedMissingEndpoint: number;
@@ -87,6 +88,7 @@ type EntityPolicyCounters = {
   conflictingTarget: number;
 };
 
+/** 一次图谱落库的完整输入；六阶段写入共用这一份上下文，中途不再重新查配置。 */
 export interface GraphPersistInput {
   store: ReturnType<typeof getDocumentProjectStore>;
   db: DatabaseSync;
@@ -291,6 +293,7 @@ type EntityPersistState = {
   conflictingCanonicalSources: Set<string>;
 };
 
+/** 实体候选落库前的中间形态：名字、类型与判定所需信号。 */
 type EntityCandidateInput = {
   entityName: string;
   targetName: string;

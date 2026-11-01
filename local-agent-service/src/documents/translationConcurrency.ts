@@ -12,6 +12,7 @@ import { positiveIntegerEnv } from '../config.ts';
  */
 export const CONFIGURED_TRANSLATION_CONCURRENCY = positiveIntegerEnv('LOCAL_AGENT_DOCUMENT_TRANSLATION_CONCURRENCY', 6);
 
+/** 审校并发的配置上限；实际并发还会被会话池大小压住，取两者较小值。 */
 export const CONFIGURED_REVIEW_CONCURRENCY = positiveIntegerEnv('LOCAL_AGENT_DOCUMENT_REVIEW_CONCURRENCY', 4);
 
 // 翻译排空后的审校并发上限。默认不额外限制，直接吃满会话池；

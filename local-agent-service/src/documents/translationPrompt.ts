@@ -75,6 +75,7 @@ export function buildUserPrompt(template: string, items: TranslationItem[], cont
   ].join('\n\n');
 }
 
+/** 解析模型输出时的诊断计数，用来说明「返回了 N 项，为什么只采用 M 项」。 */
 export interface TranslationParseDiagnostics {
   duplicateSegmentIds: string[];
   duplicateCount: number;

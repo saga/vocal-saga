@@ -52,6 +52,7 @@ function flag(args: string[], name: string): string | undefined {
   return args.find((item) => item.startsWith(name + '='))?.slice(name.length + 1);
 }
 
+/** 命令行入口：取首个参数查命令表，未命中或请求帮助时打印用法。 */
 export async function runDocumentCli(argv = process.argv.slice(2)): Promise<void> {
   const [command, ...args] = argv;
   const store = getDocumentProjectStore();

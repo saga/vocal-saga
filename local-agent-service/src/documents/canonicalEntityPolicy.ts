@@ -7,6 +7,7 @@
 export type CanonicalEntityKind =
   | 'person' | 'place' | 'object' | 'organization' | 'concept' | 'work' | 'artifact' | 'title' | 'other';
 
+/** 复合名拆分结果；不是复合名时为 null。`delimiter` 是原来的连接符，重组时要还原。 */
 export type CompoundNameParts = { parts: string[]; delimiter: string } | null;
 
 const COUNTRY_OR_NATIONALITY = new Set([
@@ -32,6 +33,7 @@ const VALID_CANONICAL_KINDS = new Set<CanonicalEntityKind>([
   'person', 'place', 'object', 'organization', 'concept', 'work', 'artifact', 'title', 'other',
 ]);
 
+/** 归一化用于比对：NFKC、小写、去掉撇号与多余空白；非字符串返回空串。 */
 function normalized(value: unknown): string {
   return typeof value === 'string'
     ? value.normalize('NFKC').toLocaleLowerCase().replace(/[’']/g, '').replace(/[._-]+/g, ' ')
@@ -82,6 +84,7 @@ export function hasCompoundCanonicalSyntax(value: unknown): boolean {
     (typeof value === 'string' && /\s+[;,]\s+/.test(value.trim()));
 }
 
+/** 判断「是否值得建实体」的输入：名字、类型与若干频次/显著性信号。 */
 export type EntityWorthInput = {
   source: string;
   kind: unknown;
@@ -133,6 +136,7 @@ export function canonicalTargetsConflict(left: unknown, right: unknown): boolean
   return !!a && !!b && a !== b;
 }
 
+/** 目标译名形状校验的结果。`valid` 只表示形状合格，不代表译名正确。 */
 export type TargetQualityResult = {
   valid: boolean;
   normalizedTarget: string;

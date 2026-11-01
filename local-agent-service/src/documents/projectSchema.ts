@@ -7,6 +7,7 @@
  */
 import type { DatabaseSync } from 'node:sqlite';
 
+/** 建项目库的全部表与索引。使用 IF NOT EXISTS，重复执行安全，可作为启动期的补齐步骤。 */
 export function createProjectSchema(db: DatabaseSync): void {
   db.exec('PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;');
   db.exec(

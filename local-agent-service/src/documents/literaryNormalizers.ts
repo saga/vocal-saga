@@ -9,7 +9,9 @@ import { hasCompoundCanonicalSyntax, isWorthCanonicalEntityMapping, normalizeCan
 
 // 持久化安全上限，不是提示词预算。要给长篇记忆留够空间。
 export const MAX_MEMORY_BYTES = 5 * 1024 * 1024;
+/** 关系规则条数上限（持久化安全上限）；超出部分按归一化后的顺序截断。 */
 export const MAX_RELATION_RULES = 160;
+/** 文风锚点条数上限，同样只是持久化安全边界，不是提示词预算。 */
 export const MAX_ANCHORS = 240;
 
 /**
@@ -34,6 +36,10 @@ export function status(value: unknown, allowed: string[], fallback = 'candidate'
   return typeof value === 'string' && allowed.includes(value) ? value : fallback;
 }
 
+/**
+ * 一条记忆的确认来源，决定它在后续翻译里的话语权：
+ * model-default 最弱（仅暂定），user-confirmed 最强；legacy-unknown 是旧数据的兜底。
+ */
 export type ConfirmationSource = 'model-default' | 'user-modified' | 'evidence-verified' | 'user-confirmed' | 'legacy-unknown';
 /**
  * 仅当 active 为 true 时返回确认来源（白名单校验，未知回退 legacy-unknown）；否则 undefined。
@@ -171,6 +177,7 @@ export function dedupeProjectEntities(entities: Array<Record<string, any>>): Arr
   return merged;
 }
 
+/** 构建人物声音上下文时用的片段视图，只需要正文与归属章节。 */
 export interface ProjectVoiceContextSegment {
   id: string;
   text: string;

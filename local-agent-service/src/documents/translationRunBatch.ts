@@ -317,6 +317,10 @@ function saveBatchContextDelta(
   }
 }
 
+/**
+ * 单批的审校阶段。开始前与拿到结果后都检查一次 Run 状态：
+ * 已取消则丢弃结果并写 `review.discarded`，不把审校结论写回已取消的运行。
+ */
 async function runBatchReview(scope: RunBatchScope, state: BatchReviewState): Promise<void> {
   const { store, projectId, runId, batches } = scope;
   const { batchContext, batchIndex, batch, translations, failedIds } = state;
@@ -839,6 +843,10 @@ function emitReviewOutcome(
   }
 }
 
+/**
+ * 把中文编辑候选的译文回退到初译版本。仅在中文编辑通道整批失败时调用，
+ * 保证不留下「看似审校过、实则半改」的译文。
+ */
 function restoreInitialDrafts(state: BatchReviewState): void {
   for (const id of state.chineseEditorialCandidateIds) {
     const initial = state.initialDrafts.get(id);

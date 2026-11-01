@@ -205,6 +205,7 @@ function normalizeVoiceAnchors(raw: Record<string, any>, validCharacterIds: Set<
   });
 }
 
+/** 清洗章节摘要：只保留有章节名与摘要正文的条目，并按上限截断。 */
 function normalizeChapterSummaries(raw: Record<string, any>): Array<{ chapter: string; summary: string }> {
   if (!Array.isArray(raw.chapterSummaries)) return [];
   return raw.chapterSummaries.flatMap((item: any) => {
@@ -213,6 +214,7 @@ function normalizeChapterSummaries(raw: Record<string, any>): Array<{ chapter: s
   });
 }
 
+/** 清洗近期示例：逐条校验字段类型与长度，非法条目直接丢弃。 */
 function normalizeRecentExamples(raw: Record<string, any>): Array<Record<string, any>> {
   if (!Array.isArray(raw.recentExamples)) return [];
   return raw.recentExamples.flatMap((item: any) => {

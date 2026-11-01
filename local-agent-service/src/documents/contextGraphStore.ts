@@ -261,6 +261,7 @@ export function getMeta(db: DatabaseSync, revisionId: string, key: string): any 
   try { return JSON.parse(row.value); } catch { return null; }
 }
 
+/** 分析进度的自由结构，字段随阶段变化；读取方按需取，不做硬校验。 */
 export type ContextGraphRunProgress = Record<string, any>;
 
 /**

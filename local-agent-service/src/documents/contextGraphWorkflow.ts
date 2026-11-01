@@ -9,6 +9,7 @@
  */
 export const CONTEXT_GRAPH_WORKFLOW_VERSION = 'context-graph-workflow-v2-canonical-entity-quality';
 
+/** 分阶段分析的阶段定义（id、展示名、说明）。数组顺序即波次内的默认执行顺序。 */
 export const CONTEXT_GRAPH_WORKFLOW_STAGES = [
   {
     id: 'style',
@@ -25,7 +26,12 @@ export const CONTEXT_GRAPH_WORKFLOW_STAGES = [
   { id: 'chapters', label: '章节摘要与待确认问题', phase: 'workflow-chapters', fields: ['chapterSummaries', 'openQuestions'] },
 ] as const;
 
+/** 阶段 id 的联合类型，由阶段表推导，新增阶段不必再改这里。 */
 export type ContextGraphWorkflowStageId = typeof CONTEXT_GRAPH_WORKFLOW_STAGES[number]['id'];
+/**
+ * 全书分析策略：`A` 整本一次单发（小书，一次请求完成）；
+ * `B` 按阶段分波次执行，支持检查点恢复与阶段会话续聊（大书）。
+ */
 export type ContextGraphAnalysisStrategy = 'A' | 'B';
 
 /**

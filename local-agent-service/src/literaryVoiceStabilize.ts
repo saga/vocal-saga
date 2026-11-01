@@ -217,6 +217,7 @@ function buildVoiceAnchors(
   return voiceAnchors;
 }
 
+/** 从分析结果里收集待确认问题：去重、限长，并丢弃空项。 */
 function buildOpenQuestions(parsed: Record<string, any>): string[] {
   const openQuestions = Array.isArray(parsed.openQuestions)
     ? parsed.openQuestions.filter((value: unknown) => typeof value === 'string').slice(0, 40).map((value: string) => value.slice(0, 200))

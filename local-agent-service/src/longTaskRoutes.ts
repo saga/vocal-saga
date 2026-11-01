@@ -22,6 +22,7 @@ import {
   runLiteraryReviewWithMissingRetry,
 } from './documents/translationAgent.ts';
 
+/** 调用目标通道；`model` 为空串表示交给运行时默认模型。 */
 type Agent = { provider: string; model: string };
 
 /** 长任务端点白名单；其余路径由调用方回 404。 */
@@ -31,6 +32,7 @@ const SUPPORTED_LONG_TASKS = new Set([
   'POST /api/translate/document/literary/review',
 ]);
 
+/** 判定请求是否命中长任务路由（方法 + 路径双重匹配），非长任务直接交回主路由。 */
 export function isSupportedLongTask(req: Request, url: URL): boolean {
   return SUPPORTED_LONG_TASKS.has(req.method + ' ' + url.pathname);
 }

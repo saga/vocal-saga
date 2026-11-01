@@ -57,6 +57,7 @@ const LANGUAGE_NAMES: Record<string, string> = {
   tr: '土耳其语',
 };
 
+/** 语言代码转展示用中文名；无法识别时返回调用方给的 fallback。 */
 export function documentLanguageName(lang: unknown, fallback: string): string {
   const value = String(lang ?? '').trim().toLowerCase();
   if (!value) return fallback;

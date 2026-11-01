@@ -20,12 +20,17 @@ import {
   getProjectQualityEvaluation,
 } from './qualityEvaluation.ts';
 
+/** 断言请求体是可用的 JSON 对象；数组、null、标量一律 400。 */
 function bodyObject(value: unknown): Record<string, any> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw Object.assign(new Error('JSON 请求体必须是对象'), { status: 400 });
   }
   return value as Record<string, any>;
 }
+/**
+ * 统一错误出口：带 status 的异常按其码返回，其余按 500；
+ * 同时把原因写进文件日志（见下方注释），避免「只回响应不留痕」。
+ */
 function routeError(res: Response, error: unknown, request?: { method: string; path: string }): void {
   const value = error as { status?: number; message?: string };
   const status = Number.isInteger(value?.status) && Number(value.status) >= 400 && Number(value.status) < 600
@@ -40,6 +45,7 @@ function routeError(res: Response, error: unknown, request?: { method: string; p
   else logWarn('document-projects', line);
   sendApiError(res, status, message);
 }
+/** 逐块读取原始请求体并在累计超过上限时立刻中断，避免先把超大文件读进内存再判断。 */
 async function readRawSourceBody(req: Request, maxBytes: number): Promise<Buffer> {
   const chunks: Buffer[] = [];
   let total = 0;
@@ -52,6 +58,7 @@ async function readRawSourceBody(req: Request, maxBytes: number): Promise<Buffer
   return Buffer.concat(chunks, total);
 }
 
+/** 解码 URL 路径段；编码非法时报 400 而不是让异常冒泡成 500。 */
 function decoded(segment: string): string {
   try { return decodeURIComponent(segment); }
   catch { throw Object.assign(new Error('URL 路径编码无效'), { status: 400 }); }
@@ -69,6 +76,7 @@ interface ProjectApiRequest {
   pathParts: string[];
 }
 
+/** 项目分支专属的上下文：在通用请求信息之外带上 store 与已校验的 projectId。 */
 interface ProjectRouteContext extends ProjectApiRequest {
   store: DocumentProjectStore;
   projectId: string;

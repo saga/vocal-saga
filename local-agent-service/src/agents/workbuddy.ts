@@ -17,6 +17,7 @@ import { logInfo, logWarn } from '../log.ts';
 const STRUCTURED_OUTPUT_TOOL = 'StructuredOutput';
 const JSON_MODE_MAX_TURNS = 5;
 
+/** workbuddy 通道的调用参数：模型、会话作用域与是否复用会话。 */
 export interface WorkbuddyAgent {
   provider: string;
   model: string;

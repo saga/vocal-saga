@@ -12,17 +12,21 @@ import { logWarn } from './log.ts';
 
 /** 监听地址与端口。默认只绑回环；改成 0.0.0.0 等于对外暴露，必须同时配 LOCAL_AGENT_TOKEN。 */
 export const HOST = (process.env.LOCAL_AGENT_HOST || '127.0.0.1').trim();
+/** 默认端口 8789；与扩展侧的默认配置一致，改动需两边同步。 */
 export const PORT = Number.parseInt(process.env.LOCAL_AGENT_PORT || '8789', 10);
 /**
  * 数据根目录，以及由它派生的三个位置：SQLite 库、Agent 工作目录、导入文档副本。
  * 每一项都能用对应环境变量单独覆盖；都不覆盖时全部落在 DATA_DIR 下，卸载只需删一个目录。
  */
 export const DATA_DIR = path.resolve(process.env.LOCAL_AGENT_DATA_DIR || path.join(homedir(), '.vocal-saga-local-agent'));
+/** 通用接口历史库（不是文档项目库，后者每个项目一个文件，在 documents/ 下）。 */
 export const DATABASE_PATH = path.resolve(process.env.LOCAL_AGENT_DATABASE || path.join(DATA_DIR, 'local-agent.sqlite'));
+/** Agent CLI 的工作目录，模型目录探测也以它为 projectRoot。 */
 export const WORK_DIR = path.resolve(process.env.LOCAL_AGENT_WORKDIR || path.join(DATA_DIR, 'workspace'));
 const SERVICE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 /** 启动时要加载的 .env 文件位置，默认在服务目录下；由 start.ts 先于本模块的动态导入执行。 */
 export const ENV_FILE_PATH = path.resolve(process.env.LOCAL_AGENT_ENV_FILE?.trim() || path.join(SERVICE_DIR, '.env'));
+/** 文档项目目录：每个项目一个子目录与一个独立 SQLite 文件。 */
 export const DOCUMENTS_DIR = path.join(DATA_DIR, 'documents');
 
 const configuredToken = (process.env.LOCAL_AGENT_TOKEN || '').trim();

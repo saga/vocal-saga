@@ -108,6 +108,10 @@ function serializedContext(brief: Pick<TranslationBrief,
   });
 }
 
+/**
+ * 组装一个批次的自包含简报：快照化提示词与策略、按时间边界裁剪记忆、
+ * 附上前文片段与图谱/声音参考。所有上限都在这里生效，下游不再二次裁剪。
+ */
 export function buildTranslationBrief(
   context: any,
   items: BriefSegment[],
@@ -217,6 +221,7 @@ export function buildTranslationBrief(
   return brief;
 }
 
+/** 生成简报的日志摘要：只报计数与版本号，不含正文，避免日志被原文撑爆。 */
 export function summarizeTranslationBrief(brief: TranslationBrief): Record<string, unknown> {
   const graph = brief.contextGraph as any;
   const voice = brief.voiceContext as any;

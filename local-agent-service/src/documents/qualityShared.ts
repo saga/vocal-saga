@@ -8,8 +8,10 @@
 
 export const MAX_REPEATED_EXPRESSION_GROUPS = 300;
 
+/** 单条「重复表达」发现里最多列出的位置数；超出只是少列位置，不影响问题本身的计数。 */
 export const MAX_REPEATED_EXPRESSION_LOCATIONS_PER_FINDING = 500;
 
+/** 一次批量修复最多处理的片段数，避免单个请求触发过长的模型调用。 */
 export const MAX_BULK_REPAIR_SEGMENTS = 100;
 
 /**

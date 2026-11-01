@@ -86,6 +86,7 @@ function fingerprint(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex');
 }
 
+/** 档案的人工审核动作。当前只有「停用」一种：档案默认启用，不需要确认动作。 */
 export type ChineseEditorialProfileReviewAction = 'reject';
 
 /**
