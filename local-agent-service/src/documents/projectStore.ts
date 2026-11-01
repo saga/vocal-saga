@@ -1011,8 +1011,8 @@ export class DocumentProjectStore {
     const current = this.getProject(projectId);
     if (!current) throw Object.assign(new Error('找不到文档项目'), { status: 404 });
     const format = normalizeFormat(input.format || current.format);
-    const cleanName = path.basename(String(fileName || '')).replace(/[\\x00-\\x1f]/g, '').slice(0, 240) || ('source.' + format);
-    const extension = path.extname(cleanName).replace(/^\\./, '').toLowerCase();
+    const cleanName = path.basename(String(fileName || '')).replace(/[\x00-\x1f]/g, '').slice(0, 240) || ('source.' + format);
+    const extension = path.extname(cleanName).replace(/^\./, '').toLowerCase();
     if (extension && extension !== format.toLowerCase()) {
       throw Object.assign(new Error('原始文件扩展名与项目格式不匹配'), { status: 400 });
     }
