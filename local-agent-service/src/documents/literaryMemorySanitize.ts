@@ -19,23 +19,61 @@ import {
   text,
 } from './literaryNormalizers.ts';
 
+/** 空记忆的规范形状：调用方无需再判 undefined。 */
+function emptyLiteraryMemory(): Record<string, any> {
+  return {
+    version: 2, entities: [], relationships: [], styleGuide: {}, styleGuideStatus: 'candidate',
+    chapterSummaries: [], recentExamples: [], characterVoices: [], relationshipVoiceRules: [], voiceAnchors: [],
+  };
+}
+
 /**
  * 将保存的文学记忆归一化为有界、可序列化的内部结构。
  * 这里只负责结构/字段清洗；原文证据是否位于当前批次之前，仍由 TranslationBrief 的时间过滤负责，
  * 不能把“通过 sanitizer”当成“事实已验证”或“可在所有章节使用”。
  */
 export function sanitizeProjectLiteraryMemory(input: unknown): Record<string, any> {
-  if (!input || typeof input !== 'object' || Array.isArray(input)) {
-    return { version: 2, entities: [], relationships: [], styleGuide: {}, styleGuideStatus: 'candidate', chapterSummaries: [], recentExamples: [], characterVoices: [], relationshipVoiceRules: [], voiceAnchors: [] };
-  }
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return emptyLiteraryMemory();
   // Deliberately project known fields before measuring size. A caller may have extra
   // properties such as a full source document or Context Graph payload; none belongs in
   // LiteraryMemory and unknown fields must not make a valid structured memory fail to save.
   const raw = input as Record<string, any>;
-  const entities = normalizeMemoryEntities(raw);
-  // Explicit user deletions survive after the visible entity/relation projection is removed.
-  // These compact tombstones prevent later model deltas from silently recreating deleted memory.
-  const rejectedItems = Array.isArray(raw.rejectedItems) ? raw.rejectedItems.slice(-2000).flatMap((item: any): any[] => {
+  const rejectedItems = normalizeRejectedItems(raw);
+  const characterVoices = normalizeCharacterVoices(raw);
+  const validCharacterIds = new Set(characterVoices.map((item: any) => item.characterId));
+  const style = normalizeStyleGuide(raw);
+
+  const memory: Record<string, any> = {
+    version: 2,
+    entities: normalizeMemoryEntities(raw),
+    relationships: normalizeRelationships(raw),
+    styleGuide: style.styleGuide,
+    styleGuideStatus: style.styleGuideStatus,
+    ...(style.styleGuideConfirmationSource ? { styleGuideConfirmationSource: style.styleGuideConfirmationSource } : {}),
+    styleGuideOrigin: style.styleGuideOrigin,
+    ...(style.styleGuideAnalysisVersion ? { styleGuideAnalysisVersion: style.styleGuideAnalysisVersion } : {}),
+    ...(style.styleGuideSourceRevisionId ? { styleGuideSourceRevisionId: style.styleGuideSourceRevisionId } : {}),
+    styleGuideAutoDisabled: style.styleGuideAutoDisabled,
+    ...(style.chineseEditorialProfile ? { chineseEditorialProfile: style.chineseEditorialProfile } : {}),
+    chapterSummaries: normalizeChapterSummaries(raw),
+    recentExamples: normalizeRecentExamples(raw),
+    characterVoices,
+    relationshipVoiceRules: normalizeRelationshipVoiceRules(raw, validCharacterIds),
+    voiceAnchors: normalizeVoiceAnchors(raw, validCharacterIds),
+    openQuestions: list(raw.openQuestions, 40, 200),
+    rejectedItems,
+  };
+  applyRejectionTombstones(memory, rejectedItems);
+  enforceMemoryByteLimit(memory);
+  return memory;
+}
+
+/**
+ * 用户删除墓碑。显式的实体/关系删除即使在可见投影里已被移除也必须保留，
+ * 否则后续批次的模型增量会把它们悄悄重建回来。
+ */
+function normalizeRejectedItems(raw: Record<string, any>): Array<Record<string, any>> {
+  return Array.isArray(raw.rejectedItems) ? raw.rejectedItems.slice(-2000).flatMap((item: any): any[] => {
     if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
     if (item.type === 'entity') {
       const source = text(item.source, 120);
@@ -55,7 +93,12 @@ export function sanitizeProjectLiteraryMemory(input: unknown): Record<string, an
     }
     return [];
   }) : [];
-  const relationships = Array.isArray(raw.relationships) ? raw.relationships.slice(0, 160).flatMap((item: any) => {
+}
+
+/** 关系条目：主体/谓词/客体缺一不可，证据引用逐条清洗。 */
+function normalizeRelationships(raw: Record<string, any>): Array<Record<string, any>> {
+  if (!Array.isArray(raw.relationships)) return [];
+  return raw.relationships.slice(0, 160).flatMap((item: any) => {
     if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
     const subject = text(item.subject, 120); const predicate = text(item.predicate, 100); const object = text(item.object, 120);
     if (!subject || !predicate || !object) return [];
@@ -72,7 +115,14 @@ export function sanitizeProjectLiteraryMemory(input: unknown): Record<string, an
       confirmationSource: item.reviewStatus === 'rejected' ? undefined : item.reviewStatus === 'confirmed'
          ? (item.confirmationSource ? confirmationSource(item.confirmationSource, true) : 'legacy-unknown') : 'model-default',
     }];
-  }) : [];
+  });
+}
+
+/**
+ * 文风指南及其来源元数据。缺失维度不固化成空串；只有来自图谱或用户编辑的指南才算 confirmed，
+ * 自动禁用时一律降回 candidate。
+ */
+function normalizeStyleGuide(raw: Record<string, any>): Record<string, any> {
   const style = raw.styleGuide && typeof raw.styleGuide === 'object' && !Array.isArray(raw.styleGuide) ? raw.styleGuide : {};
   // 不把缺失维度固化成空串；允许值与 Context Graph 一致的 1000 字上限。
   const styleGuide = {
@@ -96,12 +146,22 @@ export function sanitizeProjectLiteraryMemory(input: unknown): Record<string, an
   const styleGuideOrigin = ['context-graph', 'user-edited', 'user-confirmed', 'legacy-unknown'].includes(String(rawStyleGuideOrigin))
     ? String(rawStyleGuideOrigin)
     : styleGuideConfirmationSource === 'user-confirmed' ? 'user-confirmed' : 'legacy-unknown';
-  const styleGuideAnalysisVersion = text(raw.styleGuideAnalysisVersion, 120);
-  const styleGuideSourceRevisionId = text(raw.styleGuideSourceRevisionId, 200);
-  const styleGuideAutoDisabled = raw.styleGuideAutoDisabled === true;
-  const characterVoices = normalizeCharacterVoices(raw);
-  const validCharacterIds = new Set(characterVoices.map((item: any) => item.characterId));
-  const relationshipVoiceRules = Array.isArray(raw.relationshipVoiceRules) ? raw.relationshipVoiceRules.slice(0, MAX_RELATION_RULES).flatMap((item: any) => {
+  return {
+    styleGuide,
+    styleGuideStatus,
+    styleGuideConfirmationSource,
+    styleGuideOrigin,
+    styleGuideAnalysisVersion: text(raw.styleGuideAnalysisVersion, 120),
+    styleGuideSourceRevisionId: text(raw.styleGuideSourceRevisionId, 200),
+    styleGuideAutoDisabled: raw.styleGuideAutoDisabled === true,
+    chineseEditorialProfile: normalizeChineseEditorialProfile(raw),
+  };
+}
+
+/** 关系语言规则：说话双方必须都是已采纳的人物画像，否则规则无从应用。 */
+function normalizeRelationshipVoiceRules(raw: Record<string, any>, validCharacterIds: Set<string>): Array<Record<string, any>> {
+  if (!Array.isArray(raw.relationshipVoiceRules)) return [];
+  return raw.relationshipVoiceRules.slice(0, MAX_RELATION_RULES).flatMap((item: any) => {
     if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
     const speakerId = text(item.speakerId, 100); const addresseeId = text(item.addresseeId, 100);
     const evidenceSegmentIds = list(item.evidenceSegmentIds, 8, 160);
@@ -115,8 +175,13 @@ export function sanitizeProjectLiteraryMemory(input: unknown): Record<string, an
       directness: text(item.directness, 180), emotionalDistance: text(item.emotionalDistance, 180),
       sceneDependentShift: text(item.sceneDependentShift, 180), evidenceSegmentIds,
     }];
-  }) : [];
-  const voiceAnchors = Array.isArray(raw.voiceAnchors) ? raw.voiceAnchors.slice(0, MAX_ANCHORS).flatMap((item: any) => {
+  });
+}
+
+/** 声音锚点：归属证据缺失或置信度非数值的旧锚点只能保留为 approved 记录，但不构成强约束。 */
+function normalizeVoiceAnchors(raw: Record<string, any>, validCharacterIds: Set<string>): Array<Record<string, any>> {
+  if (!Array.isArray(raw.voiceAnchors)) return [];
+  return raw.voiceAnchors.slice(0, MAX_ANCHORS).flatMap((item: any) => {
     if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
     const speakerId = text(item.speakerId, 100); const segmentId = text(item.segmentId, 160);
     const source = text(item.source, 400); const target = text(item.target, 500);
@@ -137,12 +202,20 @@ export function sanitizeProjectLiteraryMemory(input: unknown): Record<string, an
       ...(Number.isFinite(attributionConfidence) ? { attributionConfidence: Math.max(0, Math.min(1, attributionConfidence)) } : {}),
       tags: list(item.tags, 8, 80),
     }];
-  }) : [];
-  const chapterSummaries = Array.isArray(raw.chapterSummaries) ? raw.chapterSummaries.flatMap((item: any) => {
+  });
+}
+
+function normalizeChapterSummaries(raw: Record<string, any>): Array<{ chapter: string; summary: string }> {
+  if (!Array.isArray(raw.chapterSummaries)) return [];
+  return raw.chapterSummaries.flatMap((item: any) => {
     const chapter = text(item?.chapter, 120); const summary = text(item?.summary, 5000);
     return chapter && summary ? [{ chapter, summary }] : [];
-  }) : [];
-  const recentExamples = Array.isArray(raw.recentExamples) ? raw.recentExamples.flatMap((item: any) => {
+  });
+}
+
+function normalizeRecentExamples(raw: Record<string, any>): Array<Record<string, any>> {
+  if (!Array.isArray(raw.recentExamples)) return [];
+  return raw.recentExamples.flatMap((item: any) => {
     const source = text(item?.source, 260);
     const target = text(item?.target, 320);
     const chapter = text(item?.chapter, 120);
@@ -154,20 +227,11 @@ export function sanitizeProjectLiteraryMemory(input: unknown): Record<string, an
       ...(segmentId ? { segmentId } : {}),
       origin,
     }] : [];
-  }) : [];
-  const chineseEditorialProfile = normalizeChineseEditorialProfile(raw);
-  const memory: Record<string, any> = {
-    version: 2, entities, relationships, styleGuide, styleGuideStatus,
-    ...(styleGuideConfirmationSource ? { styleGuideConfirmationSource } : {}),
-    styleGuideOrigin,
-    ...(styleGuideAnalysisVersion ? { styleGuideAnalysisVersion } : {}),
-    ...(styleGuideSourceRevisionId ? { styleGuideSourceRevisionId } : {}),
-    styleGuideAutoDisabled,
-    ...(chineseEditorialProfile ? { chineseEditorialProfile } : {}),
-    chapterSummaries, recentExamples, characterVoices, relationshipVoiceRules, voiceAnchors,
-    openQuestions: list(raw.openQuestions, 40, 200),
-    rejectedItems,
-  };
+  });
+}
+
+/** 墓碑生效：被用户删除的实体/关系从可见投影里移除，避免「删了又回来」。 */
+function applyRejectionTombstones(memory: Record<string, any>, rejectedItems: Array<Record<string, any>>): void {
   const rejectedEntityNames = rejectedItems.filter((item: any) => item.type === 'entity');
   memory.entities = memory.entities.filter((entity: any) => !rejectedEntityNames.some((rejected: any) => {
     const kindMatches = rejected.kind === entity.kind || rejected.kind === 'other' || entity.kind === 'other';
@@ -179,9 +243,6 @@ export function sanitizeProjectLiteraryMemory(input: unknown): Record<string, an
     .map((item: any) => [item.subject, item.predicate, item.object].map(normalizeEntityName).join('|')));
   memory.relationships = memory.relationships.filter((relation: any) =>
     !rejectedRelationshipKeys.has([relation.subject, relation.predicate, relation.object].map(normalizeEntityName).join('|')));
-
-  enforceMemoryByteLimit(memory);
-  return memory;
 }
 
 /**

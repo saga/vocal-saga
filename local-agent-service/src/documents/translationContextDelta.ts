@@ -541,6 +541,23 @@ function sameKind(a: unknown, b: unknown): boolean {
   return left === right || left === 'other' || right === 'other';
 }
 
+/** 一次合并的累计计数，直接作为调用方的持久化摘要。 */
+type MergeSummary = {
+  addedEntities: number;
+  mergedEntities: number;
+  entityTargetConflicts: number;
+  addedRelationships: number;
+  addedOpenQuestions: number;
+};
+
+/** 合并过程中的工作副本与计数。 */
+type MergeContext = { memory: Record<string, any>; summary: MergeSummary };
+
+/** 归一化名称：实体与关系的跨批次比对一律经此，避免标点/大小写差异造成重复条目。 */
+function mergeName(value: unknown): string {
+  return normalized(value).replace(/[._'’\-]+/g, ' ').trim();
+}
+
 /**
  * 按源顺序把已验证的 context_delta 合并为后续批次可见的记忆投影。
  * 有来源证据的新增事实默认以 model-default 生效；目标译名的置信度仍取决于实际译文证据，
@@ -551,6 +568,25 @@ export function mergeTranslationContextDeltasIntoMemory(
   memoryInput: unknown,
   deltas: ValidatedTranslationContextDelta[],
 ): { memory: Record<string, any>; summary: Record<string, number>; changed: boolean } {
+  const context = createMergeContext(memoryInput);
+  const before = JSON.stringify(context.memory);
+  for (const delta of deltas) {
+    for (const candidate of delta.entityCandidates) applyEntityCandidate(context, candidate, delta);
+    for (const relation of delta.relationshipDeltas) applyRelationshipCandidate(context, relation);
+    for (const question of delta.openQuestions) {
+      addOpenQuestion(context, question.question +
+        (question.evidence[0]?.sourceQuote ? '（原文：“' + question.evidence[0].sourceQuote.slice(0, 80) + '”）' : ''));
+    }
+    for (const conflict of delta.conflicts) {
+      addOpenQuestion(context, '上下文冲突待核对：' + conflict.topic + '；' + conflict.details +
+        (conflict.evidence[0]?.sourceQuote ? '（原文：“' + conflict.evidence[0].sourceQuote.slice(0, 80) + '”）' : ''));
+    }
+  }
+  return { memory: context.memory, summary: context.summary, changed: before !== JSON.stringify(context.memory) };
+}
+
+/** 深拷贝一份记忆并补齐四个必填数组；非法输入退化为空记忆而不是抛出。 */
+function createMergeContext(memoryInput: unknown): MergeContext {
   let memory: Record<string, any>;
   try { memory = JSON.parse(JSON.stringify(memoryInput && typeof memoryInput === 'object' ? memoryInput : {})); }
   catch { memory = {}; }
@@ -558,154 +594,182 @@ export function mergeTranslationContextDeltasIntoMemory(
   if (!Array.isArray(memory.relationships)) memory.relationships = [];
   if (!Array.isArray(memory.openQuestions)) memory.openQuestions = [];
   if (!Array.isArray(memory.rejectedItems)) memory.rejectedItems = [];
-  const before = JSON.stringify(memory);
-  const summary = { addedEntities: 0, mergedEntities: 0, entityTargetConflicts: 0, addedRelationships: 0, addedOpenQuestions: 0 };
-  const normalizeName = (value: unknown) => normalized(value).replace(/[._'’\-]+/g, ' ').trim();
-  const targetEvidenceFor = (candidate: ContextEntityCandidate, delta: ValidatedTranslationContextDelta) => {
-    const names = new Set([candidate.localId, candidate.canonicalSource, ...candidate.aliases]
-      .map(normalizeName).filter(Boolean));
-    const seenSegments = new Set<string>();
-    return delta.entityMentions.flatMap((mention) => {
-      if (!names.has(normalizeName(mention.entityRef)) ||
-          normalizeName(mention.targetSurface) !== normalizeName(candidate.targetProposal) ||
-          seenSegments.has(mention.segmentId)) return [];
-      seenSegments.add(mention.segmentId);
-      return [{
-        segmentId: mention.segmentId,
-        sourceQuote: mention.sourceQuote,
-        targetSurface: mention.targetSurface,
-      }];
-    }).slice(0, 8);
+  return {
+    memory,
+    summary: { addedEntities: 0, mergedEntities: 0, entityTargetConflicts: 0, addedRelationships: 0, addedOpenQuestions: 0 },
   };
-  const targetConfidence = (refs: Array<{ segmentId: string }>) =>
-    new Set(refs.map((item) => item.segmentId)).size >= 2 ? 'corroborated' : 'candidate';
-  const isRejectedEntity = (candidate: ContextEntityCandidate) => {
-    const candidateNames = new Set([candidate.canonicalSource, ...candidate.aliases].map(normalizeName).filter(Boolean));
-    return memory.rejectedItems.some((item: any) => item?.type === 'entity' &&
-      sameKind(item.kind, candidate.kind) &&
-      [item.source, ...(Array.isArray(item.aliases) ? item.aliases : [])]
-        .some((name: unknown) => candidateNames.has(normalizeName(name))));
-  };
-  const isRejectedRelationship = (relation: ContextRelationshipCandidate) => {
-    const key = [relation.subjectSource, relation.predicate, relation.objectSource].map(normalizeName).join('\u0000');
-    return memory.rejectedItems.some((item: any) => item?.type === 'relationship' &&
-      [item.subject, item.predicate, item.object].map(normalizeName).join('\u0000') === key);
-  };
-  const addQuestion = (value: string) => {
-    const question = text(value, 200);
-    if (!question || memory.openQuestions.some((item: unknown) => normalized(item) === normalized(question))) return;
-    memory.openQuestions.push(question);
-    memory.openQuestions = memory.openQuestions.slice(-40);
-    summary.addedOpenQuestions++;
-  };
+}
 
-  for (const delta of deltas) {
-    for (const candidate of delta.entityCandidates) {
-      // A user deletion is durable even though the visible LiteraryMemory row was removed.
-      if (isRejectedEntity(candidate)) continue;
-      const names = new Set([candidate.canonicalSource, ...candidate.aliases].map(normalizeName).filter(Boolean));
-      const newTargetEvidence = targetEvidenceFor(candidate, delta);
-      const matching = memory.entities
-        .map((entity: any, index: number) => ({ entity, index }))
-        .filter(({ entity }: any) => sameKind(entity.kind, candidate.kind) &&
-          [entity.source, ...(Array.isArray(entity.aliases) ? entity.aliases : [])]
-            .some((name: unknown) => names.has(normalizeName(name))));
-      if (!matching.length) {
-        memory.entities.push({
-          source: candidate.canonicalSource,
-          target: candidate.targetProposal,
-          kind: candidate.kind,
-          aliases: candidate.aliases.slice(0, 8),
-          evidence: candidate.evidence[0]?.sourceQuote || '',
-          evidenceRefs: candidate.evidence.slice(0, 4).map((item) => ({
-            segmentId: item.segmentId, sourceQuote: item.sourceQuote,
-          })),
-          targetEvidenceRefs: newTargetEvidence,
-          targetConfidence: targetConfidence(newTargetEvidence),
-          reviewStatus: 'confirmed',
-          confirmationSource: 'model-default',
-        });
-        memory.entities = memory.entities.slice(0, 120);
-        summary.addedEntities++;
-        continue;
-      }
-      const prior = matching[0]!.entity;
-      // A persisted user rejection is a durable decision; a later model observation must not revive it.
-      if (prior.reviewStatus === 'rejected') continue;
-      if (normalizeName(prior.target) !== normalizeName(candidate.targetProposal)) {
-        summary.entityTargetConflicts++;
-        addQuestion('候选译名存在冲突：“' + candidate.canonicalSource + '”已有“' +
-          text(prior.target, 80) + '”，新批次提出“' + candidate.targetProposal + '”；需人工核对原文证据。');
-        continue;
-      }
-      const existingAliases = Array.isArray(prior.aliases) ? prior.aliases : [];
-      const aliases = Array.from(new Set([...existingAliases, ...candidate.aliases, candidate.canonicalSource]
-        .filter((name) => normalizeName(name) && normalizeName(name) !== normalizeName(prior.source))));
-      prior.aliases = aliases.slice(0, 8);
-      const priorTargetEvidence = Array.isArray(prior.targetEvidenceRefs) ? prior.targetEvidenceRefs : [];
-      const targetEvidenceBySegment = new Map<string, any>();
-      for (const ref of [...priorTargetEvidence, ...newTargetEvidence]) {
-        if (ref && typeof ref.segmentId === 'string' && ref.segmentId.trim()) {
-          targetEvidenceBySegment.set(ref.segmentId, ref);
-        }
-      }
-      prior.targetEvidenceRefs = Array.from(targetEvidenceBySegment.values()).slice(-8);
-      prior.targetConfidence = targetConfidence(prior.targetEvidenceRefs);
-      if (prior.reviewStatus !== 'confirmed') {
-        prior.reviewStatus = 'confirmed';
-        prior.confirmationSource = 'model-default';
-      }
-      if (!prior.evidence && candidate.evidence[0]?.sourceQuote) prior.evidence = candidate.evidence[0].sourceQuote;
-      // Preserve source-positioned evidence for suggested entities, but don't let a later model
-      // observation replace the provenance of a user-confirmed legacy mapping.
-      if (prior.reviewStatus !== 'confirmed' || (Array.isArray(prior.evidenceRefs) && prior.evidenceRefs.length > 0)) {
-        const evidenceRefs = [
-          ...(Array.isArray(prior.evidenceRefs) ? prior.evidenceRefs : []),
-          ...candidate.evidence.map((item) => ({ segmentId: item.segmentId, sourceQuote: item.sourceQuote })),
-        ].filter((item, index, all) => all.findIndex((other) =>
-          other.segmentId === item.segmentId && normalized(other.sourceQuote) === normalized(item.sourceQuote)) === index);
-        if (evidenceRefs.length) prior.evidenceRefs = evidenceRefs.slice(0, 8);
-      }
-      summary.mergedEntities++;
-    }
-    for (const relation of delta.relationshipDeltas) {
-      // A deleted relation may have had no graph edge to reject; retain its memory tombstone.
-      if (isRejectedRelationship(relation)) continue;
-      const key = [relation.subjectSource, relation.predicate, relation.objectSource].map(normalizeName).join('\u0000');
-      const prior = memory.relationships.find((item: any) =>
-        [item.subject, item.predicate, item.object].map(normalizeName).join('\u0000') === key);
-      if (!prior) {
-        memory.relationships.push({
-          subject: relation.subjectSource, predicate: relation.predicate, object: relation.objectSource,
-          evidence: relation.evidence[0]?.sourceQuote || '',
-          evidenceRefs: relation.evidence.slice(0, 4).map((item) => ({
-            segmentId: item.segmentId, sourceQuote: item.sourceQuote,
-          })),
-          reviewStatus: 'confirmed',
-          confirmationSource: 'model-default',
-        });
-        memory.relationships = memory.relationships.slice(0, 160);
-        summary.addedRelationships++;
-      } else if (prior.reviewStatus !== 'rejected') {
-        const evidenceRefs = [
-          ...(Array.isArray(prior.evidenceRefs) ? prior.evidenceRefs : []),
-          ...relation.evidence.map((item) => ({ segmentId: item.segmentId, sourceQuote: item.sourceQuote })),
-        ].filter((item, index, all) => all.findIndex((other) =>
-          other.segmentId === item.segmentId && normalized(other.sourceQuote) === normalized(item.sourceQuote)) === index);
-        if (evidenceRefs.length) prior.evidenceRefs = evidenceRefs.slice(0, 8);
-        if (prior.reviewStatus !== 'confirmed') {
-          prior.reviewStatus = 'confirmed';
-          prior.confirmationSource = 'model-default';
-        }
-      }
-    }
-    for (const question of delta.openQuestions) {
-      addQuestion(question.question + (question.evidence[0]?.sourceQuote ? '（原文：“' + question.evidence[0].sourceQuote.slice(0, 80) + '”）' : ''));
-    }
-    for (const conflict of delta.conflicts) {
-      addQuestion('上下文冲突待核对：' + conflict.topic + '；' + conflict.details +
-        (conflict.evidence[0]?.sourceQuote ? '（原文：“' + conflict.evidence[0].sourceQuote.slice(0, 80) + '”）' : ''));
+/** 与本次候选目标译名一致、且逐段去重后的译文证据。 */
+function targetEvidenceFor(candidate: ContextEntityCandidate, delta: ValidatedTranslationContextDelta) {
+  const names = new Set([candidate.localId, candidate.canonicalSource, ...candidate.aliases]
+    .map(mergeName).filter(Boolean));
+  const seenSegments = new Set<string>();
+  return delta.entityMentions.flatMap((mention) => {
+    if (!names.has(mergeName(mention.entityRef)) ||
+        mergeName(mention.targetSurface) !== mergeName(candidate.targetProposal) ||
+        seenSegments.has(mention.segmentId)) return [];
+    seenSegments.add(mention.segmentId);
+    return [{
+      segmentId: mention.segmentId,
+      sourceQuote: mention.sourceQuote,
+      targetSurface: mention.targetSurface,
+    }];
+  }).slice(0, 8);
+}
+
+/** 两个以上独立片段给出同一译名才算互相印证，否则仍是候选。 */
+function targetConfidence(refs: Array<{ segmentId: string }>): string {
+  return new Set(refs.map((item) => item.segmentId)).size >= 2 ? 'corroborated' : 'candidate';
+}
+
+function isRejectedEntity(context: MergeContext, candidate: ContextEntityCandidate): boolean {
+  const candidateNames = new Set([candidate.canonicalSource, ...candidate.aliases].map(mergeName).filter(Boolean));
+  return context.memory.rejectedItems.some((item: any) => item?.type === 'entity' &&
+    sameKind(item.kind, candidate.kind) &&
+    [item.source, ...(Array.isArray(item.aliases) ? item.aliases : [])]
+      .some((name: unknown) => candidateNames.has(mergeName(name))));
+}
+
+function isRejectedRelationship(context: MergeContext, relation: ContextRelationshipCandidate): boolean {
+  const key = [relation.subjectSource, relation.predicate, relation.objectSource].map(mergeName).join('\u0000');
+  return context.memory.rejectedItems.some((item: any) => item?.type === 'relationship' &&
+    [item.subject, item.predicate, item.object].map(mergeName).join('\u0000') === key);
+}
+
+/** 追加一条待核对问题；重复问题不重复入列，列表只保留最近 40 条。 */
+function addOpenQuestion(context: MergeContext, value: string): void {
+  const question = text(value, 200);
+  const { memory } = context;
+  if (!question || memory.openQuestions.some((item: unknown) => normalized(item) === normalized(question))) return;
+  memory.openQuestions.push(question);
+  memory.openQuestions = memory.openQuestions.slice(-40);
+  context.summary.addedOpenQuestions++;
+}
+
+/** 证据引用合并：按 segmentId + 引文去重，保留调用方原有的先后顺序。 */
+function mergeEvidenceRefs(existing: unknown, incoming: ContextEvidence[]): Array<{ segmentId: string; sourceQuote: string }> {
+  return [
+    ...(Array.isArray(existing) ? existing : []),
+    ...incoming.map((item) => ({ segmentId: item.segmentId, sourceQuote: item.sourceQuote })),
+  ].filter((item, index, all) => all.findIndex((other) =>
+    other.segmentId === item.segmentId && normalized(other.sourceQuote) === normalized(item.sourceQuote)) === index);
+}
+
+/**
+ * 实体候选合并：用户删除是持久决定，用户拒绝的实体不会被新观察复活；
+ * 同名不同译名只登记冲突，不让后到的候选覆盖先前的。
+ */
+function applyEntityCandidate(
+  context: MergeContext,
+  candidate: ContextEntityCandidate,
+  delta: ValidatedTranslationContextDelta,
+): void {
+  const { memory, summary } = context;
+  // A user deletion is durable even though the visible LiteraryMemory row was removed.
+  if (isRejectedEntity(context, candidate)) return;
+  const names = new Set([candidate.canonicalSource, ...candidate.aliases].map(mergeName).filter(Boolean));
+  const newTargetEvidence = targetEvidenceFor(candidate, delta);
+  const matching = memory.entities
+    .map((entity: any, index: number) => ({ entity, index }))
+    .filter(({ entity }: any) => sameKind(entity.kind, candidate.kind) &&
+      [entity.source, ...(Array.isArray(entity.aliases) ? entity.aliases : [])]
+        .some((name: unknown) => names.has(mergeName(name))));
+  if (!matching.length) {
+    memory.entities.push({
+      source: candidate.canonicalSource,
+      target: candidate.targetProposal,
+      kind: candidate.kind,
+      aliases: candidate.aliases.slice(0, 8),
+      evidence: candidate.evidence[0]?.sourceQuote || '',
+      evidenceRefs: candidate.evidence.slice(0, 4).map((item) => ({
+        segmentId: item.segmentId, sourceQuote: item.sourceQuote,
+      })),
+      targetEvidenceRefs: newTargetEvidence,
+      targetConfidence: targetConfidence(newTargetEvidence),
+      reviewStatus: 'confirmed',
+      confirmationSource: 'model-default',
+    });
+    memory.entities = memory.entities.slice(0, 120);
+    summary.addedEntities++;
+    return;
+  }
+  const prior = matching[0]!.entity;
+  // A persisted user rejection is a durable decision; a later model observation must not revive it.
+  if (prior.reviewStatus === 'rejected') return;
+  if (mergeName(prior.target) !== mergeName(candidate.targetProposal)) {
+    summary.entityTargetConflicts++;
+    addOpenQuestion(context, '候选译名存在冲突：“' + candidate.canonicalSource + '”已有“' +
+      text(prior.target, 80) + '”，新批次提出“' + candidate.targetProposal + '”；需人工核对原文证据。');
+    return;
+  }
+  mergeEntityEvidence(prior, candidate, newTargetEvidence);
+  summary.mergedEntities++;
+}
+
+/**
+ * 命中已有实体：只追加别名与证据，不覆盖用户已确认的译名与来源出处。
+ * 译文证据按片段去重后保留最近 8 条，置信度随证据数重算。
+ */
+function mergeEntityEvidence(
+  prior: Record<string, any>,
+  candidate: ContextEntityCandidate,
+  newTargetEvidence: Array<{ segmentId: string; sourceQuote: string; targetSurface: string }>,
+): void {
+  const existingAliases = Array.isArray(prior.aliases) ? prior.aliases : [];
+  const aliases = Array.from(new Set([...existingAliases, ...candidate.aliases, candidate.canonicalSource]
+    .filter((name) => mergeName(name) && mergeName(name) !== mergeName(prior.source))));
+  prior.aliases = aliases.slice(0, 8);
+
+  const priorTargetEvidence = Array.isArray(prior.targetEvidenceRefs) ? prior.targetEvidenceRefs : [];
+  const targetEvidenceBySegment = new Map<string, any>();
+  for (const ref of [...priorTargetEvidence, ...newTargetEvidence]) {
+    if (ref && typeof ref.segmentId === 'string' && ref.segmentId.trim()) {
+      targetEvidenceBySegment.set(ref.segmentId, ref);
     }
   }
-  return { memory, summary, changed: before !== JSON.stringify(memory) };
+  prior.targetEvidenceRefs = Array.from(targetEvidenceBySegment.values()).slice(-8);
+  prior.targetConfidence = targetConfidence(prior.targetEvidenceRefs);
+  if (prior.reviewStatus !== 'confirmed') {
+    prior.reviewStatus = 'confirmed';
+    prior.confirmationSource = 'model-default';
+  }
+  if (!prior.evidence && candidate.evidence[0]?.sourceQuote) prior.evidence = candidate.evidence[0].sourceQuote;
+  // Preserve source-positioned evidence for suggested entities, but don't let a later model
+  // observation replace the provenance of a user-confirmed legacy mapping.
+  if (prior.reviewStatus !== 'confirmed' || (Array.isArray(prior.evidenceRefs) && prior.evidenceRefs.length > 0)) {
+    const evidenceRefs = mergeEvidenceRefs(prior.evidenceRefs, candidate.evidence);
+    if (evidenceRefs.length) prior.evidenceRefs = evidenceRefs.slice(0, 8);
+  }
+}
+
+/** 关系候选合并：同一「主体-谓词-客体」只累加证据，不重复建条目。 */
+function applyRelationshipCandidate(context: MergeContext, relation: ContextRelationshipCandidate): void {
+  const { memory, summary } = context;
+  // A deleted relation may have had no graph edge to reject; retain its memory tombstone.
+  if (isRejectedRelationship(context, relation)) return;
+  const key = [relation.subjectSource, relation.predicate, relation.objectSource].map(mergeName).join('\u0000');
+  const prior = memory.relationships.find((item: any) =>
+    [item.subject, item.predicate, item.object].map(mergeName).join('\u0000') === key);
+  if (!prior) {
+    memory.relationships.push({
+      subject: relation.subjectSource, predicate: relation.predicate, object: relation.objectSource,
+      evidence: relation.evidence[0]?.sourceQuote || '',
+      evidenceRefs: relation.evidence.slice(0, 4).map((item) => ({
+        segmentId: item.segmentId, sourceQuote: item.sourceQuote,
+      })),
+      reviewStatus: 'confirmed',
+      confirmationSource: 'model-default',
+    });
+    memory.relationships = memory.relationships.slice(0, 160);
+    summary.addedRelationships++;
+    return;
+  }
+  if (prior.reviewStatus === 'rejected') return;
+  const evidenceRefs = mergeEvidenceRefs(prior.evidenceRefs, relation.evidence);
+  if (evidenceRefs.length) prior.evidenceRefs = evidenceRefs.slice(0, 8);
+  if (prior.reviewStatus !== 'confirmed') {
+    prior.reviewStatus = 'confirmed';
+    prior.confirmationSource = 'model-default';
+  }
 }
