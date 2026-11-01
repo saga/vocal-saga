@@ -864,7 +864,7 @@ export class DocumentProjectStore {
 
   private insertSourceRevision(
     db: DatabaseSync, projectId: string, title: string, format: DocumentFormat, fileName: string,
-    segments: ProjectSegment[], revisionId = randomUUID(),
+    segments: ProjectSegment[], revisionId: string = randomUUID(),
     sourceFile?: { relativePath: string; sha256: string; size: number },
   ) {
     const fingerprint = sourceFingerprint(segments);
