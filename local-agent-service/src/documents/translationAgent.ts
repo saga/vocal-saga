@@ -2219,8 +2219,8 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
       const contextDeltaParts: ValidatedTranslationContextDelta[] = [];
       let lastError = '模型未返回完整的片段集合';
 
-      // 首次按计划批量请求；响应不完整时只重试缺失 ID，并把重试范围拆成最多 4 段的小组。
-      // 已返回的片段不会重新请求或覆盖；每个小组失败也不会阻断其他小组。
+      // maxModelAttempts 是整个 batch 的模型调用总预算（包含首次调用），不是重试轮数。
+      // 首次调用按原 batch 请求；若不完整，只用剩余调用预算补齐全部缺失 ID，避免按 4 段切组突破调用上限。
       for (let attempt = 0; attempt < strategy.maxModelAttempts && pending.size > 0; attempt++) {
         if (store.getRunStatus(projectId, runId) === 'cancelled') {
           store.appendEvent(projectId, runId, 'batch.discarded', {
@@ -2229,8 +2229,7 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
           return;
         }
         const current = Array.from(pending.values());
-        const retryChunkSize = attempt === 0 ? Math.max(1, current.length) : 4;
-        const currentGroups = chunkMissingTranslationItems(current, retryChunkSize);
+        const currentGroups = current.length ? [current] : [];
         for (let groupIndex = 0; groupIndex < currentGroups.length; groupIndex++) {
           if (store.getRunStatus(projectId, runId) === 'cancelled') {
             store.appendEvent(projectId, runId, 'batch.discarded', {
