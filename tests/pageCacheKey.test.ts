@@ -20,8 +20,8 @@ describe('buildPageCacheFingerprint', () => {
     )).toMatch(/^page-v4:/);
   });
 
-  it('separates provider, style, translation mode and model', () => {
-    const fingerprint = (overrides: Partial<typeof base> & { model?: string } = {}) =>
+  it('separates provider, style, model and quality mode; legacy literary flags do not change the web cache', () => {
+    const fingerprint = (overrides: Partial<typeof base> & { model?: string; qualityMode?: string } = {}) =>
       buildPageCacheFingerprint(
         base.clientContentHash,
         base.pageUrl,
@@ -29,12 +29,14 @@ describe('buildPageCacheFingerprint', () => {
         overrides.promptStyle ?? base.promptStyle,
         overrides.translationMode ?? base.translationMode,
         overrides.model,
+        overrides.qualityMode,
       );
 
     const original = fingerprint({ model: 'model-a' });
     expect(fingerprint({ provider: 'openrouter', model: 'model-a' })).not.toBe(original);
     expect(fingerprint({ promptStyle: 'wangxiaobo', model: 'model-a' })).not.toBe(original);
-    expect(fingerprint({ translationMode: 'literary', model: 'model-a' })).not.toBe(original);
     expect(fingerprint({ model: 'model-b' })).not.toBe(original);
+    expect(fingerprint({ qualityMode: 'enhanced', model: 'model-a' })).not.toBe(original);
+    expect(fingerprint({ translationMode: 'literary', model: 'model-a' })).toBe(original);
   });
 });
