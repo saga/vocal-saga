@@ -130,7 +130,7 @@ export function buildWebQualityInstructions(
     '增强质量模式：以下是当前网页已有的标题、章节标题和开头片段，仅作为理解本页主题与术语的只读上下文，不要翻译或复述这些上下文。',
     '结合上下文理解当前片段中的缩写、术语和指代；同一术语在本页保持一致。仍以当前待翻译片段为准，不得根据上下文补充原文没有的信息。',
     JSON.stringify(context),
-  ].join('\\n');
+  ].join('\n');
 }
 
 export function withWebQualityContext(
