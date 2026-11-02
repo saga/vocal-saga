@@ -56,7 +56,7 @@ These remain local document-translation capabilities only.
 - [x] Add bounded, deterministic page context for multi-chunk Enhanced mode without an extra model call.
 - [x] Separate page cache entries by quality mode and bump the prompt revision.
 - [x] Add focused tests for quality-context construction and cache separation.
-- [ ] Run the full Worker and extension test/typecheck/build suites in CI and inspect their results.
+- [ ] Run the full Worker and extension test/typecheck/build suites. Not executed in this environment: the container could not resolve github.com, and GitHub returned no check runs/statuses for the pushed commits.
 
 ## Acceptance criteria
 
