@@ -20,7 +20,7 @@ describe('buildPageCacheFingerprint', () => {
     )).toMatch(/^page-v4:/);
   });
 
-  it('separates provider, style, model and quality mode; legacy literary flags do not change the web cache', () => {
+  it('separates provider, style, model, translation profile and quality mode', () => {
     const fingerprint = (overrides: Partial<typeof base> & { model?: string; qualityMode?: string } = {}) =>
       buildPageCacheFingerprint(
         base.clientContentHash,
@@ -37,6 +37,6 @@ describe('buildPageCacheFingerprint', () => {
     expect(fingerprint({ promptStyle: 'wangxiaobo', model: 'model-a' })).not.toBe(original);
     expect(fingerprint({ model: 'model-b' })).not.toBe(original);
     expect(fingerprint({ qualityMode: 'enhanced', model: 'model-a' })).not.toBe(original);
-    expect(fingerprint({ translationMode: 'literary', model: 'model-a' })).toBe(original);
+    expect(fingerprint({ translationMode: 'literary', model: 'model-a' })).not.toBe(original);
   });
 });
