@@ -173,6 +173,7 @@ describe('translateUrl — end-to-end with linkedom', () => {
       url: `${baseUrl}/`,
       ssrfGuard: localGuard,
       translationMode: 'literary',
+      skipCache: true,
     });
 
     // One normal provider call per chunk; no page-context analysis or full-page Reviewer call.
