@@ -554,7 +554,7 @@ export interface TranslateUrlInput {
   model?: string;
   /** 翻译文风，默认通用直译 */
   promptStyle?: PromptStyle;
-  /** 独立技术/文学翻译模式；未传时保持旧的技术模式。 */
+  /** @deprecated Legacy compatibility only; remote webpage translation always uses technical mode. */
   translationMode?: TranslationMode;
   /** Optional bounded webpage context; defaults to fast with no additional model calls. */
   qualityMode?: WebTranslationQualityMode;
@@ -594,7 +594,7 @@ export interface TranslateHtmlInput {
   apiKey?: string;
   /** 翻译文风，默认通用直译 */
   promptStyle?: PromptStyle;
-  /** 独立技术/文学翻译模式；未传时保持旧的技术模式。 */
+  /** @deprecated Legacy compatibility only; remote webpage translation always uses technical mode. */
   translationMode?: TranslationMode;
   /** Optional bounded webpage context; defaults to fast with no additional model calls. */
   qualityMode?: WebTranslationQualityMode;
