@@ -112,20 +112,20 @@ export function buildWebQualityInstructions(
 ): string | undefined {
   const headings = blocks
     .filter((block) => /^h[1-6]$/i.test(block.tag || ''))
-    .slice(0, 8)
-    .map((block) => block.text.trim().slice(0, 100))
+    .slice(0, 4)
+    .map((block) => block.text.trim().slice(0, 80))
     .filter(Boolean);
   const opening = blocks
     .filter((block) => /^p$/i.test(block.tag || ''))
-    .slice(0, 2)
-    .map((block) => block.text.trim().slice(0, 180))
+    .slice(0, 1)
+    .map((block) => block.text.trim().slice(0, 160))
     .filter(Boolean);
   const context = {
     title: title.slice(0, 160),
     headings,
     opening,
   };
-  if (!headings.length && !opening.length) return undefined;
+  if (!title.trim() && !headings.length && !opening.length) return undefined;
   return [
     '增强质量模式：以下是当前网页已有的标题、章节标题和开头片段，仅作为理解本页主题与术语的只读上下文，不要翻译或复述这些上下文。',
     '结合上下文理解当前片段中的缩写、术语和指代；同一术语在本页保持一致。仍以当前待翻译片段为准，不得根据上下文补充原文没有的信息。',
@@ -706,7 +706,10 @@ async function runTranslationPipeline(
         ? 4
         : 2;
   const siteAwareGlossary = withSiteDocumentTerms(glossary, finalUrl);
-  const pageGlossary = withWebQualityContext(siteAwareGlossary, title, blocks, qualityMode);
+  // A single chunk already contains the complete short page; extra context would only repeat tokens.
+  const pageGlossary = chunks.length > 1
+    ? withWebQualityContext(siteAwareGlossary, title, blocks, qualityMode)
+    : siteAwareGlossary;
 
   const translations = await translateChunksWithRetry(
     service,
