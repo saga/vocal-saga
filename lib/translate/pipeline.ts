@@ -106,7 +106,7 @@ export function withSiteDocumentTerms(
  */
 export type WebTranslationQualityMode = 'fast' | 'enhanced';
 
-function buildWebQualityInstructions(
+export function buildWebQualityInstructions(
   title: string,
   blocks: TextBlock[],
 ): string | undefined {
@@ -133,7 +133,7 @@ function buildWebQualityInstructions(
   ].join('\\n');
 }
 
-function withWebQualityContext(
+export function withWebQualityContext(
   glossary: Glossary | undefined,
   title: string,
   blocks: TextBlock[],
