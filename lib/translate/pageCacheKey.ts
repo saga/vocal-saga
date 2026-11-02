@@ -42,8 +42,8 @@ export function buildPageCacheFingerprint(
   const context = JSON.stringify({
     provider: provider || 'deepseek',
     promptStyle: promptStyle || 'default',
-    // Page translation no longer runs the literary/document workflow.
-    translationMode: 'technical',
+    // Keep this helper profile-aware; webpage routes normalize legacy modes to technical.
+    translationMode: translationMode || 'technical',
     qualityMode: qualityMode === 'enhanced' ? 'enhanced' : 'fast',
     model: model || 'provider-default',
     promptRevision: TRANSLATION_PROMPT_REVISION,
