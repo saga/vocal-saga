@@ -15,9 +15,11 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 
 // mock 必须在被测模块 import 之前 —— mock 掉 DeepSeek service 的 HTTP 调用
+const mockState = vi.hoisted(() => ({ translateCalls: 0 }));
 vi.mock('../lib/translate/service/deepseek', () => ({
   DeepSeekTranslationService: class {
     async translate(jsonContent: string) {
+      mockState.translateCalls++;
       const blocks = JSON.parse(jsonContent) as Array<{ id: string; text: string }>;
       return JSON.stringify(
         blocks.map((b) => ({ id: b.id, translated_text: `${b.text} [zh]` })),
@@ -163,6 +165,19 @@ describe('translateUrl — end-to-end with linkedom', () => {
     expect(result.html).toContain('fanyi-bilingual-styles');
     expect(result.blocks).toBeGreaterThan(0);
     expect(result.chunks).toBeGreaterThan(0);
+  }, 10_000);
+
+  it('does not run literary entity analysis or a second-pass reviewer for legacy literary flags', async () => {
+    mockState.translateCalls = 0;
+    const result = await translateUrl({
+      url: `${baseUrl}/`,
+      ssrfGuard: localGuard,
+      translationMode: 'literary',
+    });
+
+    // One normal provider call per chunk; no page-context analysis or full-page Reviewer call.
+    expect(mockState.translateCalls).toBe(result.chunks);
+    expect(result.html).toContain('[zh]');
   }, 10_000);
 
   it('injects <base href> when none exists', async () => {
