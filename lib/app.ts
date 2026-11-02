@@ -810,11 +810,13 @@ ${pager}
     const target = c.req.query('target') || 'zh';
     const provider = c.req.query('provider') || 'deepseek';
     const promptStyle = c.req.query('promptStyle') || 'default';
-    const translationMode: TranslationMode = c.req.query('translationMode') === 'literary' ? 'literary' : 'technical';
+    // Cloud webpage translation is always technical; literary workflows stay local/document-only.
+    const translationMode: TranslationMode = 'technical';
+    const qualityMode = c.req.query('qualityMode') === 'enhanced' ? 'enhanced' : 'fast';
     // 客户端内容指纹与服务端当前的翻译配置/站点规则共同决定缓存是否可复用。
     const clientContentHash = c.req.query('contentHash');
     const expectedContentHash = clientContentHash
-      ? buildPageCacheFingerprint(clientContentHash, url, provider, promptStyle, translationMode)
+      ? buildPageCacheFingerprint(clientContentHash, url, provider, promptStyle, translationMode, undefined, qualityMode)
       : null;
 
     const VALID_LANG_RE = /^(auto|[a-zA-Z]{2,3})(-[a-zA-Z]{2,3})?$/;
@@ -907,7 +909,10 @@ ${pager}
 
     // 翻译文风：从 body 读取，不传时下游默认 'default'（向后兼容）
     const promptStyle = body.promptStyle as PromptStyle | undefined;
-    const translationMode: TranslationMode = body.translationMode === 'literary' ? 'literary' : 'technical';
+    // Legacy clients may still send translationMode=literary; the remote web API
+    // intentionally keeps this route lightweight and never invokes literary review.
+    const translationMode: TranslationMode = 'technical';
+    const qualityMode = body.qualityMode === 'enhanced' ? 'enhanced' : 'fast';
 
     // provider 字段统一命名（扩展端 / 服务端一致），避免与 TranslationService 类混淆
     const provider = body.provider || c.req.query('provider') || 'deepseek';
@@ -932,7 +937,7 @@ ${pager}
     // JS 的 string.length 是 UTF-16 code unit 数，不是网络传输字节数。同时记录字符数和 UTF-8 字节数，
     // 以便排查大页面请求；这里不设置应用层 HTML 大小上限。
     const htmlUtf8Bytes = new TextEncoder().encode(html).byteLength;
-    console.log(`[fanyi/page] url=${url} src=${sourceStored} tgt=${targetStored} mode=${mode} provider=${provider} htmlChars=${html.length} htmlUtf8Bytes=${htmlUtf8Bytes} client=${clientLabel} sid=${sid}`);
+    console.log(`[fanyi/page] url=${url} src=${sourceStored} tgt=${targetStored} mode=${mode} provider=${provider} quality=${qualityMode} htmlChars=${html.length} htmlUtf8Bytes=${htmlUtf8Bytes} client=${clientLabel} sid=${sid}`);
 
     // ── D1 缓存：同 URL+source+target 已存在且 content_hash 匹配则直接返回 ──
     // content_hash 的语义是「这份缓存的 block id 映射是否仍然有效」：
@@ -949,7 +954,7 @@ ${pager}
       typeof body.contentHash === 'string' && body.contentHash.length > 0
         ? body.contentHash
         : String(simpleHash(html));
-    const contentHash = buildPageCacheFingerprint(clientContentHash, url, provider, promptStyle, translationMode);
+    const contentHash = buildPageCacheFingerprint(clientContentHash, url, provider, promptStyle, translationMode, undefined, qualityMode);
     const db = (c.env as any)?.DB999;
     const cacheKey = cacheKeyUrl(url);
     if (db) {
@@ -1001,6 +1006,7 @@ ${pager}
         apiKey,
         promptStyle,
         translationMode,
+        qualityMode,
       });
 
       // 翻译 0 个 block → 不缓存 D1，直接返回错误
