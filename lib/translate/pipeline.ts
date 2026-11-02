@@ -407,7 +407,6 @@ export async function translateText(input: TranslateTextInput): Promise<Translat
     input.promptStyle,
     false,
     input.translationMode,
-    input.qualityMode ?? 'fast',
   );
 
   return {
