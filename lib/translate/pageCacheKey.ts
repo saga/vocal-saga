@@ -2,7 +2,7 @@ import { simpleHash } from './cacheKey';
 import { matchSiteRule } from './rules';
 
 // Bump whenever shared translation contracts, style prompts, or review instructions change.
-export const TRANSLATION_PROMPT_REVISION = 'web-translation-prompts-2026-10-23-r4';
+export const TRANSLATION_PROMPT_REVISION = 'web-translation-prompts-2026-11-03-r5';
 
 /**
  * 用于 /fanyi/page 的整页缓存指纹。
@@ -18,6 +18,7 @@ export function buildPageCacheFingerprint(
   promptStyle?: string,
   translationMode?: string,
   model?: string,
+  qualityMode?: string,
 ): string {
   const rule = matchSiteRule(pageUrl)?.siteRule;
   const ruleContext = rule
@@ -41,7 +42,9 @@ export function buildPageCacheFingerprint(
   const context = JSON.stringify({
     provider: provider || 'deepseek',
     promptStyle: promptStyle || 'default',
-    translationMode: translationMode || 'technical',
+    // Page translation no longer runs the literary/document workflow.
+    translationMode: 'technical',
+    qualityMode: qualityMode === 'enhanced' ? 'enhanced' : 'fast',
     model: model || 'provider-default',
     promptRevision: TRANSLATION_PROMPT_REVISION,
     rule: ruleContext,
