@@ -22,10 +22,10 @@ A user-facing checkbox in the browser extension opts a remote webpage request in
 
 Enhanced mode reuses only information already extracted from the page:
 - page title;
-- up to eight headings;
-- the first two paragraph snippets, each bounded to 180 characters.
+- up to four headings, each bounded to 80 characters;
+- the first paragraph, bounded to 160 characters.
 
-This compact context is attached to the existing translation prompt. It helps disambiguate the page topic and maintain terminology across chunks. It does not trigger a context-analysis model, a Reviewer, a style review, or a repair pass. No separate LLM call is added.
+This compact context is attached to the existing translation prompt only when the page spans multiple chunks; a single chunk already contains the whole short page and needs no repeated context. It helps disambiguate the page topic and maintain terminology across chunks. It does not trigger a context-analysis model, a Reviewer, a style review, or a repair pass. No separate LLM call is added.
 
 ### Explicitly excluded from the Worker
 
@@ -53,7 +53,7 @@ These remain local document-translation capabilities only.
 - [x] Send `qualityMode` on both cache-check and translation requests.
 - [x] Enforce the technical/lightweight pipeline on the remote webpage route.
 - [x] Remove the web-page literary entity-analysis and second-pass Reviewer path.
-- [x] Add bounded, deterministic page context for Enhanced mode without an extra model call.
+- [x] Add bounded, deterministic page context for multi-chunk Enhanced mode without an extra model call.
 - [x] Separate page cache entries by quality mode and bump the prompt revision.
 - [x] Add focused tests for quality-context construction and cache separation.
 - [ ] Run the full Worker and extension test/typecheck/build suites in CI and inspect their results.
