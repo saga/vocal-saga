@@ -84,6 +84,7 @@ async function executeAgentChat(req: Request, res: Response): Promise<void> {
   const systemPrompt = [
     systemMessage?.content || 'You are a helpful assistant.',
     skillInstructions ? 'The following server-managed Agent Skills are active. Follow their instructions when relevant.\n\n' + skillInstructions : '',
+    body.jsonMode === true ? 'Return only a valid JSON object. Do not wrap it in Markdown fences or add explanatory text.' : '',
   ].filter(Boolean).join('\n\n');
   const latest = conversation.pop();
   if (!latest || latest.role !== 'user') { sendApiError(res, 400, '最后一条消息必须是 user 消息'); return; }
