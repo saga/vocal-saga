@@ -147,7 +147,8 @@ export function createD1FailoverDatabase(databases: any[]): any | undefined {
           return {
             first: () => execute(sql, args, 'first'),
             all: () => execute(sql, args, 'all'),
-            run: () => execute(sql, args, 'run'),
+            // ID-based cache refresh must stay on the primary DB: IDs can collide across databases.
+            run: async () => databases[0].prepare(sql).bind(...args).run(),
           };
         },
         first: () => execute(sql, [], 'first'),
