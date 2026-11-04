@@ -643,7 +643,8 @@ ${pager}
     const pageStr = c.req.param('page');
     const page = parseInt(pageStr, 10);
     if (!Number.isFinite(page) || page < 1) return c.notFound();
-    const db = (c.env as any)?.DB999;
+    const dbDatabases = getD1Databases(c.env);
+    const db = createD1FailoverDatabase(dbDatabases);
     const { rows, total } = await fetchListPage(db, page);
     return renderListPage(page, rows, total);
   });
@@ -652,7 +653,8 @@ ${pager}
   app.get('/article/:id', async (c) => {
     const id = c.req.param('id');
     if (!/^\d+$/.test(id)) return c.notFound();
-    const db = (c.env as any)?.DB999;
+    const dbDatabases = getD1Databases(c.env);
+    const db = createD1FailoverDatabase(dbDatabases);
     if (!db) return c.json({ error: 'D1 not available' }, 500);
     try {
       const row: any = await db.prepare(
@@ -825,7 +827,8 @@ ${pager}
     const sourceStored = source && VALID_LANG_RE.test(source) ? source : 'en';
     const targetStored = VALID_LANG_RE.test(target) ? target : 'zh';
 
-    const db = (c.env as any)?.DB999;
+    const dbDatabases = getD1Databases(c.env);
+    const db = createD1FailoverDatabase(dbDatabases);
     if (db) {
       try {
         // 按 url+lang 取最新一条，在代码中比对 content_hash
@@ -957,7 +960,8 @@ ${pager}
         ? body.contentHash
         : String(simpleHash(html));
     const contentHash = buildPageCacheFingerprint(clientContentHash, url, provider, promptStyle, translationMode, undefined, qualityMode);
-    const db = (c.env as any)?.DB999;
+    const dbDatabases = getD1Databases(c.env);
+    const db = createD1FailoverDatabase(dbDatabases);
     const cacheKey = cacheKeyUrl(url);
     if (db) {
       try {
@@ -1378,7 +1382,8 @@ ${pager}
 
     // A URL result is reusable only when provider/model/style/mode/site rules/prompt revision match.
     // The previous empty content_hash allowed every provider and style to overwrite the same D1 row.
-    const db = (c.env as any)?.DB999;
+    const dbDatabases = getD1Databases(c.env);
+    const db = createD1FailoverDatabase(dbDatabases);
     const cacheKey = cacheKeyUrl(url);
     const contentHash = buildPageCacheFingerprint('url-direct-v1', url, provider, promptStyle, translationMode, model);
     // 缓存行提升到 try 之外：源站抓取失败（403 / 超时）时用它兜底返回旧译文，
@@ -1442,7 +1447,7 @@ ${pager}
         const htmlBytes = utf8ByteLength(result.html);
         try {
           await savePageTranslation(
-            db,
+            dbDatabases,
             {
               url: cacheKey,
               title: result.title || '',
