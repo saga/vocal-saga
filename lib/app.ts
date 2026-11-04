@@ -66,7 +66,7 @@ import type { ParsedDocument } from './translate/document';
 import { hasDocumentRoot, validateTranslationCompleteness } from './translate/translationValidator';
 import { simpleHash } from './translate/cacheKey';
 import { buildPageCacheFingerprint } from './translate/pageCacheKey';
-import { savePageTranslation, describeD1Error, utf8ByteLength } from './translate/pageStore';
+import { savePageTranslation, describeD1Error, utf8ByteLength, getD1Databases, createD1FailoverDatabase } from './translate/pageStore';
 import type { PromptStyle, TranslationMode } from './translate/service/shared';
 import { setDefaultStorage, type StorageAdapter } from './storage';
 import { requireAuth } from './auth';
@@ -631,7 +631,8 @@ ${pager}
 
   // ── GET / — 首页，渲染第 1 页 ────────────────────────
   app.get('/', async (c) => {
-    const db = (c.env as any)?.DB999;
+    const dbDatabases = getD1Databases(c.env);
+     const db = createD1FailoverDatabase(dbDatabases);
     const { rows, total } = await fetchListPage(db, 1);
     return renderListPage(1, rows, total);
   });
@@ -1027,7 +1028,7 @@ ${pager}
         const htmlBytes = utf8ByteLength(result.html);
         try {
           await savePageTranslation(
-            db,
+            dbDatabases,
             {
               url: cacheKey,
               title: result.title || '',
