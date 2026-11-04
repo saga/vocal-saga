@@ -360,7 +360,7 @@
       "method": "POST",
       "path": "/api/agent/chat",
       "source": "src/agentChatRoutes.ts",
-      "signature": "url.pathname === '/api/agent/chat'"
+      "signature": "url.pathname !== '/api/agent/chat'"
     }
   ]
 }
