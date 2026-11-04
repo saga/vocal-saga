@@ -211,6 +211,8 @@ describe('GET /translate/<target> — D1 save error surfacing', () => {
         return {
           all: async () => ({ results: [], success: true }),
           first: async () => null,
+          // 无参数执行（CREATE TABLE / PRAGMA 引导语句）。
+          run: async () => ({ results: [], success: true }),
           bind: (..._args: any[]) => ({
             run: async () => {
               if (sql.trim().startsWith('INSERT') && insertError) {
@@ -274,6 +276,8 @@ describe('GET /translate/<target> — stale D1 fallback on fetch failure', () =>
       prepare: (sql: string) => ({
         all: async () => ({ results: [], success: true }),
         first: async () => null,
+        // 无参数执行（CREATE TABLE / PRAGMA 引导语句）。
+        run: async () => ({ results: [], success: true }),
         bind: () => ({
           run: async () => ({ results: [], success: true }),
           // SELECT 命中旧行；INSERT/其他查询返回 null
@@ -315,6 +319,8 @@ describe('GET /translate/<target> — stale D1 fallback on fetch failure', () =>
       prepare: () => ({
         all: async () => ({ results: [], success: true }),
         first: async () => null,
+        // 无参数执行（CREATE TABLE / PRAGMA 引导语句）。
+        run: async () => ({ results: [], success: true }),
         bind: () => ({
           run: async () => ({ results: [], success: true }),
           first: async () => null,

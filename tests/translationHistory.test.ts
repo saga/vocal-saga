@@ -33,6 +33,13 @@ function createMockDb() {
     prepare: (_sql: string) => {
       const sql = _sql;
       return {
+        // 建表检查：返回空列表表示 translations 尚不存在，schema 引导会走 CREATE TABLE。
+        all: async () => {
+          if (/PRAGMA\s+table_info/i.test(sql)) return { results: [], success: true };
+          return { results: rows, success: true };
+        },
+        // 无参数执行（CREATE TABLE / PRAGMA 引导语句）。
+        run: async () => ({ results: rows, success: true }),
         bind: (...args: any[]) => ({
           run: async () => {
             if (sql.trim().startsWith('INSERT')) {

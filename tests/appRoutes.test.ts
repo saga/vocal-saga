@@ -86,6 +86,10 @@ function createMockDb() {
       // 无 bind 的查询（如 COUNT(*)、全量列表）
       const unbound = {
         all: async () => {
+          // 建表检查：返回空列表表示 translations 尚不存在，schema 引导会走 CREATE TABLE。
+          if (/PRAGMA\s+table_info/i.test(sql)) {
+            return { results: [], success: true };
+          }
           if (/COUNT\(\*\)/i.test(sql)) {
             return { results: [{ total: rows.length }], success: true };
           }
@@ -97,6 +101,8 @@ function createMockDb() {
           }
           return null;
         },
+        // 无参数执行（CREATE TABLE / PRAGMA 引导语句）。
+        run: async () => ({ results: [], success: true }),
       };
       return {
         ...unbound,
@@ -883,10 +889,70 @@ describe('分页列表', () => {
     expect(html).toContain('href="/page/3"');
   });
 
+  /** 按显式 id / createdAt 造记录，便于验证跨库合并顺序与来源链接。 */
+  function seedExplicit(db: any, items: Array<{ id: number; title: string; created_at?: string; body?: string }>) {
+    for (const item of items) {
+      db._rows.push({
+        id: item.id,
+        url: `https://example.com/post-${item.id}`,
+        title: item.title,
+        source_lang: 'en',
+        target_lang: 'zh',
+        html: '<html><head><link rel="stylesheet" href="/s.css"></head><body>' +
+          (item.body || 'body') + '<span class="fanyi-translation">译文</span></body></html>',
+        created_at: item.created_at || '2026-01-01T00:00:00.000Z',
+      });
+    }
+  }
 
+  it('首页合并主库与备用库的记录', async () => {
+    const app = buildApp();
+    const primary = createMockDb();
+    const fallback = createMockDb();
+    seedExplicit(primary, [{ id: 1, title: 'Primary recent', created_at: '2026-03-02T00:00:00.000Z' }]);
+    seedExplicit(fallback, [{ id: 1, title: 'Fallback legacy', created_at: '2026-03-01T00:00:00.000Z' }]);
 
+    const res = await app.request(req('/'), {}, { SW998: primary, DB999: fallback });
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain('Primary recent');
+    expect(html).toContain('Fallback legacy');
+    // 总数是两库之和，分页才不会被截断
+    expect(html).toContain('1 / 1');
+  });
 
+  it('备用库的记录链接带上来源库参数', async () => {
+    const app = buildApp();
+    const primary = createMockDb();
+    const fallback = createMockDb();
+    seedExplicit(primary, [{ id: 1, title: 'Primary recent', created_at: '2026-03-02T00:00:00.000Z' }]);
+    seedExplicit(fallback, [{ id: 1, title: 'Fallback legacy', created_at: '2026-03-01T00:00:00.000Z' }]);
 
+    const res = await app.request(req('/'), {}, { SW998: primary, DB999: fallback });
+    const html = await res.text();
+    // 两库 id 都是 1，备用库那条必须能指向自己的库
+    expect(html).toContain('href="/article/1?db=2"');
+    expect(html).toContain('href="/article/1"');
+  });
+
+  it('GET /article/:id?db=2 命中备用库同号记录', async () => {
+    const app = buildApp();
+    const primary = createMockDb();
+    const fallback = createMockDb();
+    // 两个库都有 id=1，但内容不同——这正是需要来源参数的场景
+    seedExplicit(primary, [{ id: 1, title: 'Primary', body: 'primary-body' }]);
+    seedExplicit(fallback, [{ id: 1, title: 'Fallback', body: 'fallback-body' }]);
+    const env = { SW998: primary, DB999: fallback };
+
+    const scoped = await app.request(req('/article/1?db=2'), {}, env);
+    expect(scoped.status).toBe(200);
+    expect(await scoped.text()).toContain('fallback-body');
+
+    // 不带来源参数时仍按主库优先，返回主库那条
+    const unscoped = await app.request(req('/article/1'), {}, env);
+    expect(unscoped.status).toBe(200);
+    expect(await unscoped.text()).toContain('primary-body');
+  });
 
 });
 

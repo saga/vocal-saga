@@ -561,8 +561,11 @@ export function createApp(env?: Record<string, unknown>, storage?: StorageAdapte
     const items = rows.map((r: any) => {
       const url = `${r.url}`;
       const displayTitle = r.title || r.url;
+      // 两个 D1 的 id 各自自增，同一个数字在两边是不同文章；备用库的记录必须带上来源参数，
+      // 否则 /article/:id 会落到主库同号记录上。主库保持不带参数，历史链接形态不变。
+      const articleHref = Number(r.dbIndex) > 1 ? `/article/${r.id}?db=${r.dbIndex}` : `/article/${r.id}`;
       return `<li style="margin-bottom:16px;line-height:1.6">
-        <a href="/article/${r.id}" style="font-size:16px;text-decoration:none;color:#2563eb;font-weight:500">${escapeHtml(displayTitle)}</a>
+        <a href="${articleHref}" style="font-size:16px;text-decoration:none;color:#2563eb;font-weight:500">${escapeHtml(displayTitle)}</a>
         <br><a href="${url}" target="_blank" rel="noopener" style="color:#9ca3af;font-size:12px;text-decoration:none">${r.url}</a>
       </li>`;
     }).join('\n');
@@ -606,34 +609,56 @@ ${pager}
   }
 
   /**
-   * 从 D1 查询指定页的记录 + 总数。
-   * 返回 { rows, total }，查询失败时 rows 为空数组。
+   * 列表行排序：两个 D1 的 id 各自自增，跨库不可比，先按 created_at 倒序，
+   * 同一时刻再用 id 兜底，保证同一批写入的顺序稳定。
    */
-  async function fetchListPage(db: any, page: number): Promise<{ rows: any[]; total: number }> {
-    if (!db) return { rows: [], total: 0 };
+  function compareListRows(a: any, b: any): number {
+    const byTime = String(b.created_at || '').localeCompare(String(a.created_at || ''));
+    if (byTime !== 0) return byTime;
+    return Number(b.id) - Number(a.id);
+  }
+
+  /**
+   * 跨库合并取一页记录。
+   *
+   * 不能只查主库：备用库里是加主库之前的历史译文，主库一旦有数据，
+   * 单库查询就再也返回不到它们。每个库先各取「offset + PAGE_SIZE」条，
+   * 合并排序后再切出目标页，否则第 N 页的边界会算错。
+   *
+   * 单库部署（只有 DB999）时行为与逐库查询一致。
+   */
+  async function fetchListPage(databases: any[], page: number): Promise<{ rows: any[]; total: number }> {
+    const targets = databases.filter(Boolean);
+    if (!targets.length) return { rows: [], total: 0 };
     const offset = (page - 1) * PAGE_SIZE;
-    try {
-      const [dataResult, countResult] = await Promise.all([
-        db.prepare(
-          'SELECT id, url, title, source_lang, target_lang FROM translations ORDER BY id DESC LIMIT ? OFFSET ?'
-        ).bind(PAGE_SIZE, offset).all(),
-        db.prepare('SELECT COUNT(*) as total FROM translations').first(),
-      ]);
-      return {
-        rows: dataResult.results || [],
-        total: countResult?.total || 0,
-      };
-    } catch (e) {
-      console.error('[D1] list error:', e);
-      return { rows: [], total: 0 };
-    }
+    const limit = offset + PAGE_SIZE;
+    const perDatabase = await Promise.all(targets.map(async (db, index) => {
+      try {
+        const [dataResult, countResult] = await Promise.all([
+          db.prepare(
+            'SELECT id, url, title, source_lang, target_lang, created_at FROM translations ' +
+            'ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?'
+          ).bind(limit, 0).all(),
+          db.prepare('SELECT COUNT(*) as total FROM translations').first(),
+        ]);
+        // dbIndex 从 1 开始，与 getD1Databases 的顺序一致，供详情链接回查来源库。
+        const rows = (dataResult?.results || []).map((row: any) => ({ ...row, dbIndex: index + 1 }));
+        return { rows, total: Number(countResult?.total || 0) };
+      } catch (e) {
+        console.error('[D1] list error:', e);
+        return { rows: [], total: 0 };
+      }
+    }));
+    const merged = perDatabase.flatMap((item) => item.rows).sort(compareListRows);
+    return {
+      rows: merged.slice(offset, offset + PAGE_SIZE),
+      total: perDatabase.reduce((sum, item) => sum + item.total, 0),
+    };
   }
 
   // ── GET / — 首页，渲染第 1 页 ────────────────────────
   app.get('/', async (c) => {
-    const dbDatabases = getD1Databases(c.env);
-     const db = createD1FailoverDatabase(dbDatabases);
-    const { rows, total } = await fetchListPage(db, 1);
+    const { rows, total } = await fetchListPage(getD1Databases(c.env), 1);
     return renderListPage(1, rows, total);
   });
 
@@ -643,9 +668,7 @@ ${pager}
     const pageStr = c.req.param('page');
     const page = parseInt(pageStr, 10);
     if (!Number.isFinite(page) || page < 1) return c.notFound();
-    const dbDatabases = getD1Databases(c.env);
-    const db = createD1FailoverDatabase(dbDatabases);
-    const { rows, total } = await fetchListPage(db, page);
+    const { rows, total } = await fetchListPage(getD1Databases(c.env), page);
     return renderListPage(page, rows, total);
   });
 
@@ -654,7 +677,12 @@ ${pager}
     const id = c.req.param('id');
     if (!/^\d+$/.test(id)) return c.notFound();
     const dbDatabases = getD1Databases(c.env);
-    const db = createD1FailoverDatabase(dbDatabases);
+    // ?db=N 指定来源库：两个库的 id 各自自增，同一个数字在两边是不同文章。
+    // 列表页为备用库的记录带上这个参数；不带则沿用主库优先的故障转移查询。
+    const requestedDb = Number(c.req.query('db'));
+    const db = Number.isInteger(requestedDb) && requestedDb >= 1 && requestedDb <= dbDatabases.length
+      ? dbDatabases[requestedDb - 1]
+      : createD1FailoverDatabase(dbDatabases);
     if (!db) return c.json({ error: 'D1 not available' }, 500);
     try {
       const row: any = await db.prepare(
