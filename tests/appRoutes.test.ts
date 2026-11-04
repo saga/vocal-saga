@@ -108,6 +108,12 @@ function createMockDb() {
         ...unbound,
         bind: (...args: any[]) => ({
           run: async () => {
+            if (sql.trim().startsWith('DELETE')) {
+              const before = rows.length;
+              const idx = rows.findIndex((r) => r.id === Number(args[0]));
+              if (idx >= 0) rows.splice(idx, 1);
+              return { results: [], success: true, meta: { changes: before - rows.length } };
+            }
             if (sql.trim().startsWith('INSERT')) {
               // 测试钩子：模拟 D1 save 失败（如 schema 不匹配、UNIQUE 冲突等）
               if (db._insertError) {
@@ -954,6 +960,118 @@ describe('分页列表', () => {
     expect(await unscoped.text()).toContain('primary-body');
   });
 
+});
+
+// ─── DELETE /api/translations/:id ───────────────────────────
+describe('DELETE /api/translations/:id — 记录删除', () => {
+  const AUTH = { Authorization: 'Bearer test-auth-key-123456' };
+
+  function seed(db: any, id: number, title: string) {
+    db._rows.push({
+      id,
+      url: `https://example.com/post-${id}`,
+      title,
+      source_lang: 'en',
+      target_lang: 'zh',
+      html: '<html><head><link rel="stylesheet" href="/s.css"></head><body>body<span class="fanyi-translation">译文</span></body></html>',
+      created_at: '2026-01-01T00:00:00.000Z',
+    });
+  }
+
+  function del(path: string, headers: Record<string, string> = AUTH): Request {
+    return req(path, { method: 'DELETE', headers });
+  }
+
+  it('列表页每条记录带删除按钮，并标明来源库', async () => {
+    const primary = createMockDb();
+    const fallback = createMockDb();
+    seed(primary, 1, 'Primary');
+    seed(fallback, 7, 'Fallback');
+
+    const app = buildApp();
+    const res = await app.request(req('/'), {}, { SW998: primary, DB999: fallback });
+    const html = await res.text();
+    expect(res.status).toBe(200);
+    expect(html).toContain('data-delete-id="1" data-delete-db="1"');
+    expect(html).toContain('data-delete-id="7" data-delete-db="2"');
+    expect(html).toContain('库 2');
+    expect(html).toContain('/api/translations/');
+  });
+
+  it('未携带或携带错误的管理密钥时拒绝删除', async () => {
+    const db = createMockDb();
+    seed(db, 1, 'Keep me');
+    const app = buildApp();
+    const env = envWithDb(db);
+
+    const anonymous = await app.request(del('/api/translations/1', {}), {}, env);
+    expect(anonymous.status).toBe(401);
+    const wrong = await app.request(
+      del('/api/translations/1', { Authorization: 'Bearer wrong-key' }), {}, env,
+    );
+    expect(wrong.status).toBe(401);
+    const crossSite = await app.request(
+      del('/api/translations/1', { ...AUTH, Origin: 'https://evil.example' }), {}, env,
+    );
+    expect(crossSite.status).toBe(403);
+    expect(db._rows).toHaveLength(1);
+  });
+
+  it('本站页面发起的删除不受跨域限制影响', async () => {
+    const db = createMockDb();
+    seed(db, 1, 'Same origin');
+    const app = buildApp();
+    const res = await app.request(
+      del('/api/translations/1', { ...AUTH, Origin: 'http://test' }), {}, envWithDb(db),
+    );
+    expect(res.status).toBe(200);
+    expect(db._rows).toHaveLength(0);
+  });
+
+  it('携带正确密钥后从数据库删除记录', async () => {
+    const db = createMockDb();
+    seed(db, 1, 'Gone');
+    seed(db, 2, 'Stay');
+    const app = buildApp();
+    const env = envWithDb(db);
+
+    const res = await app.request(del('/api/translations/1'), {}, env);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: true, id: 1, db: 1, deleted: 1 });
+    expect(db._rows.map((r: any) => r.id)).toEqual([2]);
+
+    const list = await app.request(req('/'), {}, env);
+    const html = await list.text();
+    expect(html).not.toContain('Gone');
+    expect(html).toContain('Stay');
+  });
+
+  it('按来源库删除，不误删主库同号记录', async () => {
+    const primary = createMockDb();
+    const fallback = createMockDb();
+    seed(primary, 1, 'Primary');
+    seed(fallback, 1, 'Fallback');
+    const env = { SW998: primary, DB999: fallback };
+
+    const app = buildApp();
+    const res = await app.request(del('/api/translations/1?db=2'), {}, env);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ db: 2, deleted: 1 });
+    expect(fallback._rows).toHaveLength(0);
+    expect(primary._rows).toHaveLength(1);
+  });
+
+  it('非法 id / 越界库序号 / 不存在的记录都不改动数据', async () => {
+    const db = createMockDb();
+    seed(db, 1, 'Only');
+    const app = buildApp();
+    const env = envWithDb(db);
+
+    expect((await app.request(del('/api/translations/abc'), {}, env)).status).toBe(400);
+    expect((await app.request(del('/api/translations/1?db=9'), {}, env)).status).toBe(400);
+    expect((await app.request(del('/api/translations/999'), {}, env)).status).toBe(404);
+    expect(db._rows).toHaveLength(1);
+  });
 });
 
 // ─── GET /translate/:target ─────────────────────────────────

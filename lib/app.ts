@@ -563,10 +563,13 @@ export function createApp(env?: Record<string, unknown>, storage?: StorageAdapte
       const displayTitle = r.title || r.url;
       // 两个 D1 的 id 各自自增，同一个数字在两边是不同文章；备用库的记录必须带上来源参数，
       // 否则 /article/:id 会落到主库同号记录上。主库保持不带参数，历史链接形态不变。
-      const articleHref = Number(r.dbIndex) > 1 ? `/article/${r.id}?db=${r.dbIndex}` : `/article/${r.id}`;
+      const dbIndex = Number(r.dbIndex) > 1 ? Number(r.dbIndex) : 1;
+      const articleHref = dbIndex > 1 ? `/article/${r.id}?db=${dbIndex}` : `/article/${r.id}`;
+      const sourceTag = dbIndex > 1 ? `<span class="src">库 ${dbIndex}</span>` : '';
       return `<li style="margin-bottom:16px;line-height:1.6">
-        <a href="${articleHref}" style="font-size:16px;text-decoration:none;color:#2563eb;font-weight:500">${escapeHtml(displayTitle)}</a>
-        <br><a href="${url}" target="_blank" rel="noopener" style="color:#9ca3af;font-size:12px;text-decoration:none">${r.url}</a>
+        <a href="${articleHref}" style="font-size:16px;text-decoration:none;color:#2563eb;font-weight:500">${escapeHtml(displayTitle)}</a>${sourceTag}
+        <br><a href="${escapeHtml(url)}" target="_blank" rel="noopener" style="color:#9ca3af;font-size:12px;text-decoration:none">${escapeHtml(url)}</a>
+        <button type="button" class="del" data-delete-id="${escapeHtml(String(r.id))}" data-delete-db="${dbIndex}" data-delete-title="${escapeHtml(displayTitle)}">删除</button>
       </li>`;
     }).join('\n');
 
@@ -593,12 +596,82 @@ export function createApp(env?: Record<string, unknown>, storage?: StorageAdapte
   ul { list-style: none; padding: 0; }
   a:hover { text-decoration: underline !important; }
   .empty { color: #9ca3af; font-size: 15px; }
+  .src { margin-left:8px; font-size:11px; color:#9ca3af; background:#f3f4f6; padding:2px 6px; border-radius:4px; }
+  .del { margin-left:10px; font-size:12px; color:#dc2626; background:none; border:1px solid #fecaca; border-radius:4px; padding:2px 8px; cursor:pointer; }
+  .del:hover { background:#fef2f2; }
+  .del:disabled { opacity:.5; cursor:default; }
+  .tools { margin-top:32px; font-size:12px; }
+  .tools button { color:#9ca3af; background:none; border:none; padding:0; cursor:pointer; text-decoration:underline; }
 </style>
 </head>
 <body>
 <h1>翻译记录</h1>
 ${items ? `<ul>${items}</ul>` : '<p class="empty">暂无翻译记录</p>'}
 ${pager}
+<div class="tools"><button type="button" id="set-admin-key">设置管理密钥</button></div>
+<script>
+(function () {
+  var STORAGE_KEY = 'vocal-saga:admin-key';
+  function readKey() {
+    try {
+      var saved = sessionStorage.getItem(STORAGE_KEY);
+      if (saved) return saved;
+    } catch (e) {}
+    var key = window.prompt('请输入管理密钥（AUTH_KEY）');
+    if (!key) return null;
+    try { sessionStorage.setItem(STORAGE_KEY, key); } catch (e) {}
+    return key;
+  }
+  function removeKey() {
+    try { sessionStorage.removeItem(STORAGE_KEY); } catch (e) {}
+  }
+  function deleteRow(button) {
+    var id = button.getAttribute('data-delete-id');
+    var dbIndex = button.getAttribute('data-delete-db') || '1';
+    var title = button.getAttribute('data-delete-title') || ('#' + id);
+    if (!window.confirm('确定删除「' + title + '」这条翻译记录吗？删除后无法恢复。')) return;
+    var key = readKey();
+    if (!key) return;
+    button.disabled = true;
+    fetch('/api/translations/' + encodeURIComponent(id) + '?db=' + encodeURIComponent(dbIndex), {
+      method: 'DELETE',
+      headers: { 'Authorization': 'Bearer ' + key }
+    }).then(function (res) {
+      if (res.status === 401) {
+        removeKey();
+        throw new Error('管理密钥不正确，已清除，请重试。');
+      }
+      return res.json().then(function (body) {
+        if (!res.ok) throw new Error(body && body.error ? body.error : ('删除失败（HTTP ' + res.status + '）'));
+        return body;
+      });
+    }).then(function () {
+      window.location.reload();
+    }).catch(function (err) {
+      window.alert(err && err.message ? err.message : String(err));
+      button.disabled = false;
+    });
+  }
+  document.addEventListener('click', function (event) {
+    var target = event.target;
+    if (!target || typeof target.closest !== 'function') return;
+    var button = target.closest('button[data-delete-id]');
+    if (button) { deleteRow(button); return; }
+    if (target.closest('#set-admin-key')) {
+      // 不把已存的密钥预填进 prompt，避免明文回显。
+      var hasKey = false;
+      try { hasKey = Boolean(sessionStorage.getItem(STORAGE_KEY)); } catch (e) {}
+      var key = window.prompt(hasKey ? '已设置管理密钥；输入新值覆盖，留空清除：' : '设置管理密钥：', '');
+      if (key === null) return;
+      if (key.trim()) {
+        try { sessionStorage.setItem(STORAGE_KEY, key.trim()); } catch (e) {}
+      } else {
+        removeKey();
+      }
+    }
+  });
+})();
+</script>
 </body>
 </html>`;
 
@@ -722,6 +795,42 @@ ${pager}
       return c.json({ error: 'cached translation is corrupted' }, 500);
     } catch (e) {
       console.error('[D1] fetch error:', e);
+      return c.json({ error: (e as Error).message }, 500);
+    }
+  });
+
+  /**
+   * DELETE /api/translations/:id —— 删除一条翻译记录。
+   *
+   * 必须指定来源库：两个 D1 的 id 各自自增，同一个数字在主库和备用库是不同文章，
+   * 不带 ?db=N 的故障转移查询会删到主库的同号记录。列表页已把 dbIndex 写进按钮。
+   * 删除走 AUTH_KEY 鉴权，密钥由浏览器在管理操作时临时提供，不写进列表页 HTML。
+   */
+  app.delete('/api/translations/:id', requireAuth, async (c) => {
+    // 全局 cors() 放开了跨域读取，但删除只允许本站页面发起；浏览器 fetch 必带 Origin，
+    // 命令行调用不带 Origin 时仍由 AUTH_KEY 把关。
+    const origin = c.req.header('origin');
+    if (origin && origin !== new URL(c.req.url).origin) {
+      return c.json({ error: 'cross-origin delete denied' }, 403);
+    }
+    const idText = c.req.param('id');
+    if (!/^\d+$/.test(idText)) return c.json({ error: 'invalid id' }, 400);
+    const databases = getD1Databases(c.env);
+    const dbIndex = Number(c.req.query('db') ?? '1');
+    if (!Number.isInteger(dbIndex) || dbIndex < 1 || dbIndex > databases.length) {
+      return c.json({ error: 'invalid database index' }, 400);
+    }
+    const db = databases[dbIndex - 1];
+    try {
+      const result: any = await db.prepare('DELETE FROM translations WHERE id = ?')
+        .bind(Number(idText)).run();
+      // D1 的 run() 返回 meta.changes；保留 changes 兜底以兼容绑定代理。
+      const deleted = Number(result?.meta?.changes ?? result?.changes ?? 0);
+      console.log(`[D1] delete translation id=${idText} db=${dbIndex} deleted=${deleted}`);
+      if (deleted < 1) return c.json({ error: 'translation not found' }, 404);
+      return c.json({ ok: true, id: Number(idText), db: dbIndex, deleted });
+    } catch (e) {
+      console.error('[D1] delete error:', e);
       return c.json({ error: (e as Error).message }, 500);
     }
   });
