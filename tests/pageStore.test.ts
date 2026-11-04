@@ -112,6 +112,34 @@ describe('savePageTranslation', () => {
     expect(db.runs).toHaveLength(0);
   });
 
+  it('主库 SW998 写入成功时不触碰备用库 DB999', async () => {
+    const primary = createFakeDb([undefined]);
+    const fallback = createFakeDb([undefined]);
+    await savePageTranslation([primary, fallback], baseRow, { sleep });
+    expect(primary.runs).toHaveLength(1);
+    expect(fallback.runs).toHaveLength(0);
+  });
+
+  it('主库最终失败后才写入备用库 DB999', async () => {
+    const primary = createFakeDb([new Error('D1_ERROR: table translations has no column named content_hash')]);
+    const fallback = createFakeDb([undefined]);
+    await savePageTranslation([primary, fallback], baseRow, { sleep });
+    expect(primary.runs).toHaveLength(0);
+    expect(fallback.runs).toHaveLength(1);
+  });
+
+  it('主库暂时性错误先完成重试，仍失败才切换备用库', async () => {
+    const primary = createFakeDb([
+      new Error('D1_ERROR: Network connection lost.'),
+      new Error('D1_ERROR: Network connection lost.'),
+      new Error('D1_ERROR: Network connection lost.'),
+    ]);
+    const fallback = createFakeDb([undefined]);
+    await savePageTranslation([primary, fallback], baseRow, { sleep });
+    expect(primary.runs).toHaveLength(0);
+    expect(fallback.runs).toHaveLength(1);
+  });
+
   it('没有数据库时直接返回', async () => {
     await expect(savePageTranslation(null, baseRow, { sleep })).resolves.toBeUndefined();
   });
