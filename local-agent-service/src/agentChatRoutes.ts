@@ -21,7 +21,7 @@ export function handleAgentChatRequest(req: Request, res: Response, url: URL): b
     sendJson(res, 200, {
       providers: [
         { id: 'workbuddy', label: 'Workbuddy', defaultModel: DEFAULT_WORKBUDDY_MODEL, models: catalog.map((item) => ({ id: item.id, credits: item.credits, maxInputTokens: item.maxInputTokens, contextWindow: item.contextWindow })) },
-        { id: 'opencode', label: 'OpenCode', defaultModel: DEFAULT_OPENCODE_MODEL, models: [] },
+        { id: 'opencode', label: 'OpenCode', defaultModel: DEFAULT_OPENCODE_MODEL, models: (process.env.LOCAL_OPENCODE_MODELS || '').split(',').map((id) => id.trim()).filter(Boolean).map((id) => ({ id })) },
       ],
       defaultProvider: DEFAULT_PROVIDER === 'opencode' ? 'opencode' : 'workbuddy',
       thinkingModes: ['disabled', 'adaptive', 'enabled'],
