@@ -12,7 +12,7 @@
   ],
   "x-contract-coverage": {
     "status": "partial",
-    "routeCount": 56,
+    "routeCount": 59,
     "detailedPaths": [
       "/api/documents/projects/{projectId}/runs",
       "/api/documents/projects/{projectId}/runs/{runId}/resume",
@@ -2322,6 +2322,106 @@
           },
           "409": {
             "description": "Profile is missing, stale, or lacks valid evidence"
+          }
+        }
+      }
+    },
+    "/api/agent/capabilities": {
+      "get": {
+        "operationId": "get_api_agent_capabilities",
+        "summary": "List local Agent providers, models and reasoning capabilities",
+        "x-route-contract-level": "inventory-only",
+        "x-implementation-source": "src/agentChatRoutes.ts",
+        "x-implementation-signature": "url.pathname === '/api/agent/capabilities'",
+        "responses": {
+          "200": {
+            "description": "Successful response; endpoint-specific response schema not yet documented.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenericSuccess"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "502": {
+            "$ref": "#/components/responses/ApiError"
+          }
+        }
+      }
+    },
+    "/api/agent/skills": {
+      "get": {
+        "operationId": "get_api_agent_skills",
+        "summary": "List server-managed Agent Skills",
+        "x-route-contract-level": "inventory-only",
+        "x-implementation-source": "src/agentChatRoutes.ts",
+        "x-implementation-signature": "url.pathname === '/api/agent/skills'",
+        "responses": {
+          "200": {
+            "description": "Successful response; endpoint-specific response schema not yet documented.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenericSuccess"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "502": {
+            "$ref": "#/components/responses/ApiError"
+          }
+        }
+      }
+    },
+    "/api/agent/chat": {
+      "post": {
+        "operationId": "post_api_agent_chat",
+        "summary": "Run a standalone local Agent conversation",
+        "x-route-contract-level": "inventory-only",
+        "x-implementation-source": "src/agentChatRoutes.ts",
+        "x-implementation-signature": "url.pathname === '/api/agent/chat'",
+        "responses": {
+          "200": {
+            "description": "Successful response; endpoint-specific response schema not yet documented.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenericSuccess"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError"
+          },
+          "502": {
+            "$ref": "#/components/responses/ApiError"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenericSuccess"
+              }
+            }
           }
         }
       }
