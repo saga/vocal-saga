@@ -666,3 +666,16 @@ prepareHtmlForServer 时在 clone 上把 `link[rel=stylesheet]` 替换为
 - 片段的 `id`、`kind`、`level`、`marker`、`page`、`contextPath` 在客户端和服务端保持一致。章节路径、列表标记及页码作为只读元数据使用，不进入译文正文。
 - 只有所有预期 ID 都有非空译文时 `complete` 才为 true。服务端会重试一次缺失片段；仍缺失时返回 `missingSegmentIds`，扩展保留已完成结果并允许只重试缺失片段。
 - 当前 PDF parser 会告警扫描件/低文本页；本次没有接入 OCR 引擎，不能把无文本层的页面报告成已识别。
+
+---
+### 网页翻译的 CSS 快照与请求通道（扩展端独有，2026-11）
+
+- CSS 快照在浏览器上下文生成，服务端只做 Reader fallback。单张样式表上限由扩展的
+  `src/entrypoints/utils/cssSnapshotLimits.ts` 统一给 background 与 content script，
+  避免 512 KiB 硬上限误杀站点主样式表（smithsonianmag 约 607 KiB）。
+  `@import ... layer(name)` 展开成 `@layer` 块；`supports()` 条件仍标记 partial 并保留原 link。
+- content script 的跨源 fetch 遵循所在页面的 CORS/CSP（Chrome 85+ 起）。带
+  `connect-src 'self'` 的页面会在请求发出前抛 `Failed to fetch`，服务端完全收不到请求，
+  **因此这类失败不会出现在 Worker 日志里**。直连失败时扩展通过 `proxyServerFetch`
+  改由 background 重试一次，重试仍失败才向用户报错。服务端无需为此改动。
+- 快照 partial 只是显示层降级，不会阻断翻译；缓存页样式缺失与翻译失败是两条独立链路。
