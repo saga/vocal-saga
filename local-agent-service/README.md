@@ -8,6 +8,17 @@
 这是 vocal-saga 中独立的本机 Express + TypeScript Provider，供 fanyi-extension 使用。 默认优先 Workbuddy/CodeBuddy SDK；OpenCode 保留为可选运行时。它把 OpenAI-compatible Chat Completions 请求转交给本机 Workbuddy（@tencent-ai/agent-sdk）或 OpenCode CLI，并使用 Node 内置 SQLite 记录本机请求历史。扩展启用本机 Provider 后，网页翻译、文档翻译、侧栏对话以及 EPUB/PDF 的文学分析和 Reviewer 都走这个本机进程。
 
 
+## 独立通用 Agent 对话（不进入文档翻译 Pipeline）
+
+本服务同时提供独立的通用 Agent 对话能力，供网页对话等交互使用。它与 Document Project / Translation Run 完全分离：不创建文档项目、不解析文档、不执行翻译、Reviewer 或 Context Graph 流程。
+
+- `GET /api/agent/capabilities`：返回 Workbuddy/OpenCode Provider、默认模型、Workbuddy 模型元数据、思考模式与强度选项。
+- `GET /api/agent/skills`：列出 `local-agent-service/skills/*/SKILL.md` 中由服务端管理的 Agent Skills。
+- `POST /api/agent/chat`：一次独立的多轮对话请求。请求显式指定 provider、model、thinkingMode、effort、skillIds 和 messages；服务端读取所选 Skill 正文并注入 Agent 指令，然后调用统一 Workbuddy/OpenCode Runtime。
+- Skill ID 是服务端目录标识；客户端不能上传 Skill 正文或传入任意文件路径。一次最多选择 8 个 Skill，单个 Skill 正文最多 60,000 字符。
+- Workbuddy 使用 CodeBuddy SDK 的 thinking/effort 设置；OpenCode 使用 CLI model variant 映射思考强度。模型 ID 可由调用方显式指定；空值表示使用 Runtime 默认模型。
+- 此 API 使用本机服务现有鉴权、Host/CORS 校验与请求日志，不复用文档项目表或翻译 Run 状态。
+
 ## WorkBuddy / CodeBuddy context-window 档位
 
 上下文窗口配置是**可选覆盖**，不更改现有默认行为。没有在 task profile 中指定 `contextWindow` 时，继续使用模型本身的 `defaultLength`，或 CLI 既有默认值。
