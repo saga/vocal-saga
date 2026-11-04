@@ -138,3 +138,11 @@
 - 保留原文版本、语言方向、来源绑定、未来章节隔离、译文写回位置和数据完整性等硬约束。只有缺少不可替代输入、数据损坏或执行无法继续等技术异常才暂停。
 - 自动应用必须保留来源与版本记录，且不得覆盖用户修改；用户可以事后修改或拒绝。
 - 任何旧段落中要求“候选必须人工确认”“证据完整后才能启用”“风格字段必须齐全”的规则均已被本节取代。
+
+
+## Standalone Agent Chat Boundary
+
+- Browser/webpage chat uses `GET /api/agent/capabilities`, `GET /api/agent/skills` and `POST /api/agent/chat`.
+- This general-purpose chat API must remain independent of Document Project / Translation Run / literary translation and review workflows. Do not create a fake document project to execute ordinary chat.
+- Agent Skills are owned by `local-agent-service/skills`. The extension sends Skill IDs only; the service resolves and reads the corresponding `SKILL.md`. Never accept client-provided Skill paths or Skill bodies.
+- Keep provider, model, thinking mode, effort and selected Skill IDs explicit in each request. Workbuddy and OpenCode use the shared Runtime adapters, but provider-specific reasoning controls must be mapped by the service.

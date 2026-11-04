@@ -343,6 +343,24 @@
       "path": "/api/documents/projects/{projectId}/literary-memory/chinese-editorial-profile/review",
       "source": "src/documents/projectRoutes.ts",
       "signature": "pathParts[5] === 'chinese-editorial-profile' && pathParts[6] === 'review' && method === 'POST'"
+    },
+    {
+      "method": "GET",
+      "path": "/api/agent/capabilities",
+      "source": "src/agentChatRoutes.ts",
+      "signature": "url.pathname === '/api/agent/capabilities'"
+    },
+    {
+      "method": "GET",
+      "path": "/api/agent/skills",
+      "source": "src/agentChatRoutes.ts",
+      "signature": "url.pathname === '/api/agent/skills'"
+    },
+    {
+      "method": "POST",
+      "path": "/api/agent/chat",
+      "source": "src/agentChatRoutes.ts",
+      "signature": "url.pathname !== '/api/agent/chat'"
     }
   ]
 }

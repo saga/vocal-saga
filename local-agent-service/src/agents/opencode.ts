@@ -32,7 +32,7 @@ export function buildOpenCodeConfig() {
  * 通过 spawn 调用 opencode CLI 执行一次翻译请求，解析其 JSON 事件流提取文本答案。
  * 超时/非零退出/无输出时 reject；stderr 保留末尾 8000 字符用于错误诊断。
  */
-export function runOpenCode(agent: { provider: string; model: string }, prompt: string, systemPrompt: string, timeoutMs = REQUEST_TIMEOUT_MS): Promise<string> {
+export function runOpenCode(agent: { provider: string; model: string }, prompt: string, systemPrompt: string, timeoutMs = REQUEST_TIMEOUT_MS, variant?: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const fullPrompt = [
       systemPrompt ? 'SYSTEM INSTRUCTIONS:\n' + systemPrompt : '',
@@ -40,6 +40,7 @@ export function runOpenCode(agent: { provider: string; model: string }, prompt: 
     ].filter(Boolean).join('\n\n');
     const args = ['run', '--format', 'json'];
     if (agent.model) args.push('--model', agent.model);
+    if (variant && /^[a-zA-Z0-9_-]{1,40}$/.test(variant)) args.push('--variant', variant);
     args.push('--dir', WORK_DIR, '--agent', 'fanyi-local-translation', '--auto', fullPrompt);
     const child = spawn('opencode', args, {
       cwd: WORK_DIR,

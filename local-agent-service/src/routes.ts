@@ -19,6 +19,7 @@ import { db as database } from './db.ts';
 import { sendApiError } from './middleware.ts';
 import { handleDocumentProjectRequest } from './documents/projectRoutes.ts';
 import { handleApiPreflight, handleLocalApiRoutes } from './localApiRoutes.ts';
+import { handleAgentChatRequest } from './agentChatRoutes.ts';
 import { handleLongTaskRequest, isSupportedLongTask } from './longTaskRoutes.ts';
 
 // 保留这个常量引用，免得 TypeScript 在测试里把这个无副作用的导入消掉。
@@ -38,6 +39,8 @@ export async function handleRequest(req: Request, res: Response): Promise<void> 
 
   // 文档项目 API 优先委托给 projectRoutes：持久化/Run 生命周期由其处理，本函数不重复实现。
   if (await handleDocumentProjectRequest(req, res, url)) return;
+
+  if (handleAgentChatRequest(req, res, url)) return;
 
   if (await handleLocalApiRoutes(req, res, url, db)) return;
 

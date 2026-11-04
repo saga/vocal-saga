@@ -20,6 +20,9 @@ npm run deploy
 
 ## Endpoints
 
+The Cloud API also exposes `POST /api/v1/chat/completions` for authenticated remote-model conversations. The browser extension's remote chat uses this endpoint; local Workbuddy/OpenCode chat is handled separately by `local-agent-service`.
+
+
 | Path | 说明 |
 |------|------|
 | `/translate/<url>` | 翻译页面（浏览器直访） |

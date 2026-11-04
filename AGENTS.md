@@ -196,3 +196,10 @@ Prompt and tuning decisions must be task-specific. Short cloud requests should n
 3. Share API contracts and reusable domain concepts where useful, but keep runtime-specific orchestration, prompts, resource controls, persistence, and tests separate.
 4. A change to task routing, Prompt versions, context assembly, caching, output validation, cancellation, or recovery requires regression tests appropriate to the affected runtime.
 5. Keep documentation synchronized. Root `AGENTS.md` describes the Cloud/Local boundary; `local-agent-service/AGENTS.md` governs implementation inside the local service; `fanyi-extension/AGENTS.md` governs browser UI and delegation.\n6. The reader page and Agent Workspace must delegate to the same local Document Project/Run executor; UI entry points may choose a scope, but may not fork the translation pipeline or duplicate context-memory merge logic.
+
+
+## Agent Chat Routing
+
+- Remote browser chat must use the Vocal Saga Cloud API `/api/v1/chat/completions`, not call a model provider directly from the extension.
+- Local Workbuddy/OpenCode chat belongs to `local-agent-service` through its standalone `/api/agent/chat` API. It must not be routed through the document translation Pipeline.
+- Agent Skills remain server-managed by `local-agent-service`; the extension only selects server-returned Skill IDs.

@@ -11,12 +11,32 @@
 | 持久化与状态机 | `src/documents/projectStore.ts:DocumentProjectStore` | 来源/Prompt/记忆版本、Run 与片段状态、候选/已采纳译文、事件轨迹、审计快照 |
 | 翻译编排 | `src/documents/translationAgent.ts:executeRun`、`translateBatch` | 切批、并发预算、停止边界、模型重试、审校、候选写入和最终 Run 状态 |
 | 模型执行适配 | `src/agents/runner.ts:runAgent`、`runAgentStructured` | 将任务路由给 Workbuddy 或 OpenCode，统一结构化输出入口与日志 |
+| 通用 Agent 对话与 Skills | `src/agentChatRoutes.ts:handleAgentChatRequest`、`src/agentSkills.ts` | 独立多轮对话、Provider/模型/思考参数与服务端 Skill 发现/加载；不进入文档翻译 Pipeline |
 | 文档抽取 | `src/documents/ingest.ts:parseDocumentFile` | 将原始文件转成带稳定 ID、章节路径和结构元数据的 Source Segment |
 | 确定性原文索引 | `src/documents/bookScan.ts:scanBookSegmentsConcurrent`、`planBookSamples` | 并发构建词项/对白/重复表达/数量等特征，按证据分布制定抽样计划；不把词面统计当作事实 |
 | 文学上下文图谱 | `src/documents/contextGraph.ts:startContextGraphAnalysis`、`runAnalysis`、`buildProjectContextGraphBundle` | 异步预分析、证据校验、图谱持久化，并按当前批次时间边界构建局部图谱 |
 | 动态记忆合并 | `src/documents/translationContextDelta.ts:validateTranslationContextDelta`、`mergeTranslationContextDeltasIntoMemory` | 校验当前批次给出的证据与译文落点，合并为后续 wave 可见的候选记忆 |
 | 人物声音 | `src/documents/voiceContext.ts:buildProjectVoiceContext` | 从当前文本、可见前文及有证据的对白锚点检索相关角色与关系规则 |
 | 质量审计 | `src/documents/qualityAudit.ts:runProjectQualityAudit`、`createQualityRepairRun` | 确定性检查、汇总 Reviewer 发现、生成新返工 Run；不自动覆盖已采纳译文 |
+
+
+## 2A. 独立通用 Agent 对话
+
+侧栏普通网页对话由 `src/agentChatRoutes.ts` 处理，与文档项目路由并列，不会调用 `translationAgent.ts`。
+
+```mermaid
+flowchart TD
+    A[Extension side-panel] --> B{chatBackend}
+    B -- remote --> C[Vocal Saga Cloud /api/v1/chat/completions]
+    B -- workbuddy / opencode --> D[local-agent-service /api/agent/chat]
+    D --> E[loadAgentSkills: server skills directory]
+    E --> F[runAgent]
+    F --> G[Workbuddy SDK / OpenCode CLI]
+    C --> H[assistant response]
+    G --> H
+```
+
+能力发现使用 `GET /api/agent/capabilities` 和 `GET /api/agent/skills`；对话请求通过 `POST /api/agent/chat` 提交 provider、model、thinkingMode、effort、skillIds 与多轮 messages。Skill 正文只从服务端 `local-agent-service/skills` 读取，扩展只保存 Skill ID。该 API 使用本机服务现有鉴权与来源/Host 校验，但不创建 Document Project、Run、TranslationBrief 或文学分析任务。
 
 ## 2. 服务启动与请求分发
 

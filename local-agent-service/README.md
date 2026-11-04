@@ -5,8 +5,19 @@
 > 文学翻译全书预处理门禁：[ADR-0005](../docs/adr/0005-literary-preprocessing-before-translation.md)（扩展正常路径前置检查 + executeRun 服务端最终门禁；queued Run 不代表翻译已开始）。
 
 
-这是 vocal-saga 中独立的本机 Express + TypeScript Provider，供 fanyi-extension 使用。 默认优先 Workbuddy/CodeBuddy SDK；OpenCode 保留为可选运行时。它把 OpenAI-compatible Chat Completions 请求转交给本机 Workbuddy（@tencent-ai/agent-sdk）或 OpenCode CLI，并使用 Node 内置 SQLite 记录本机请求历史。扩展启用本机 Provider 后，网页翻译、文档翻译、侧栏对话以及 EPUB/PDF 的文学分析和 Reviewer 都走这个本机进程。
+这是 vocal-saga 中独立的本机 Express + TypeScript Provider，供 fanyi-extension 使用。 默认优先 Workbuddy/CodeBuddy SDK；OpenCode 保留为可选运行时。它把 OpenAI-compatible Chat Completions 请求转交给本机 Workbuddy（@tencent-ai/agent-sdk）或 OpenCode CLI，并使用 Node 内置 SQLite 记录本机请求历史。扩展启用本机翻译 Provider 后，网页翻译、文档翻译以及 EPUB/PDF 的文学分析和 Reviewer 走这个本机进程；侧栏对话有独立后端选择，可单独使用远端 Vocal Saga Cloud 或本机 Workbuddy/OpenCode。
 
+
+## 独立通用 Agent 对话（不进入文档翻译 Pipeline）
+
+本服务同时提供独立的通用 Agent 对话能力，供网页对话等交互使用。它与 Document Project / Translation Run 完全分离：不创建文档项目、不解析文档、不执行翻译、Reviewer 或 Context Graph 流程。
+
+- `GET /api/agent/capabilities`：返回 Workbuddy/OpenCode Provider、默认模型、Workbuddy 模型元数据、思考模式与强度选项。
+- `GET /api/agent/skills`：列出 `local-agent-service/skills/*/SKILL.md` 中由服务端管理的 Agent Skills。
+- `POST /api/agent/chat`：一次独立的多轮对话请求。请求显式指定 provider、model、thinkingMode、effort、skillIds 和 messages；服务端读取所选 Skill 正文并注入 Agent 指令，然后调用统一 Workbuddy/OpenCode Runtime。
+- Skill ID 是服务端目录标识；客户端不能上传 Skill 正文或传入任意文件路径。一次最多选择 8 个 Skill，单个 Skill 正文最多 60,000 字符。
+- Workbuddy 使用 CodeBuddy SDK 的 thinking/effort 设置；OpenCode 使用 CLI model variant 映射思考强度。模型 ID 可由调用方显式指定；空值表示使用 Runtime 默认模型。
+- 此 API 使用本机服务现有鉴权、Host/CORS 校验与请求日志，不复用文档项目表或翻译 Run 状态。
 
 ## WorkBuddy / CodeBuddy context-window 档位
 
@@ -124,7 +135,7 @@ npm run diagnose:translation -- \\
 
 该脚本只读当前来源版本的已采纳译文、Run 固定的 LiteraryMemory、保存的 TranslationBrief、实际发送给模型的片段和规范名遮罩事件。它会同时检查 `entities` 与“人物角色/声音”中**已确认且启用翻译**的规范名，显示批次实际注入的名称映射、规范名冲突、原文/译文中的目标人物命中，以及译文是否残留指定英文词。它不自动修改译文，也不调用模型。没有给出 `--run-id` 时最多检查最近 6 次运行；输出报告含有限长度的原文/译文摘录，分享前请检查敏感信息。
 
-本机模式是强制 Provider 路由，不是“本机优先、失败切远程”：翻译、侧栏对话、文学分析或审校的本机模型调用失败时会返回明确错误；扩展不会因此向 DeepSeek 或远程 Vocal Saga 重试。文档批次规划遇到服务不可用时使用的只是扩展端确定性 CPU 算法，不会发送模型/API 请求；阅读状态持久化失败也只影响恢复副本，不会改变翻译 Provider。
+本机翻译模式是强制 Provider 路由，不是“本机优先、失败切远程”：翻译、文学分析或审校的本机模型调用失败时会返回明确错误；扩展不会因此向 DeepSeek 或远程 Vocal Saga 重试。侧栏对话按独立 chatBackend 设置选择执行后端，也不会因失败静默切换到另一端。文档批次规划遇到服务不可用时使用的只是扩展端确定性 CPU 算法，不会发送模型/API 请求；阅读状态持久化失败也只影响恢复副本，不会改变翻译 Provider。
 
 ## 配置 fanyi-extension
 
