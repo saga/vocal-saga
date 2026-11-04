@@ -2392,7 +2392,7 @@
         "summary": "Run a standalone local Agent conversation",
         "x-route-contract-level": "inventory-only",
         "x-implementation-source": "src/agentChatRoutes.ts",
-        "x-implementation-signature": "url.pathname === '/api/agent/chat'",
+        "x-implementation-signature": "url.pathname !== '/api/agent/chat'",
         "responses": {
           "200": {
             "description": "Successful response; endpoint-specific response schema not yet documented.",
