@@ -7,6 +7,7 @@ function responseStub() {
     statusCode: 200,
     body: undefined,
     status(code) { this.statusCode = code; return this; },
+    set() { return this; },
     json(value) { this.body = value; return this; },
   };
 }
