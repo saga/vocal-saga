@@ -187,6 +187,7 @@ describe('ensurePageTranslationSchema', () => {
     const batchSql: string[] = [];
     const db: any = {
       prepare: (sql: string) => ({
+        sql,
         all: async () => {
           if (sql.includes('PRAGMA table_info')) {
             return { results: ['id', 'url', 'title', 'source_lang', 'target_lang', 'html', 'created_at'].map(name => ({ name })) };
