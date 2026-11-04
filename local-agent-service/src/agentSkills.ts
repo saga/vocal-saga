@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 
 const SKILLS_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../skills');
 const MAX_SKILL_CHARS = 60_000;
+const MAX_TOTAL_SKILL_CHARS = 100_000;
 
 export interface AgentSkillSummary {
   id: string;
@@ -70,11 +71,14 @@ export function loadAgentSkills(ids: unknown): Array<{ skill: AgentSkillSummary;
     throw new Error('skills 必须是最多 8 个 Skill ID 的数组');
   }
   const available = new Map(listAgentSkills().map((skill) => [skill.id, skill]));
+  let totalChars = 0;
   return [...new Set(ids as string[])].map((id) => {
     const skill = available.get(id);
     if (!skill) throw new Error('服务端不存在 Agent Skill：' + id);
     const source = readFileSync(skillFile(id), 'utf8');
     if (source.length > MAX_SKILL_CHARS) throw new Error('Agent Skill 内容超过 60,000 字符：' + id);
+    totalChars += source.length;
+    if (totalChars > MAX_TOTAL_SKILL_CHARS) throw new Error('所选 Agent Skills 总内容超过 100,000 字符，请减少 Skill 数量');
     return { skill, content: source };
   });
 }
