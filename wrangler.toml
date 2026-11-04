@@ -40,16 +40,17 @@ binding = "ASSETS"
 CLOUDFLARE_ACCOUNT_ID = "d74f37dea530584239cd3b7830def5a9"
 
 # ── D1 数据库（翻译结果持久化）─────────────────────────────
-# 创建：wrangler d1 create vocal-saga
-# 迁移：wrangler d1 execute vocal-saga --file=db/schema.sql
+# 写入顺序由 lib/translate/pageStore.ts 控制：SW998（swdb998）优先，
+# 只有主库写入最终失败时才尝试 DB999（备用库）。
+# 两个数据库都必须应用 db/schema.sql 及 db/migrations 中的迁移。
+[[d1_databases]]
+binding = "SW998"
+database_id = "47d9e2f6-5bc0-46f7-9ff4-533a4e1076a1"
+
 [[d1_databases]]
 binding = "DB999"
 database_name = "vocal-saga"
 database_id = "58a00769-d518-40cd-a7d0-b123030a4dc2"
-
-[[d1_databases]]
-binding = "SW998"
-database_id = "47d9e2f6-5bc0-46f7-9ff4-533a4e1076a1"
 
 # ── 秘密环境变量（不进仓，必须用 secret 命令注入）──────────
 # DEEPSEEK_API_KEY
