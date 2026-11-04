@@ -10,9 +10,9 @@ test('Agent Skills are discovered from the server-side skills directory', () => 
 
 test('selected Agent Skill content is loaded by server-owned ID', () => {
   const skills = listAgentSkills();
-  const selected = loadAgentSkills([skills[0]!.id]);
+  const selected = loadAgentSkills([skills[0].id]);
   assert.equal(selected.length, 1);
-  assert.ok(selected[0]!.content.length > 0);
+  assert.ok(selected[0].content.length > 0);
 });
 
 test('Agent Skill loader rejects path traversal and unknown IDs', () => {
