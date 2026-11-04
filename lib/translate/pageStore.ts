@@ -106,36 +106,103 @@ const UPSERT_SQL = `
  *
  * UPSERT 本身幂等，重复写入只会刷新 created_at，因此重试是安全的。
  */
+
+/** SW998 (swdb998) 为主库，DB999 为备用库。 */
+export function getD1Databases(env: any): any[] {
+  const candidates = [env?.SW998, env?.DB999].filter(Boolean);
+  return candidates.filter((db, index) => candidates.indexOf(db) === index);
+}
+
+/**
+ * 查询按主库优先；主库查询失败或无结果时读取备用库。
+ * 页面 UPSERT 请直接调用 savePageTranslation(getD1Databases(env), row)。
+ */
+export function createD1FailoverDatabase(databases: any[]): any | undefined {
+  if (!databases.length) return undefined;
+
+  const execute = async (sql: string, args: any[], method: 'first' | 'all' | 'run') => {
+    let lastError: unknown;
+    let lastResult: any;
+    for (const db of databases) {
+      try {
+        const statement = db.prepare(sql).bind(...args);
+        const result = await statement[method]();
+        lastResult = result;
+        if (method === 'first' && result == null) continue;
+        if (method === 'all' && (!result?.results || result.results.length === 0)) continue;
+        return result;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    if (lastResult !== undefined) return lastResult;
+    if (lastError) throw lastError;
+    return method === 'all' ? { results: [] } : null;
+  };
+
+  return {
+    prepare(sql: string) {
+      return {
+        bind(...args: any[]) {
+          return {
+            first: () => execute(sql, args, 'first'),
+            all: () => execute(sql, args, 'all'),
+            run: () => execute(sql, args, 'run'),
+          };
+        },
+        first: () => execute(sql, [], 'first'),
+        all: () => execute(sql, [], 'all'),
+      };
+    },
+  };
+}
+
 export async function savePageTranslation(
-  db: any,
+  db: any | any[],
   row: PageTranslationRow,
   options: SavePageTranslationOptions = {},
 ): Promise<void> {
-  if (!db) return;
+
+  const databases = (Array.isArray(db) ? db : [db]).filter(Boolean);
+  if (!databases.length) return;
 
   const retries = Math.max(0, options.retries ?? 2);
   const baseDelayMs = Math.max(0, options.baseDelayMs ?? 200);
   const sleep = options.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
 
   let lastError: unknown;
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    try {
-      await db
-        .prepare(UPSERT_SQL)
-        .bind(row.url, row.title || '', row.sourceLang, row.targetLang, row.html, row.contentHash)
-        .run();
-      return;
-    } catch (error) {
-      lastError = error;
-      const transient = isTransientD1Error(error);
-      const willRetry = transient && attempt < retries;
-      options.onAttemptError?.(error, attempt + 1, willRetry);
-      if (!willRetry) break;
-      await sleep(baseDelayMs * Math.pow(2, attempt));
+  let globalAttempt = 0;
+
+  // 主库先完成全部暂时性重试；最终失败后才进入备用库。
+  for (let databaseIndex = 0; databaseIndex < databases.length; databaseIndex++) {
+    const currentDb = databases[databaseIndex];
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      globalAttempt++;
+      try {
+        await currentDb
+          .prepare(UPSERT_SQL)
+          .bind(row.url, row.title || '', row.sourceLang, row.targetLang, row.html, row.contentHash)
+          .run();
+        if (databaseIndex > 0) {
+          console.warn('[D1] primary database failed; translation saved to fallback database #' + (databaseIndex + 1));
+        }
+        return;
+      } catch (error) {
+        lastError = error;
+        const transient = isTransientD1Error(error);
+        const willRetry = transient && attempt < retries;
+        options.onAttemptError?.(error, globalAttempt, willRetry || databaseIndex < databases.length - 1);
+        if (!willRetry) break;
+        await sleep(baseDelayMs * Math.pow(2, attempt));
+      }
+    }
+    if (databaseIndex < databases.length - 1) {
+      console.warn('[D1] database #' + (databaseIndex + 1) + ' exhausted; trying fallback database #' + (databaseIndex + 2) + ': ' + describeD1Error(lastError));
     }
   }
 
   throw lastError;
+
 }
 
 /** 按 UTF-8 计算 HTML 字节数，用于日志和 D1 行大小预警。 */
