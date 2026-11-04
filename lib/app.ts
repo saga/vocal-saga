@@ -66,6 +66,7 @@ import type { ParsedDocument } from './translate/document';
 import { hasDocumentRoot, validateTranslationCompleteness } from './translate/translationValidator';
 import { simpleHash } from './translate/cacheKey';
 import { buildPageCacheFingerprint } from './translate/pageCacheKey';
+import { savePageTranslation, describeD1Error, utf8ByteLength } from './translate/pageStore';
 import type { PromptStyle, TranslationMode } from './translate/service/shared';
 import { setDefaultStorage, type StorageAdapter } from './storage';
 import { requireAuth } from './auth';
@@ -528,7 +529,7 @@ export function createApp(env?: Record<string, unknown>, storage?: StorageAdapte
       '<summary style="padding:6px 10px;font-size:12px;line-height:1.4;cursor:pointer;' +
       'background:#fef3c7;color:#92400e;border:1px solid #f59e0b;border-radius:4px;' +
       'box-shadow:0 2px 8px rgba(0,0,0,0.15);list-style:none;">' +
-      '译文已生成，但服务端缓存失败（点击折叠）' +
+      '译文已生成，但保存失败（翻译记录里不会出现这条，点击折叠）' +
       '</summary>' +
       '<div style="margin-top:4px;padding:6px 10px;font-size:11px;line-height:1.5;' +
       'background:#fffbeb;color:#78350f;border:1px solid #fde68a;border-radius:4px;' +
@@ -1023,19 +1024,30 @@ ${pager}
       // 否则前端拿不到任何信号、下次访问会重复翻译却无人察觉
       let saveError: string | null = null;
       if (db) {
+        const htmlBytes = utf8ByteLength(result.html);
         try {
-          await db.prepare(`
-            INSERT INTO translations (url, title, source_lang, target_lang, html, content_hash)
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(url, source_lang, target_lang, content_hash)
-            DO UPDATE SET
-              title = excluded.title,
-              html = excluded.html,
-              created_at = CURRENT_TIMESTAMP
-          `).bind(cacheKey, result.title || '', sourceStored, targetStored, result.html, contentHash).run();
+          await savePageTranslation(
+            db,
+            {
+              url: cacheKey,
+              title: result.title || '',
+              sourceLang: sourceStored,
+              targetLang: targetStored,
+              html: result.html,
+              contentHash,
+            },
+            {
+              onAttemptError: (error, attempt, willRetry) => {
+                console.error(
+                  `[D1] save attempt ${attempt} failed for ${url} sid=${sid} htmlBytes=${htmlBytes} ` +
+                    `willRetry=${willRetry}: ${describeD1Error(error)}`,
+                );
+              },
+            },
+          );
         } catch (e) {
-          saveError = (e as Error)?.message || String(e);
-          console.error('[D1] save error:', e);
+          saveError = describeD1Error(e) || 'D1 write failed';
+          console.error(`[D1] save failed for ${url} sid=${sid} htmlBytes=${htmlBytes}: ${saveError}`);
         }
       }
 
@@ -1426,19 +1438,30 @@ ${pager}
       // 否则用户直访该 URL 时无法察觉缓存失效、每次访问都重复翻译
       let saveError: string | null = null;
       if (db) {
+        const htmlBytes = utf8ByteLength(result.html);
         try {
-          await db.prepare(`
-            INSERT INTO translations (url, title, source_lang, target_lang, html, content_hash)
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(url, source_lang, target_lang, content_hash)
-            DO UPDATE SET
-              title = excluded.title,
-              html = excluded.html,
-              created_at = CURRENT_TIMESTAMP
-          `).bind(cacheKey, result.title || '', sourceStored, targetStored, result.html, contentHash).run();
+          await savePageTranslation(
+            db,
+            {
+              url: cacheKey,
+              title: result.title || '',
+              sourceLang: sourceStored,
+              targetLang: targetStored,
+              html: result.html,
+              contentHash,
+            },
+            {
+              onAttemptError: (error, attempt, willRetry) => {
+                console.error(
+                  `[D1] save attempt ${attempt} failed for ${url} htmlBytes=${htmlBytes} ` +
+                    `willRetry=${willRetry}: ${describeD1Error(error)}`,
+                );
+              },
+            },
+          );
         } catch (e) {
-          saveError = (e as Error)?.message || String(e);
-          console.error('[D1] save error:', e);
+          saveError = describeD1Error(e) || 'D1 write failed';
+          console.error(`[D1] save failed for ${url} htmlBytes=${htmlBytes}: ${saveError}`);
         }
       }
       const finalHtml = saveError

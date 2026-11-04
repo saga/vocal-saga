@@ -820,7 +820,7 @@ describe('POST /fanyi/page', () => {
     const html = await res.text();
     // HTML 包含可见警告条，让直访用户也能看到
     expect(html).toContain('data-vs-save-warning');
-    expect(html).toContain('译文已生成，但服务端缓存失败');
+    expect(html).toContain('译文已生成，但保存失败');
     // 错误信息在 HTML 中可见（且不会被原样注入为 HTML 标签）
     expect(html).toContain('content_hash');
     // 翻译内容仍然返回

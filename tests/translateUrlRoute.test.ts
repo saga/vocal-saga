@@ -240,7 +240,7 @@ describe('GET /translate/<target> — D1 save error surfacing', () => {
     const html = await res.text();
     // HTML 包含可见警告条
     expect(html).toContain('data-vs-save-warning');
-    expect(html).toContain('译文已生成，但服务端缓存失败');
+    expect(html).toContain('译文已生成，但保存失败');
     // 翻译内容仍然返回
     expect(html).toContain('ok');
   });
