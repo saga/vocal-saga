@@ -102,6 +102,116 @@ const UPSERT_SQL = `
 `;
 
 /**
+ * 确保目标 D1 具备当前翻译缓存 schema。
+ *
+ * 老版本 schema 缺少 content_hash，且使用三列 UNIQUE；仅 ADD COLUMN 无法让
+ * ON CONFLICT(url, source_lang, target_lang, content_hash) 生效，因此需要重建旧表。
+ * 每个 D1 实例在当前 Worker isolate 内只检查一次；主库与备用库分别检查。
+ */
+const schemaReady = new WeakMap<object, Promise<void>>();
+
+const CREATE_TRANSLATIONS_SQL = `
+  CREATE TABLE IF NOT EXISTS translations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    url TEXT NOT NULL,
+    title TEXT DEFAULT '',
+    source_lang TEXT DEFAULT 'en',
+    target_lang TEXT DEFAULT 'zh',
+    html TEXT NOT NULL,
+    content_hash TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(url, source_lang, target_lang, content_hash)
+  ) STRICT
+`;
+
+function quoteSqlIdentifier(value: string): string {
+  return '"' + value.replace(/"/g, '""') + '"';
+}
+
+async function ensurePageTranslationSchemaOnce(db: any): Promise<void> {
+  const tableInfo = await db.prepare("PRAGMA table_info('translations')").all();
+  const columns: Array<{ name: string }> = tableInfo?.results ?? [];
+
+  if (columns.length === 0) {
+    await db.prepare(CREATE_TRANSLATIONS_SQL).run();
+    return;
+  }
+
+  const columnNames = new Set(columns.map((column) => column.name));
+  const indexList = await db.prepare("PRAGMA index_list('translations')").all();
+  const indexes: Array<{ name: string; unique: number }> = indexList?.results ?? [];
+  let hasFingerprintUnique = false;
+
+  for (const index of indexes) {
+    if (!index.unique || !index.name) continue;
+    const indexInfo = await db.prepare(
+      `PRAGMA index_info(${quoteSqlIdentifier(index.name)})`,
+    ).all();
+    const indexColumns = (indexInfo?.results ?? [])
+      .sort((a: any, b: any) => a.seqno - b.seqno)
+      .map((item: any) => item.name);
+    if (indexColumns.join(',') === 'url,source_lang,target_lang,content_hash') {
+      hasFingerprintUnique = true;
+      break;
+    }
+  }
+
+  if (columnNames.has('content_hash') && hasFingerprintUnique) return;
+
+  // 兼容旧表：保留已有译文和 id，补 content_hash，并替换旧的三列唯一约束。
+  const expression = (name: string, fallback: string) =>
+    columnNames.has(name) ? quoteSqlIdentifier(name) : fallback;
+  const statements = [
+    db.prepare(`
+      CREATE TABLE IF NOT EXISTS translations__schema_v2 (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        url TEXT NOT NULL,
+        title TEXT DEFAULT '',
+        source_lang TEXT DEFAULT 'en',
+        target_lang TEXT DEFAULT 'zh',
+        html TEXT NOT NULL,
+        content_hash TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(url, source_lang, target_lang, content_hash)
+      ) STRICT
+    `),
+    db.prepare(`
+      INSERT OR IGNORE INTO translations__schema_v2
+        (id, url, title, source_lang, target_lang, html, content_hash, created_at)
+      SELECT
+        ${expression('id', 'NULL')},
+        ${expression('url', "''")},
+        ${expression('title', "''")},
+        ${expression('source_lang', "'en'")},
+        ${expression('target_lang', "'zh'")},
+        ${expression('html', "''")},
+        ${expression('content_hash', "''")},
+        ${expression('created_at', "datetime('now')")}
+      FROM translations
+    `),
+    db.prepare('DROP TABLE translations'),
+    db.prepare('ALTER TABLE translations__schema_v2 RENAME TO translations'),
+  ];
+  await db.batch(statements);
+}
+
+/** 确保表存在且 schema 与当前 UPSERT 冲突目标一致。 */
+export async function ensurePageTranslationSchema(db: any): Promise<void> {
+  if (!db || (typeof db !== 'object' && typeof db !== 'function')) {
+    throw new Error('A valid D1 database binding is required');
+  }
+  let pending = schemaReady.get(db);
+  if (!pending) {
+    pending = ensurePageTranslationSchemaOnce(db).catch((error) => {
+      schemaReady.delete(db);
+      throw error;
+    });
+    schemaReady.set(db, pending);
+  }
+  await pending;
+}
+
+/**
  * 写入一条整页译文；失败时按暂时性错误重试，最终仍失败则抛出最后一次的错误。
  *
  * UPSERT 本身幂等，重复写入只会刷新 created_at，因此重试是安全的。
@@ -180,6 +290,8 @@ export async function savePageTranslation(
     for (let attempt = 0; attempt <= retries; attempt++) {
       globalAttempt++;
       try {
+        // 每个目标库独立校验/升级 schema；schema 缺失时先建表，再执行 UPSERT。
+        await ensurePageTranslationSchema(currentDb);
         await currentDb
           .prepare(UPSERT_SQL)
           .bind(row.url, row.title || '', row.sourceLang, row.targetLang, row.html, row.contentHash)
