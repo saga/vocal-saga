@@ -166,6 +166,25 @@ describe('savePageTranslation', () => {
   });
 });
 
+describe('savePageTranslation schema bootstrap', () => {
+  it('表不存在时先创建表，再执行翻译写入', async () => {
+    const events: string[] = [];
+    let created = false;
+    const db: any = {
+      prepare: (sql: string) => ({
+        all: async () => ({ results: created ? [{ name: 'id' }] : [] }),
+        bind: (...args: any[]) => ({
+          run: async () => { events.push('write'); return { success: true }; },
+        }),
+        run: async () => { created = true; events.push('create'); return { success: true }; },
+      }),
+      batch: async () => [],
+    };
+    await savePageTranslation(db, baseRow, { sleep });
+    expect(events).toEqual(['create', 'write']);
+  });
+});
+
 describe('ensurePageTranslationSchema', () => {
   it('表不存在时先创建完整 schema', async () => {
     const statements: string[] = [];
