@@ -3,6 +3,7 @@ import {
   describeD1Error,
   isTransientD1Error,
   savePageTranslation,
+  ensurePageTranslationSchema,
 } from '../lib/translate/pageStore';
 
 interface FakeDb {
@@ -16,7 +17,26 @@ function createFakeDb(errors: Array<unknown | undefined>): FakeDb {
   let call = 0;
   return {
     runs,
-    prepare: () => ({
+    prepare: (sql: string) => ({
+      all: async () => {
+        if (sql.includes("PRAGMA table_info")) {
+          return { results: [
+            { name: 'id' }, { name: 'url' }, { name: 'title' },
+            { name: 'source_lang' }, { name: 'target_lang' },
+            { name: 'html' }, { name: 'content_hash' }, { name: 'created_at' },
+          ] };
+        }
+        if (sql.includes("PRAGMA index_list")) {
+          return { results: [{ name: 'translations_fingerprint_unique', unique: 1 }] };
+        }
+        if (sql.includes("PRAGMA index_info")) {
+          return { results: [
+            { seqno: 0, name: 'url' }, { seqno: 1, name: 'source_lang' },
+            { seqno: 2, name: 'target_lang' }, { seqno: 3, name: 'content_hash' },
+          ] };
+        }
+        return { results: [] };
+      },
       bind: (...args: any[]) => ({
         run: async () => {
           const error = errors[call];
@@ -27,6 +47,7 @@ function createFakeDb(errors: Array<unknown | undefined>): FakeDb {
         },
       }),
     }),
+    batch: async () => [],
   };
 }
 
@@ -142,5 +163,51 @@ describe('savePageTranslation', () => {
 
   it('没有数据库时直接返回', async () => {
     await expect(savePageTranslation(null, baseRow, { sleep })).resolves.toBeUndefined();
+  });
+});
+
+describe('ensurePageTranslationSchema', () => {
+  it('表不存在时先创建完整 schema', async () => {
+    const statements: string[] = [];
+    const db: any = {
+      prepare: (sql: string) => ({
+        all: async () => ({ results: [] }),
+        run: async () => { statements.push(sql); return { success: true }; },
+      }),
+      batch: async () => [],
+    };
+    await ensurePageTranslationSchema(db);
+    expect(statements).toHaveLength(1);
+    expect(statements[0]).toContain('CREATE TABLE IF NOT EXISTS translations');
+    expect(statements[0]).toContain('content_hash TEXT NOT NULL');
+    expect(statements[0]).toContain('UNIQUE(url, source_lang, target_lang, content_hash)');
+  });
+
+  it('旧表缺少 content_hash 或唯一约束不匹配时执行表迁移', async () => {
+    const batchSql: string[] = [];
+    const db: any = {
+      prepare: (sql: string) => ({
+        all: async () => {
+          if (sql.includes('PRAGMA table_info')) {
+            return { results: ['id', 'url', 'title', 'source_lang', 'target_lang', 'html', 'created_at'].map(name => ({ name })) };
+          }
+          if (sql.includes('PRAGMA index_list')) return { results: [{ name: 'old_unique', unique: 1 }] };
+          if (sql.includes('PRAGMA index_info')) {
+            return { results: ['url', 'source_lang', 'target_lang'].map((name, seqno) => ({ name, seqno })) };
+          }
+          return { results: [] };
+        },
+      }),
+      batch: async (statements: any[]) => {
+        batchSql.push(...statements.map((statement: any) => statement.sql ?? ''));
+        return [];
+      },
+    };
+    await ensurePageTranslationSchema(db);
+    expect(batchSql).toHaveLength(4);
+    expect(batchSql[0]).toContain('translations__schema_v2');
+    expect(batchSql[1]).toContain("''");
+    expect(batchSql[2]).toContain('DROP TABLE translations');
+    expect(batchSql[3]).toContain('RENAME TO translations');
   });
 });
