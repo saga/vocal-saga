@@ -156,9 +156,18 @@ async function ensurePageTranslationSchemaOnce(db: any): Promise<void> {
     }
   }
 
-  if (columnNames.has('content_hash') && hasFingerprintUnique) return;
+  const requiredColumns = [
+    'id', 'url', 'title', 'source_lang', 'target_lang', 'html', 'content_hash', 'created_at',
+  ];
+  const hasAllColumns = requiredColumns.every((name) => columnNames.has(name));
+  if (hasAllColumns && hasFingerprintUnique) return;
 
-  // 兼容旧表：保留已有译文和 id，补 content_hash，并替换旧的三列唯一约束。
+  // url/html 是保留旧译文所必需的字段；遇到未知结构时拒绝破坏性重建。
+  if (!columnNames.has('url') || !columnNames.has('html')) {
+    throw new Error('Unsupported translations table schema: required url/html columns are missing');
+  }
+
+  // 兼容旧表：保留已有译文和 id，补齐字段，并替换旧的三列唯一约束。
   const expression = (name: string, fallback: string) =>
     columnNames.has(name) ? quoteSqlIdentifier(name) : fallback;
   const statements = [
