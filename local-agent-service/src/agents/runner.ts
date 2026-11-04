@@ -8,6 +8,12 @@ import { applyCodeBuddyTaskPrompt, type CodeBuddyTaskProfile } from './taskProfi
 /** 一次调用的目标通道。`model` 为空串表示不显式指定，交给 CLI 运行时默认模型。 */
 type AgentSpec = { provider: string; model: string };
 
+/** OpenCode 通过 model variant 表达推理档位；disabled 不附加 variant，避免覆盖模型自身默认行为。 */
+function openCodeVariant(profile?: CodeBuddyTaskProfile): string | undefined {
+  if (!profile || profile.thinkingMode === 'disabled') return undefined;
+  return profile.effort === 'xhigh' ? 'max' : profile.effort;
+}
+
 /** 是否属于文档 / 上下文图工作流发起的调用。仅用于日志打标，不改变调用行为。 */
 function isWorkflowManaged(sessionScope?: string): boolean {
   return !!sessionScope && (sessionScope.startsWith('document:') || sessionScope.startsWith('context-graph:'));
@@ -118,7 +124,7 @@ export async function runAgent(
       output = r.text;
       usage = r.usage;
     } else if (effectiveAgent.provider === 'opencode') {
-      output = await runOpenCode(effectiveAgent, effective.prompt, effective.systemPrompt);
+      output = await runOpenCode(effectiveAgent, effective.prompt, effective.systemPrompt, undefined, openCodeVariant(taskProfile));
     } else {
       throw new Error('不支持的本机 Agent：' + effectiveAgent.provider);
     }
@@ -157,7 +163,7 @@ export async function runAgentJson(
       parsed = r.parsed;
       usage = r.usage;
     } else if (effectiveAgent.provider === 'opencode') {
-      const output = await runOpenCode(effectiveAgent, effective.prompt, effective.systemPrompt, options.timeoutMs);
+      const output = await runOpenCode(effectiveAgent, effective.prompt, effective.systemPrompt, options.timeoutMs, openCodeVariant(taskProfile));
       const value = parseJsonValue(output, 'request=' + String(requestId).slice(0, 40));
       if (!value || Array.isArray(value)) throw new Error('OpenCode 返回内容不是预期 JSON 对象');
       parsed = value as Record<string, any>;
