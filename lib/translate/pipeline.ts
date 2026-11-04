@@ -148,6 +148,34 @@ export function withWebQualityContext(
   };
 }
 
+/**
+ * 单个 chunk 的失败记录。provider 调用失败、译文解析失败、响应里没有可用译文，
+ * 这三种情况都会降级成「本块缺失」；全部 chunk 都走到这里时最终译文数为 0，
+ * 只有把原因带出去才能区分上游故障和页面本身无可译内容。
+ */
+export interface TranslationFailure {
+  chunkId: string;
+  stage: 'provider' | 'parse' | 'empty' | 'merge';
+  message: string;
+}
+
+/** 本次翻译的失败汇总，随调用链传递，不进缓存 key。 */
+export interface TranslationDiagnostics {
+  provider: string;
+  totalChunks: number;
+  failures: TranslationFailure[];
+}
+
+/** 聚合成一行可返回给客户端的诊断；顺带脱敏上游错误里可能夹带的 API key。 */
+export function summarizeTranslationFailures(diagnostics: TranslationDiagnostics): string | undefined {
+  const { failures } = diagnostics;
+  if (!failures.length) return undefined;
+  const first = failures[0];
+  const message = first.message.replace(/sk-[A-Za-z0-9_-]{8,}/g, 'sk-***').slice(0, 240);
+  return `provider=${diagnostics.provider}: ${failures.length} failure(s), ${diagnostics.totalChunks} chunk(s); ` +
+    `first [${first.chunkId}/${first.stage}] ${message}`;
+}
+
 export async function translateChunk(
   service: DeepSeekTranslationService,
   chunk: ReturnType<typeof buildChunks>[number],
@@ -162,6 +190,7 @@ export async function translateChunk(
   /** 跳过 chunk 缓存读取（强制刷新场景：/force/* 路由） */
   skipCache = false,
   translationMode: TranslationMode = 'technical',
+  diagnostics?: TranslationDiagnostics,
 ): Promise<Map<string, string>> {
   const tChunk = performance.now();
   const chunkLabel = `[Chunk ${chunk.id}]`;
@@ -235,7 +264,9 @@ export async function translateChunk(
   try {
     raw = await translateSingleflight(pendingKey, () => service.translate(pendingJsonContent, sourceLang, targetLang, glossary));
   } catch (err) {
-    console.error(`${chunkLabel} provider call failed, treating uncached blocks as missing:`, (err as Error)?.message);
+    const message = (err as Error)?.message || String(err);
+    console.error(`${chunkLabel} provider call failed, treating uncached blocks as missing:`, message);
+    diagnostics?.failures.push({ chunkId: chunk.id, stage: 'provider', message });
     return cachedBlocks;
   }
   console.log(`${chunkLabel} api.call done (${us(performance.now() - tApi)})`);
@@ -244,8 +275,18 @@ export async function translateChunk(
   try {
     freshResult = processTranslationWithCheck(raw, pendingBlocks.map((block) => ({ id: block.id, text: block.text })));
   } catch (err) {
-    console.error(`${chunkLabel} translation parse failed, treating uncached blocks as missing:`, (err as Error)?.message);
+    const message = (err as Error)?.message || String(err);
+    console.error(`${chunkLabel} translation parse failed, treating uncached blocks as missing:`, message);
+    diagnostics?.failures.push({ chunkId: chunk.id, stage: 'parse', message });
     freshResult = new Map<string, string>();
+  }
+  if (freshResult.size === 0) {
+    // 解析函数对无法修复的响应直接返回空 Map（不抛错），也要留下诊断。
+    diagnostics?.failures.push({
+      chunkId: chunk.id,
+      stage: 'empty',
+      message: `provider response had no usable translations for ${pendingBlocks.length} block(s)`,
+    });
   }
 
   const result = new Map(cachedBlocks);
@@ -295,8 +336,10 @@ async function translateChunksWithRetry(
   /** 跳过 chunk 缓存读取（强制刷新场景） */
   skipCache = false,
   translationMode: TranslationMode = 'technical',
+  diagnostics?: TranslationDiagnostics,
 ): Promise<Map<string, string>> {
   const finalTranslations = new Map<string, string>();
+  if (diagnostics) diagnostics.totalChunks = chunks.length;
   if (chunks.length === 0) return finalTranslations;
 
   const us = (ms: number) => `${Math.round(ms * 1000)}µs`;
@@ -306,7 +349,7 @@ async function translateChunksWithRetry(
   async function processOneChunk(
     chunk: ReturnType<typeof buildChunks>[number]
   ): Promise<void> {
-    const result = await translateChunk(service, chunk, sourceLang, targetLang, glossary, false, provider, promptStyle, skipCache, translationMode);
+    const result = await translateChunk(service, chunk, sourceLang, targetLang, glossary, false, provider, promptStyle, skipCache, translationMode, diagnostics);
 
     // 缺失检测 + 重试
     const inputIds = chunk.blocks.map((b) => b.id);
@@ -335,6 +378,7 @@ async function translateChunksWithRetry(
         promptStyle,
         skipCache,
         translationMode,
+        diagnostics,
       );
       for (const [id, text] of retryResult) {
         result.set(id, text);
@@ -357,7 +401,23 @@ async function translateChunksWithRetry(
     throw err;
   }
 
-  return mergeSegmentTranslations(chunks, finalTranslations);
+  const merged = mergeSegmentTranslations(chunks, finalTranslations);
+  if (finalTranslations.size > 0 && merged.size === 0) {
+    // 分段译文只有在整组齐全时才会合并回原 block id；组不全时全部丢弃，
+    // 这与上游无关，也要留下诊断，否则会被误报成 provider 故障。
+    diagnostics?.failures.push({
+      chunkId: 'merge',
+      stage: 'merge',
+      message: `all ${finalTranslations.size} translated segments dropped: incomplete segment groups`,
+    });
+  }
+  if (diagnostics?.failures.length) {
+    const summary = summarizeTranslationFailures(diagnostics);
+    console.error(merged.size === 0
+      ? `[Pipeline] every chunk failed: ${summary}`
+      : `[Pipeline] partial chunk failures (${merged.size} blocks translated): ${summary}`);
+  }
+  return merged;
 }
 
 // =============================================================================
@@ -575,6 +635,8 @@ export interface TranslateUrlResult {
   translatedBlocks: number;
   chunks: number;
   duration_ms: number;
+  /** 0 译文时的上游失败摘要；部分成功时为 undefined。 */
+  failureDetail?: string;
 }
 
 export interface TranslateHtmlInput {
@@ -618,7 +680,7 @@ async function runTranslationPipeline(
   skipCache = false,
   translationMode: TranslationMode = 'technical',
   qualityMode: WebTranslationQualityMode = 'fast',
-): Promise<{ title: string; html: string; blocks: number; translatedBlocks: number; chunks: number }> {
+): Promise<{ title: string; html: string; blocks: number; translatedBlocks: number; chunks: number; failureDetail?: string }> {
   // Webpage translation is deliberately not the literary/document workflow.
   // Ignore legacy clients that still send translationMode=literary.
   translationMode = 'technical';
@@ -711,6 +773,7 @@ async function runTranslationPipeline(
     ? withWebQualityContext(siteAwareGlossary, title, blocks, qualityMode)
     : siteAwareGlossary;
 
+  const diagnostics: TranslationDiagnostics = { provider, totalChunks: chunks.length, failures: [] };
   const translations = await translateChunksWithRetry(
     service,
     chunks,
@@ -722,6 +785,7 @@ async function runTranslationPipeline(
     effectiveStyle,
     skipCache,
     translationMode,
+    diagnostics,
   );
 
   // 回填：一次性 querySelectorAll 建 Map → O(1) 查找（原实现 O(blocks × N)）
@@ -850,6 +914,7 @@ async function runTranslationPipeline(
     blocks: blocks.length,
     translatedBlocks: translations.size,
     chunks: chunks.length,
+    failureDetail: translations.size === 0 ? summarizeTranslationFailures(diagnostics) : undefined,
   };
 }
 
@@ -906,6 +971,7 @@ export async function translateUrl(input: TranslateUrlInput): Promise<TranslateU
     html: result.html,
     blocks: result.blocks,
     translatedBlocks: result.translatedBlocks,
+    failureDetail: result.failureDetail,
     chunks: result.chunks,
     duration_ms: Date.now() - start,
   };
@@ -988,6 +1054,7 @@ export async function translateHtml(input: TranslateHtmlInput): Promise<Translat
     html: result.html,
     blocks: result.blocks,
     translatedBlocks: result.translatedBlocks,
+    failureDetail: result.failureDetail,
     chunks: result.chunks,
     duration_ms: Date.now() - start,
   };

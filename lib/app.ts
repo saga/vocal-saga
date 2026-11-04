@@ -1156,7 +1156,8 @@ ${pager}
       if (result.translatedBlocks === 0 && result.blocks > 0) {
         return c.json({
           error: 'Translation produced no results',
-          detail: `${result.blocks} blocks extracted but 0 translated — provider may be unavailable or prompt was filtered`,
+          detail: `${result.blocks} blocks extracted but 0 translated — ${result.failureDetail
+            || `provider=${provider} returned no usable translations; check upstream logs`}`,
         }, 500);
       }
 
@@ -1570,7 +1571,8 @@ ${pager}
       if (result.translatedBlocks === 0 && result.blocks > 0) {
         return c.json({
           error: 'Translation produced no results',
-          detail: `${result.blocks} blocks extracted but 0 translated — service may be unavailable or prompt was filtered`,
+          detail: `${result.blocks} blocks extracted but 0 translated — ${result.failureDetail
+            || `provider=${provider} returned no usable translations; check upstream logs`}`,
         }, 500);
       }
 

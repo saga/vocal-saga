@@ -472,6 +472,38 @@ describe('POST /fanyi/page', () => {
     expect(html).toContain('translated');
   });
 
+  it('0 译文时把上游失败原因写进 500 响应', async () => {
+    const { translateHtml } = await import('../lib/translate/pipeline');
+    (translateHtml as any).mockResolvedValueOnce({
+      url: 'https://www.langchain.com/blog/human-insight-strategic-advantage-agents',
+      finalUrl: 'https://www.langchain.com/blog/human-insight-strategic-advantage-agents',
+      title: 'Human Insight',
+      html: '<html></html>',
+      blocks: 46,
+      translatedBlocks: 0,
+      chunks: 3,
+      duration_ms: 1200,
+      failureDetail: 'provider=deepseek: 3 failure(s), 3 chunk(s); first [c1/provider] DeepSeek API error: HTTP 401',
+    });
+
+    const app = buildApp();
+    const res = await app.request(req('/fanyi/page', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        html: '<html><head><title>Human Insight</title></head><body><p>Test</p></body></html>',
+        url: 'https://www.langchain.com/blog/human-insight-strategic-advantage-agents',
+        apiKey: 'sk-test-api-key',
+      }),
+    }));
+
+    expect(res.status).toBe(500);
+    const body: any = await res.json();
+    expect(body.detail).toContain('46 blocks extracted but 0 translated');
+    expect(body.detail).toContain('provider=deepseek');
+    expect(body.detail).toContain('HTTP 401');
+  });
+
 
 
   it('accepts an HTML request larger than 4 MB and passes the complete document to translation', async () => {
