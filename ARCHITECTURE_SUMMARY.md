@@ -69,7 +69,7 @@ vocal-saga 是一个运行在 Cloudflare Workers 上的翻译代理服务。它�
 - 长请求依赖边缘网络与上游 LLM，需控制超时和并发，避免 Worker request timeout
 
 ### 存储与绑定
-- `VOCAL_SAGA_KV`：Cloudflare KV，用于翻译块级缓存、翻译状态缓存等
+- `VOCAL_SAGA_KV`：Cloudflare KV，用于翻译 chunk 级缓存、翻译状态缓存等
 - `DB999`：Cloudflare D1，用于翻译结果持久化、历史记录、缓存查询
 - `ASSETS`：静态资源绑定，用于部署静态页面与前端资源
 - 运行时配置通过环境变量注入，`createApp` 从 `env` 读取并回退到 `process.env`，支持本地测试与 CI

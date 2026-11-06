@@ -192,82 +192,34 @@ export async function translateChunk(
   translationMode: TranslationMode = 'technical',
   diagnostics?: TranslationDiagnostics,
 ): Promise<Map<string, string>> {
-  const tChunk = performance.now();
   const chunkLabel = `[Chunk ${chunk.id}]`;
   const cacheKey = generateTranslationCacheKey(chunk.jsonContent, sourceLang, targetLang, provider, promptStyle, glossary, undefined, translationMode);
   const us = (ms: number) => `${Math.round(ms * 1000)}µs`;
   console.log(`${chunkLabel} start (${chunk.blocks.length} blocks, ${chunk.estimatedTokens} tokens)`);
 
+  // 缓存粒度就是 chunk：一个 chunk 一次读、一次写。按块缓存会让每篇长文产生
+  // 「块数 + 1」次 KV 写（一篇 46 段的文章就是 47 次），轻易超过 Workers KV
+  // 免费版每天 1000 次写额度；而页级缓存已经挡住重复访问，块级命中率本就接近零。
   if (!isRetry && !skipCache) {
     const cachedChunk = await getCachedTranslation(cacheKey);
     if (cachedChunk) {
-      // 旧版只缓存整 chunk。命中后顺手填充单块缓存，后续同 chunk 内局部变更时可增量复用。
-      const items = JSON.parse(chunk.jsonContent) as Array<{ id: string; text: string } & Record<string, unknown>>;
-      await Promise.all(items.map(async (item) => {
-        const translated = cachedChunk.get(item.id);
-        if (!translated?.trim()) return;
-        const itemKey = generateTranslationCacheKey(
-          JSON.stringify([item]),
-          sourceLang,
-          targetLang,
-          provider,
-          promptStyle,
-          glossary,
-          undefined,
-          translationMode,
-        );
-        await cacheTranslation(itemKey, new Map([[item.id, translated]]));
-      }));
-      console.log(`${chunkLabel} cache hit (block cache warmed)`);
+      console.log(`${chunkLabel} cache hit`);
       return cachedChunk;
     }
   }
 
-  // Chunk 改变时先按 block 内容查缓存。这样同一 chunk 里只有一段正文变化，
-  // 未变化的 block 仍可复用旧译文；provider、文风、术语表和站点指令均参与 key。
-  const payloadItems = JSON.parse(chunk.jsonContent) as Array<Record<string, unknown> & { id: string; text: string }>;
-  const blockCacheKeys = new Map<string, string>();
-  const cachedBlocks = new Map<string, string>();
-  if (!isRetry && !skipCache) {
-    for (const item of payloadItems) {
-      const itemJson = JSON.stringify([item]);
-      const itemKey = generateTranslationCacheKey(itemJson, sourceLang, targetLang, provider, promptStyle, glossary, undefined, translationMode);
-      blockCacheKeys.set(item.id, itemKey);
-      const cachedBlock = await getCachedTranslation(itemKey);
-      const text = cachedBlock?.get(item.id);
-      if (typeof text === 'string' && text.trim()) cachedBlocks.set(item.id, text);
-    }
-  }
+  const pendingBlocks = chunk.blocks;
 
-  const missingItems = payloadItems.filter((item) => !cachedBlocks.has(item.id));
-  if (missingItems.length === 0) {
-    console.log(`${chunkLabel} all ${payloadItems.length} blocks reused from block cache`);
-    if (!isRetry && cachedBlocks.size > 0) await cacheTranslation(cacheKey, cachedBlocks);
-    return cachedBlocks;
-  }
-
-  const pendingJsonContent = missingItems.length === payloadItems.length
-    ? chunk.jsonContent
-    : JSON.stringify(missingItems);
-  const pendingKey = missingItems.length === payloadItems.length
-    ? cacheKey
-    : generateTranslationCacheKey(pendingJsonContent, sourceLang, targetLang, provider, promptStyle, glossary, undefined, translationMode);
-  const expectedById = new Map(chunk.blocks.map((block) => [block.id, block]));
-  const pendingBlocks = missingItems.map((item) => expectedById.get(item.id)).filter(
-    (block): block is NonNullable<typeof block> => Boolean(block),
-  );
-
-  // 只向模型提交未命中的 block。失败时仍返回已命中缓存的块，让上层只重试真正缺失项。
-  console.log(`${chunkLabel} api.call start (missing=${missingItems.length}, reused=${cachedBlocks.size})`);
+  console.log(`${chunkLabel} api.call start (blocks=${pendingBlocks.length})`);
   const tApi = performance.now();
   let raw: string;
   try {
-    raw = await translateSingleflight(pendingKey, () => service.translate(pendingJsonContent, sourceLang, targetLang, glossary));
+    raw = await translateSingleflight(cacheKey, () => service.translate(chunk.jsonContent, sourceLang, targetLang, glossary));
   } catch (err) {
     const message = (err as Error)?.message || String(err);
-    console.error(`${chunkLabel} provider call failed, treating uncached blocks as missing:`, message);
+    console.error(`${chunkLabel} provider call failed, treating chunk as missing:`, message);
     diagnostics?.failures.push({ chunkId: chunk.id, stage: 'provider', message });
-    return cachedBlocks;
+    return new Map();
   }
   console.log(`${chunkLabel} api.call done (${us(performance.now() - tApi)})`);
 
@@ -276,7 +228,7 @@ export async function translateChunk(
     freshResult = processTranslationWithCheck(raw, pendingBlocks.map((block) => ({ id: block.id, text: block.text })));
   } catch (err) {
     const message = (err as Error)?.message || String(err);
-    console.error(`${chunkLabel} translation parse failed, treating uncached blocks as missing:`, message);
+    console.error(`${chunkLabel} translation parse failed, treating chunk as missing:`, message);
     diagnostics?.failures.push({ chunkId: chunk.id, stage: 'parse', message });
     freshResult = new Map<string, string>();
   }
@@ -289,25 +241,9 @@ export async function translateChunk(
     });
   }
 
-  const result = new Map(cachedBlocks);
-  for (const [id, text] of freshResult) result.set(id, text);
+  const result = new Map(freshResult);
 
-  // 先缓存可复用的单块译文，再缓存本次完整 chunk 结果。retry 不污染任何缓存。
-  if (!isRetry && freshResult.size > 0) {
-    await Promise.all(Array.from(freshResult, async ([id, text]) => {
-      const itemKey = blockCacheKeys.get(id) ?? generateTranslationCacheKey(
-        JSON.stringify([payloadItems.find((item) => item.id === id)]),
-        sourceLang,
-        targetLang,
-        provider,
-        promptStyle,
-        glossary,
-        undefined,
-        translationMode,
-      );
-      await cacheTranslation(itemKey, new Map([[id, text]]));
-    }));
-  }
+  // 整个 chunk 一次写完；retry 不写缓存，避免污染。
   if (!isRetry && result.size > 0) {
     await cacheTranslation(cacheKey, result);
   }
