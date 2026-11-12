@@ -1,4 +1,4 @@
-name = "ss"
+name = "saga"
 main = "src/worker.ts"
 compatibility_date = "2026-05-26"
 compatibility_flags = ["nodejs_compat_v2"]
