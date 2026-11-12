@@ -235,9 +235,16 @@ export function getD1Databases(env: any): any[] {
 /**
  * 查询按主库优先；主库查询失败或无结果时读取备用库。
  * 页面 UPSERT 请直接调用 savePageTranslation(getD1Databases(env), row)。
+ *
+ * 注意：first() 只看「有没有行」，不判断这行能不能用。缓存查询需要跨库挑选
+ * content_hash 匹配且 HTML 健康的行，请用 readPageTranslationCandidates()。
  */
 export function createD1FailoverDatabase(databases: any[]): any | undefined {
   if (!databases.length) return undefined;
+
+  // 记录最近一次成功读取的库。两个 D1 的 id 各自自增，展示路径在读到备用库
+  // 记录后若把 CSS 快照回写到主库，会覆盖主库里同号的不相干记录。
+  let lastReadDb: any;
 
   const execute = async (sql: string, args: any[], method: 'first' | 'all' | 'run') => {
     let lastError: unknown;
@@ -246,6 +253,7 @@ export function createD1FailoverDatabase(databases: any[]): any | undefined {
       try {
         const statement = db.prepare(sql).bind(...args);
         const result = await statement[method]();
+        lastReadDb = db;
         lastResult = result;
         if (method === 'first' && result == null) continue;
         if (method === 'all' && (!result?.results || result.results.length === 0)) continue;
@@ -259,6 +267,8 @@ export function createD1FailoverDatabase(databases: any[]): any | undefined {
     return method === 'all' ? { results: [] } : null;
   };
 
+  const writeTarget = () => lastReadDb ?? databases[0];
+
   return {
     prepare(sql: string) {
       return {
@@ -266,15 +276,80 @@ export function createD1FailoverDatabase(databases: any[]): any | undefined {
           return {
             first: () => execute(sql, args, 'first'),
             all: () => execute(sql, args, 'all'),
-            // ID-based cache refresh must stay on the primary DB: IDs can collide across databases.
-            run: async () => databases[0].prepare(sql).bind(...args).run(),
+            // 「读哪库就写哪库」；纯写入（无前置读取）仍落到主库。
+            run: async () => writeTarget().prepare(sql).bind(...args).run(),
           };
         },
         first: () => execute(sql, [], 'first'),
         all: () => execute(sql, [], 'all'),
       };
     },
+    /** 供调用方显式取得真实库绑定（例如把命中的缓存行回写 CSS 快照）。 */
+    getLastReadDb: () => lastReadDb,
   };
+}
+
+export interface PageTranslationCandidate {
+  row: any;
+  /** 该行所在的真实 D1 绑定，不是故障转移包装器：回写必须落在同一个库。 */
+  db: any;
+  dbIndex: number;
+}
+
+const CANDIDATE_SELECT_BASE = `
+  SELECT id, html, content_hash, created_at FROM translations
+  WHERE url = ? AND source_lang = ? AND target_lang = ?`;
+const CANDIDATE_SELECT_TAIL = `
+  ORDER BY created_at DESC, id DESC LIMIT ?`;
+
+/**
+ * 跨库读取同一 url+lang 的候选缓存行，最新优先。
+ *
+ * 必须逐库查，不能用 createD1FailoverDatabase 的 first()：它只要在主库拿到任意
+ * 一行就返回，主库的一条 stale / 空 content_hash / 损坏记录会让备用库的有效缓存
+ * 永远读不到。同理，UNIQUE 含 content_hash，同一 url 可有多行，只取最新一条也会
+ * 遮住更早的匹配行，因此每库取最近若干行（默认 10）再交由调用方挑选。
+ * 单个库查询失败不影响其他库。
+ */
+export async function readPageTranslationCandidates(
+  databases: any[],
+  params: {
+    url: string;
+    sourceLang: string;
+    targetLang: string;
+    contentHash?: string;
+    limit?: number;
+  },
+): Promise<PageTranslationCandidate[]> {
+  const targets = (databases || []).filter(Boolean);
+  if (!targets.length) return [];
+  const limit = Math.max(1, Math.min(20, Math.floor(params.limit ?? 10)));
+  // hash 条件下推到 SQL，否则同 url 的多行（UNIQUE 含 content_hash）会把匹配行
+  // 挤出 LIMIT 窗口。
+  const matchHash = Boolean(params.contentHash);
+  const sql = CANDIDATE_SELECT_BASE
+    + (matchHash ? ' AND content_hash = ?' : '')
+    + CANDIDATE_SELECT_TAIL;
+  const args = matchHash
+    ? [params.url, params.sourceLang, params.targetLang, params.contentHash, limit]
+    : [params.url, params.sourceLang, params.targetLang, limit];
+
+  const perDatabase = await Promise.all(targets.map(async (db, index) => {
+    try {
+      const result: any = await db.prepare(sql).bind(...args).all();
+      const rows: any[] = result?.results ?? [];
+      return rows
+        .filter((row) => !params.contentHash || row?.content_hash === params.contentHash)
+        .map((row) => ({ row, db, dbIndex: index + 1 }));
+    } catch (error) {
+      console.error('[D1] cache candidate lookup error:', error);
+      return [];
+    }
+  }));
+
+  return perDatabase.flat().sort((a, b) =>
+    String(b.row?.created_at || '').localeCompare(String(a.row?.created_at || '')) ||
+    Number(b.row?.id || 0) - Number(a.row?.id || 0));
 }
 
 export async function savePageTranslation(

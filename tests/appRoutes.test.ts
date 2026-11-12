@@ -453,6 +453,113 @@ describe('GET /fanyi/page/check', () => {
 
 });
 
+// ─── 双库部署：缓存命中不能只看 SW998 的最新一条 ──────────────
+describe('SW998 + DB999 缓存查询', () => {
+  const PAGE_URL = 'https://example.com/article';
+  const FINGERPRINT = 'b1:h3|b2:p';
+  const EXPECTED_HASH = buildPageCacheFingerprint(
+    FINGERPRINT, PAGE_URL, 'deepseek', 'default', 'technical', undefined, 'fast',
+  );
+  const healthyHtml = (tag: string) =>
+    `<html><head><style>.o{color:black}</style></head><body>${tag}<span class="fanyi-translation">译文</span></body></html>`;
+
+  function seedCacheRow(db: any, opts: { id: number; hash: string; tag: string; healthy?: boolean }) {
+    db._rows.push({
+      id: opts.id,
+      url: cacheKeyUrl(PAGE_URL),
+      title: 'Test',
+      source_lang: 'en',
+      target_lang: 'zh',
+      html: opts.healthy === false ? '<body><head>broken</body></head></html>' : healthyHtml(opts.tag),
+      content_hash: opts.hash,
+      created_at: '2026-11-01T00:00:00.000Z',
+    });
+  }
+
+  const checkRequest = () => req(
+    `/fanyi/page/check?url=${encodeURIComponent(PAGE_URL)}&source=en&target=zh` +
+    `&contentHash=${encodeURIComponent(FINGERPRINT)}`,
+  );
+
+  it('主库有 stale 行、备用库有匹配行时命中备用库', async () => {
+    const primary = createMockDb();
+    const fallback = createMockDb();
+    seedCacheRow(primary, { id: 1, hash: 'stale', tag: 'PRIMARY-OLD' });
+    seedCacheRow(fallback, { id: 7, hash: EXPECTED_HASH, tag: 'FALLBACK-NEW' });
+
+    const res = await buildApp().request(checkRequest(), {}, { SW998: primary, DB999: fallback });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('X-Translate-Source')).toBe('d1-cache');
+    const body = await res.text();
+    expect(body).toContain('FALLBACK-NEW');
+    expect(body).not.toContain('PRIMARY-OLD');
+  });
+
+  it('主库记录损坏、备用库有效时仍命中备用库', async () => {
+    const primary = createMockDb();
+    const fallback = createMockDb();
+    seedCacheRow(primary, { id: 1, hash: EXPECTED_HASH, tag: 'PRIMARY-OLD', healthy: false });
+    seedCacheRow(fallback, { id: 7, hash: EXPECTED_HASH, tag: 'FALLBACK-NEW' });
+
+    const res = await buildApp().request(checkRequest(), {}, { SW998: primary, DB999: fallback });
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain('FALLBACK-NEW');
+  });
+
+  it('主库空 content_hash、备用库有效时不被旧记录遮住', async () => {
+    const primary = createMockDb();
+    const fallback = createMockDb();
+    seedCacheRow(primary, { id: 1, hash: '', tag: 'PRIMARY-LEGACY' });
+    seedCacheRow(fallback, { id: 7, hash: EXPECTED_HASH, tag: 'FALLBACK-NEW' });
+
+    const res = await buildApp().request(checkRequest(), {}, { SW998: primary, DB999: fallback });
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain('FALLBACK-NEW');
+  });
+
+  it('两库都只有 stale 行时仍返回 410 让扩展重译', async () => {
+    const primary = createMockDb();
+    const fallback = createMockDb();
+    seedCacheRow(primary, { id: 1, hash: 'stale-1', tag: 'PRIMARY-OLD' });
+    seedCacheRow(fallback, { id: 7, hash: 'stale-2', tag: 'FALLBACK-OLD' });
+
+    const res = await buildApp().request(checkRequest(), {}, { SW998: primary, DB999: fallback });
+    expect(res.status).toBe(410);
+  });
+
+  it('主库无行时备用库照常命中（故障转移不回退）', async () => {
+    const primary = createMockDb();
+    const fallback = createMockDb();
+    seedCacheRow(fallback, { id: 7, hash: EXPECTED_HASH, tag: 'FALLBACK-NEW' });
+
+    const res = await buildApp().request(checkRequest(), {}, { SW998: primary, DB999: fallback });
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain('FALLBACK-NEW');
+  });
+
+  it('POST /fanyi/page 主库 stale、备用库匹配时直接返回缓存，不调用翻译', async () => {
+    const { translateHtml } = await import('../lib/translate/pipeline');
+    const html = '<html><head></head><body><p>Test</p></body></html>';
+    const postHash = buildPageCacheFingerprint(
+      String(simpleHash(html)), PAGE_URL, 'deepseek', undefined, 'technical', undefined, 'fast',
+    );
+    const primary = createMockDb();
+    const fallback = createMockDb();
+    seedCacheRow(primary, { id: 1, hash: 'stale', tag: 'PRIMARY-OLD' });
+    seedCacheRow(fallback, { id: 7, hash: postHash, tag: 'FALLBACK-NEW' });
+
+    const res = await buildApp().request(req('/fanyi/page', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ html, url: PAGE_URL, apiKey: 'sk-test-api-key' }),
+    }), {}, { SW998: primary, DB999: fallback });
+
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain('FALLBACK-NEW');
+    expect(translateHtml).not.toHaveBeenCalled();
+  });
+});
+
 // ─── POST /fanyi/page ──────────────────────────────────────
 describe('POST /fanyi/page', () => {
   it('returns translated HTML when html, url and apiKey provided', async () => {

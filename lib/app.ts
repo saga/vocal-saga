@@ -66,7 +66,11 @@ import type { ParsedDocument } from './translate/document';
 import { hasDocumentRoot, validateTranslationCompleteness } from './translate/translationValidator';
 import { simpleHash } from './translate/cacheKey';
 import { buildPageCacheFingerprint } from './translate/pageCacheKey';
-import { savePageTranslation, describeD1Error, utf8ByteLength, getD1Databases, createD1FailoverDatabase } from './translate/pageStore';
+import {
+  savePageTranslation, describeD1Error, utf8ByteLength,
+  getD1Databases, createD1FailoverDatabase, readPageTranslationCandidates,
+  type PageTranslationCandidate,
+} from './translate/pageStore';
 import type { PromptStyle, TranslationMode } from './translate/service/shared';
 import { setDefaultStorage, type StorageAdapter } from './storage';
 import { requireAuth } from './auth';
@@ -483,13 +487,46 @@ export function createApp(env?: Record<string, unknown>, storage?: StorageAdapte
     }
     if (refreshed !== html && db && cacheId !== undefined && cacheId !== null) {
       try {
-        await db.prepare('UPDATE translations SET html = ? WHERE id = ?').bind(refreshed, Number(cacheId)).run();
+        // db 可能是故障转移包装器：解出实际读到该行的库，否则会用备用库的 id
+        // 覆盖主库里同号的不相干记录。
+        const writeDb = typeof db.getLastReadDb === 'function'
+          ? (db.getLastReadDb() ?? db)
+          : db;
+        await writeDb.prepare('UPDATE translations SET html = ? WHERE id = ?').bind(refreshed, Number(cacheId)).run();
       } catch (error) {
         // 展示路径不应因历史缓存回写失败而报错；本次响应仍使用刷新后的 HTML。
         console.warn('[CachedCss] could not persist upgraded cached HTML:', (error as Error)?.message);
       }
     }
     return processTranslationHtml(refreshed, pageUrl);
+  };
+
+  /**
+   * 从跨库候选行里挑一条可用缓存。
+   *
+   * requireHash=true 用于 /fanyi/page 扩展链路：空 content_hash 的行来自浏览器直访
+   * 路径，block ID 是服务端分配的，与扩展端 walker 编号体系不同，不能当命中返回。
+   * stale 只在「客户端带了指纹、且存在健康的但指纹不同的行」时为 true，
+   * 供 /fanyi/page/check 返回 410 让扩展端重新 POST。
+   */
+  const pickPageCacheHit = (
+    candidates: PageTranslationCandidate[],
+    expectedHash: string | null,
+    requireHash: boolean,
+  ): { hit: PageTranslationCandidate | null; stale: boolean } => {
+    let stale = false;
+    for (const candidate of candidates) {
+      const row = candidate.row;
+      const hashValid = Boolean(row?.content_hash);
+      if (requireHash && !hashValid) continue;
+      if (!isHealthyCachedHtml(row?.html)) continue;
+      if (expectedHash && hashValid && expectedHash !== row.content_hash) {
+        stale = true;
+        continue;
+      }
+      return { hit: candidate, stale };
+    }
+    return { hit: null, stale };
   };
   // 原始 HTML 处理 pipeline：仅导航清理 → 注入守卫
   const processOriginalHtml = (html: string) =>
@@ -965,54 +1002,37 @@ ${pager}
     const targetStored = VALID_LANG_RE.test(target) ? target : 'zh';
 
     const dbDatabases = getD1Databases(c.env);
-    const db = createD1FailoverDatabase(dbDatabases);
-    if (db) {
-      try {
-        // 按 url+lang 取最新一条，在代码中比对 content_hash
-        // （向后兼容：旧记录 content_hash 为 NULL 或空，无法比对时直接返回缓存）
-        const existing: any = await db
-          .prepare(
-            'SELECT id, html, content_hash FROM translations WHERE url = ? AND source_lang = ? AND target_lang = ? ORDER BY created_at DESC LIMIT 1',
-          )
-          .bind(cacheKeyUrl(url), sourceStored, targetStored)
-          .first();
-        if (existing && isHealthyCachedHtml(existing.html)) {
-          // 命中但客户端传了 contentHash 且缓存有有效 content_hash 且不匹配 → 410（内容已变，客户端应重新 POST）
-          // 注意：/fanyi/page 接收扩展端预标记 HTML，block ID 由扩展端 walker 分配。
-          // /translate/url-page（浏览器直访）存的缓存 content_hash 为空串，其 block ID 是服务端
-          // 自行分配的，与扩展端 walker 的编号体系不同。若把这种缓存当命中返回，
-          // 扩展端按自己的 b1/b2/... 去查服务端缓存的 b1/b2/... → 译文错位到错误的 DOM 元素。
-          // 因此：空 content_hash 在 /fanyi/page 路径下必须视为未命中（强制走完整 pipeline）。
-          const hashValid = existing.content_hash && existing.content_hash !== '';
-          if (
-            expectedContentHash &&
-            hashValid &&
-            expectedContentHash !== existing.content_hash
-          ) {
-            console.log(`[fanyi/page/check] D1 cache stale for ${url} (content_hash mismatch) sid=${sid}`);
-            return new Response(null, { status: 410 });
-          }
-          if (hashValid) {
-            console.log(`[fanyi/page/check] D1 cache hit for ${url} sid=${sid}`);
-            return new Response(await renderCachedTranslationHtml(existing.html, url, db, existing.id), {
+    try {
+      // 逐库读取候选行再挑选：只看主库最新一条会让主库的 stale/损坏记录遮住
+      // 备用库（以及主库里更早）的有效缓存。空 content_hash 的行来自浏览器直访
+      // 路径，block ID 体系与扩展端 walker 不同，必须视为未命中。
+      const candidates = await readPageTranslationCandidates(dbDatabases, {
+        url: cacheKeyUrl(url),
+        sourceLang: sourceStored,
+        targetLang: targetStored,
+      });
+      const { hit, stale } = pickPageCacheHit(candidates, expectedContentHash, true);
+      if (hit) {
+        console.log(`[fanyi/page/check] D1 cache hit for ${url} sid=${sid}`);
+        return new Response(
+          await renderCachedTranslationHtml(hit.row.html, url, hit.db, hit.row.id),
+          {
             status: 200,
             headers: {
               'Content-Type': 'text/html; charset=utf-8',
               'Cache-Control': 'public, max-age=3600',
               'X-Translate-Source': 'd1-cache',
             },
-          });
-          }
-          // hashValid=false（content_hash 为空/NULL）：来自 /translate/url-page 等非预标记路径的缓存，
-          // block ID 编号体系与扩展端 walker 不同，不能当命中返回。视为未命中，走 204 让扩展端 POST。
-        }
-        if (existing) {
-          console.warn(`[fanyi/page/check] D1 cache for ${url} is unhealthy, treating as miss sid=${sid}`);
-        }
-      } catch (e) {
-        console.error('[D1] lookup error:', e);
-        // 查询失败不阻塞翻译，让扩展端 fallback 到 POST /fanyi/page
+          },
+        );
       }
+      if (stale && expectedContentHash) {
+        console.log(`[fanyi/page/check] D1 cache stale for ${url} (content_hash mismatch) sid=${sid}`);
+        return new Response(null, { status: 410 });
+      }
+    } catch (e) {
+      console.error('[D1] lookup error:', e);
+      // 查询失败不阻塞翻译，让扩展端 fallback 到 POST /fanyi/page
     }
 
     return new Response(null, { status: 204 });
@@ -1098,43 +1118,36 @@ ${pager}
         : String(simpleHash(html));
     const contentHash = buildPageCacheFingerprint(clientContentHash, url, provider, promptStyle, translationMode, undefined, qualityMode);
     const dbDatabases = getD1Databases(c.env);
-    const db = createD1FailoverDatabase(dbDatabases);
     const cacheKey = cacheKeyUrl(url);
-    if (db) {
-      try {
-        const existing: any = await db.prepare(
-          'SELECT id, html, content_hash FROM translations WHERE url = ? AND source_lang = ? AND target_lang = ? ORDER BY created_at DESC LIMIT 1'
-        ).bind(cacheKey, sourceStored, targetStored).first();
-        if (existing && isHealthyCachedHtml(existing.html)) {
-          // /fanyi/page 接收扩展端预标记 HTML，block ID 由扩展端 walker 分配。
-          // /translate/url-page 等路径存的缓存 content_hash 为空串，其 block ID 是服务端
-          // 自行分配的，与扩展端 walker 编号体系不同。空 content_hash 必须视为未命中，
-          // 否则扩展端按自己的 b1/b2 查服务端缓存的 b1/b2 → 译文错位。
-          const hashValid = existing.content_hash && existing.content_hash !== '';
-          if (hashValid && existing.content_hash !== contentHash) {
-            console.log(`[fanyi/page] D1 cache stale for ${url} (content_hash mismatch), re-translating sid=${sid}`);
-            // fall through to translate
-          } else if (hashValid) {
-            console.log(`[fanyi/page] D1 cache hit for ${url} sid=${sid}`);
-            return new Response(await renderCachedTranslationHtml(existing.html, url, db, existing.id), {
-              status: 200,
-              headers: {
-                'Content-Type': 'text/html; charset=utf-8',
-                'Cache-Control': 'public, max-age=3600',
-                'X-Translate-Source': 'd1-cache',
-              },
-            });
-          }
-          // hashValid=false（content_hash 空/NULL）：非预标记路径的旧缓存，block ID 与扩展端不兼容，
-          // 视为未命中，fall through 走完整 pipeline。
-        }
-        else if (existing) {
-          console.warn(`[fanyi/page] D1 cache for ${url} is unhealthy, treating as miss`);
-        }
-      } catch (e) {
-        console.error('[D1] lookup error:', e);
-        // 查询失败不阻塞翻译，继续走正常流程
+    try {
+      // 与 /fanyi/page/check 用同一套跨库挑选逻辑，避免两条链路对同一份缓存
+      // 给出不同结论。空 content_hash 的行属于浏览器直访路径，必须视为未命中。
+      const candidates = await readPageTranslationCandidates(dbDatabases, {
+        url: cacheKey,
+        sourceLang: sourceStored,
+        targetLang: targetStored,
+      });
+      const { hit, stale } = pickPageCacheHit(candidates, contentHash, true);
+      if (hit) {
+        console.log(`[fanyi/page] D1 cache hit for ${url} sid=${sid}`);
+        return new Response(
+          await renderCachedTranslationHtml(hit.row.html, url, hit.db, hit.row.id),
+          {
+            status: 200,
+            headers: {
+              'Content-Type': 'text/html; charset=utf-8',
+              'Cache-Control': 'public, max-age=3600',
+              'X-Translate-Source': 'd1-cache',
+            },
+          },
+        );
       }
+      if (stale) {
+        console.log(`[fanyi/page] D1 cache stale for ${url} (content_hash mismatch), re-translating sid=${sid}`);
+      }
+    } catch (e) {
+      console.error('[D1] lookup error:', e);
+      // 查询失败不阻塞翻译，继续走正常流程
     }
 
     try {
@@ -1166,7 +1179,7 @@ ${pager}
       // save 失败不阻塞翻译返回，但要把错误 surface 给前端（header + HTML banner），
       // 否则前端拿不到任何信号、下次访问会重复翻译却无人察觉
       let saveError: string | null = null;
-      if (db) {
+      if (dbDatabases.length) {
         const htmlBytes = utf8ByteLength(result.html);
         try {
           await savePageTranslation(
@@ -1521,30 +1534,38 @@ ${pager}
     // A URL result is reusable only when provider/model/style/mode/site rules/prompt revision match.
     // The previous empty content_hash allowed every provider and style to overwrite the same D1 row.
     const dbDatabases = getD1Databases(c.env);
-    const db = createD1FailoverDatabase(dbDatabases);
     const cacheKey = cacheKeyUrl(url);
     const contentHash = buildPageCacheFingerprint('url-direct-v1', url, provider, promptStyle, translationMode, model);
     // 缓存行提升到 try 之外：源站抓取失败（403 / 超时）时用它兜底返回旧译文，
     // 而不是给用户一个 500。见下方 catch 分支。
     let cachedRow: any = null;
-    if (db && !force) {
+    if (!force) {
       try {
-        const existing: any = await db.prepare(
-          'SELECT id, html, content_hash FROM translations WHERE url = ? AND source_lang = ? AND target_lang = ? AND content_hash = ? ORDER BY created_at DESC LIMIT 1'
-        ).bind(cacheKey, sourceStored, targetStored, contentHash).first();
-        cachedRow = existing || null;
-        if (existing && isHealthyCachedHtml(existing.html)) {
+        // 按 hash 逐库查：主库有其它 provider/style 的旧行时，备用库里匹配的
+        // 那一行仍然要能命中；同时记下行所属的真实库，供 CSS 快照回写。
+        const candidates = await readPageTranslationCandidates(dbDatabases, {
+          url: cacheKey,
+          sourceLang: sourceStored,
+          targetLang: targetStored,
+          contentHash,
+        });
+        const cached = candidates[0] ?? null;
+        cachedRow = cached ? { ...cached.row, db: cached.db } : null;
+        if (cached && isHealthyCachedHtml(cached.row.html)) {
           console.log(`[translate/url-page] D1 cache hit for ${url}`);
-          return new Response(await renderCachedTranslationHtml(existing.html, url, db, existing.id), {
-            status: 200,
-            headers: {
-              'Content-Type': 'text/html; charset=utf-8',
-              'Cache-Control': 'public, max-age=3600',
-              'X-Translate-Source': 'd1-cache',
+          return new Response(
+            await renderCachedTranslationHtml(cached.row.html, url, cached.db, cached.row.id),
+            {
+              status: 200,
+              headers: {
+                'Content-Type': 'text/html; charset=utf-8',
+                'Cache-Control': 'public, max-age=3600',
+                'X-Translate-Source': 'd1-cache',
+              },
             },
-          });
+          );
         }
-        if (existing) {
+        if (cached) {
           console.warn(`[translate/url-page] D1 cache for ${url} is unhealthy, treating as miss`);
         }
       } catch (e) {
@@ -1582,7 +1603,7 @@ ${pager}
       // save 失败不阻塞翻译返回，但要把错误 surface 给前端（header + HTML banner），
       // 否则用户直访该 URL 时无法察觉缓存失效、每次访问都重复翻译
       let saveError: string | null = null;
-      if (db) {
+      if (dbDatabases.length) {
         const htmlBytes = utf8ByteLength(result.html);
         try {
           await savePageTranslation(
@@ -1643,7 +1664,7 @@ ${pager}
       // the live fetch to be rejected.
       if (cachedRow?.html && !looksLikeDomainParkingHtml(cachedRow.html)) {
         console.warn(`[translate/url-page] serving stale D1 cache for ${url} after failure`);
-        return new Response(await renderCachedTranslationHtml(cachedRow.html, url, db, cachedRow.id), {
+        return new Response(await renderCachedTranslationHtml(cachedRow.html, url, cachedRow.db, cachedRow.id), {
           status: 200,
           headers: {
             'Content-Type': 'text/html; charset=utf-8',

@@ -42,6 +42,8 @@ CLOUDFLARE_ACCOUNT_ID = "d74f37dea530584239cd3b7830def5a9"
 # ── D1 数据库（翻译结果持久化）─────────────────────────────
 # 写入顺序由 lib/translate/pageStore.ts 控制：SW998（swdb998）优先，
 # 只有主库写入最终失败时才尝试 DB999（备用库）。
+# 读取顺序不同：缓存查询会逐库取候选行，再按 content_hash 与健康度挑选，
+# 避免主库一条 stale/损坏记录遮住备用库的有效缓存；回写落在命中的那个库。
 # Worker 在首次写入前会分别检查 SW998 / DB999 的 translations 表，缺失时自动创建，旧结构会自动迁移；
 # db/schema.sql 仍可用于手动初始化或运维核对。
 [[d1_databases]]

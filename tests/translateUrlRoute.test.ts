@@ -278,11 +278,25 @@ describe('GET /translate/<target> — stale D1 fallback on fetch failure', () =>
         first: async () => null,
         // 无参数执行（CREATE TABLE / PRAGMA 引导语句）。
         run: async () => ({ results: [], success: true }),
-        bind: () => ({
+        bind: (...args: any[]) => ({
           run: async () => ({ results: [], success: true }),
           // SELECT 命中旧行；INSERT/其他查询返回 null
           first: async () => (sql.trim().startsWith('SELECT') ? { html: staleHtml } : null),
-          all: async () => ({ results: [], success: true }),
+          // 缓存查询走 all()：模拟 D1 按 SQL 条件返回带 content_hash 的行。
+          // 参数顺序为 url / source_lang / target_lang / content_hash / limit。
+          all: async () => {
+            const isCacheLookup = sql.trim().startsWith('SELECT') && sql.includes('AND content_hash = ?');
+            if (!isCacheLookup) return { results: [], success: true };
+            return {
+              results: [{
+                id: 1,
+                html: staleHtml,
+                content_hash: args[3],
+                created_at: '2026-01-01T00:00:00.000Z',
+              }],
+              success: true,
+            };
+          },
         }),
       }),
     };

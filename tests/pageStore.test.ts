@@ -4,6 +4,8 @@ import {
   isTransientD1Error,
   savePageTranslation,
   ensurePageTranslationSchema,
+  createD1FailoverDatabase,
+  readPageTranslationCandidates,
 } from '../lib/translate/pageStore';
 
 interface FakeDb {
@@ -229,5 +231,103 @@ describe('ensurePageTranslationSchema', () => {
     expect(batchSql[1]).toContain("''");
     expect(batchSql[2]).toContain('DROP TABLE translations');
     expect(batchSql[3]).toContain('RENAME TO translations');
+  });
+});
+
+// ─── 双库缓存查询与读写归属 ──────────────────────────────────
+/** 替身 D1：记录 SQL 与读写落到哪个库；rows 由 all()/first() 原样返回。 */
+function createProbeDb(label: string, rows: any[], log: string[], options: { fail?: boolean } = {}) {
+  const db = {
+    label,
+    prepare: (sql: string) => {
+      const bound = {
+        all: async () => {
+          log.push(`${label}:all:${sql.includes('AND content_hash = ?') ? 'hash' : 'all'}`);
+          if (options.fail) throw new Error(label + ' unavailable');
+          return { results: rows };
+        },
+        first: async () => {
+          log.push(`${label}:first`);
+          if (options.fail) throw new Error(label + ' unavailable');
+          return rows[0] ?? null;
+        },
+        run: async () => {
+          log.push(`${label}:run`);
+          return { success: true };
+        },
+      };
+      return { ...bound, bind: () => bound };
+    },
+  };
+  return db;
+}
+
+describe('readPageTranslationCandidates — 跨库候选行', () => {
+  const params = { url: 'https://example.com/a', sourceLang: 'en', targetLang: 'zh' };
+  const primaryRow = { id: 1, html: 'primary', content_hash: 'stale', created_at: '2026-01-01T00:00:00Z' };
+  const fallbackRow = { id: 7, html: 'fallback', content_hash: 'match', created_at: '2026-11-01T00:00:00Z' };
+
+  it('逐库读取、按 created_at 倒序，并带回各自真实库绑定', async () => {
+    const log: string[] = [];
+    const primary = createProbeDb('SW998', [primaryRow], log);
+    const fallback = createProbeDb('DB999', [fallbackRow], log);
+    const rows = await readPageTranslationCandidates([primary, fallback], params);
+
+    expect(rows).toHaveLength(2);
+    expect(rows[0].row).toBe(fallbackRow);
+    expect(rows[0].db).toBe(fallback);
+    expect(rows[0].dbIndex).toBe(2);
+    expect(rows[1].dbIndex).toBe(1);
+    expect(log.filter((item) => item.endsWith(':all:all'))).toHaveLength(2);
+  });
+
+  it('contentHash 下推到 SQL 且过滤掉不匹配的候选', async () => {
+    const log: string[] = [];
+    const rows = await readPageTranslationCandidates(
+      [createProbeDb('SW998', [primaryRow], log), createProbeDb('DB999', [fallbackRow], log)],
+      { ...params, contentHash: 'match' },
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].dbIndex).toBe(2);
+    expect(log.every((item) => item.endsWith(':all:hash'))).toBe(true);
+  });
+
+  it('主库查询失败仍返回备用库的候选', async () => {
+    const rows = await readPageTranslationCandidates(
+      [createProbeDb('SW998', [], [], { fail: true }), createProbeDb('DB999', [fallbackRow], [])],
+      params,
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].dbIndex).toBe(2);
+  });
+
+  it('没有绑定时返回空数组', async () => {
+    expect(await readPageTranslationCandidates([], params)).toEqual([]);
+  });
+});
+
+describe('createD1FailoverDatabase — 读哪库就写哪库', () => {
+  it('读到备用库后，回写落到备用库而不是主库', async () => {
+    const log: string[] = [];
+    const primary = createProbeDb('SW998', [], log);
+    const fallback = createProbeDb('DB999', [{ id: 7 }], log);
+    const db = createD1FailoverDatabase([primary, fallback]);
+
+    const row = await db.prepare('SELECT html FROM translations WHERE id = ?').bind(7).first();
+    expect(row).toEqual({ id: 7 });
+    expect(db.getLastReadDb()).toBe(fallback);
+    await db.prepare('UPDATE translations SET html = ? WHERE id = ?').bind('new', 7).run();
+    expect(log).toContain('DB999:run');
+    expect(log).not.toContain('SW998:run');
+  });
+
+  it('无前置读取的纯写入仍落到主库', async () => {
+    const log: string[] = [];
+    const primary = createProbeDb('SW998', [], log);
+    const fallback = createProbeDb('DB999', [], log);
+    const db = createD1FailoverDatabase([primary, fallback]);
+    await db.prepare('UPDATE translations SET html = ? WHERE id = ?').bind('new', 1).run();
+    expect(log).toContain('SW998:run');
+    expect(log).not.toContain('DB999:run');
   });
 });
