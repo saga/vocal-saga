@@ -315,58 +315,89 @@ async function fetchCssBundleInternal(
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), state.timeoutMs);
-  let response: Response;
+  let redirectTo: string | undefined;
+  let sourceCss = '';
+
   try {
-    response = await state.doFetch(absolute, controller.signal);
+    const response = await state.doFetch(absolute, controller.signal);
+    if (response.status >= 300 && response.status < 400) {
+      const location = response.headers.get('location');
+      if (!location) {
+        state.onError(absolute, 'HTTP ' + response.status + ' without Location');
+        return { css: '', complete: false };
+      }
+      try {
+        redirectTo = new URL(location, absolute).href;
+      } catch {
+        state.onError(absolute, 'invalid CSS redirect Location');
+        return { css: '', complete: false };
+      }
+      try {
+        await response.body?.cancel();
+      } catch {
+        /* ignore cancellation errors */
+      }
+    } else {
+      if (!response.ok) {
+        state.onError(absolute, 'HTTP ' + response.status);
+        return { css: '', complete: false };
+      }
+      if (!isCssResponse(response)) {
+        state.onError(absolute, 'not CSS: ' + (response.headers.get('content-type') ?? 'unknown'));
+        return { css: '', complete: false };
+      }
+      sourceCss = await readCssTextWithLimit(response, state.maxBytesPerSheet);
+    }
   } catch (error) {
-    state.onError(absolute, (error as Error)?.message ?? String(error));
+    const reason = controller.signal.aborted
+      ? 'request or response body timeout (' + state.timeoutMs + 'ms)'
+      : (error as Error)?.message ?? String(error);
+    state.onError(absolute, reason);
     return { css: '', complete: false };
   } finally {
     clearTimeout(timer);
   }
 
-  if (response.status >= 300 && response.status < 400) {
-    const location = response.headers.get('location');
-    if (!location) {
-      state.onError(absolute, 'HTTP ' + response.status + ' without Location');
-      return { css: '', complete: false };
-    }
-    let nextUrl: string;
-    try {
-      nextUrl = new URL(location, absolute).href;
-    } catch {
-      state.onError(absolute, 'invalid CSS redirect Location');
-      return { css: '', complete: false };
-    }
-    return fetchCssBundle(nextUrl, state, depth, ancestors);
-  }
+  // Redirects are fetched only after the current hop's timeout is released.
+  // fetchCssBundle re-runs the SSRF guard for every redirect target.
+  if (redirectTo) return fetchCssBundle(redirectTo, state, depth, ancestors);
 
-  if (!response.ok) {
-    state.onError(absolute, 'HTTP ' + response.status);
-    return { css: '', complete: false };
-  }
-  if (!isCssResponse(response)) {
-    state.onError(absolute, 'not CSS: ' + (response.headers.get('content-type') ?? 'unknown'));
-    return { css: '', complete: false };
-  }
-  let sourceCss: string;
-  try {
-    sourceCss = await response.text();
-  } catch (error) {
-    state.onError(absolute, 'failed to read CSS body: ' + ((error as Error)?.message ?? String(error)));
-    return { css: '', complete: false };
-  }
   if (sourceCss.trimStart().startsWith('<')) {
     state.onError(absolute, 'response looks like HTML, not CSS');
     return { css: '', complete: false };
   }
-  if (utf8ByteLength(sourceCss) > state.maxBytesPerSheet) {
-    state.onError(absolute, 'stylesheet exceeds ' + state.maxBytesPerSheet + ' bytes');
-    return { css: '', complete: false };
-  }
   const expanded = await expandCssImports(sourceCss, absolute, state, depth, ancestors);
-  const cleaned = expanded.css.replace(/^\s*@charset\s+(['"]).*?\1\s*;\s*/i, '');
+  const cleaned = expanded.css.replace(/^\\s*@charset\\s+(['"]).*?\\1\\s*;\\s*/i, '');
   return { css: rewriteCssUrls(cleaned, absolute), complete: expanded.complete };
+}
+
+/** Read CSS incrementally so the per-sheet byte limit also bounds peak response memory. */
+async function readCssTextWithLimit(response: Response, maxBytes: number): Promise<string> {
+  const declaredLength = Number(response.headers.get('content-length'));
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    try { await response.body?.cancel(); } catch { /* ignore */ }
+    throw new Error('stylesheet exceeds ' + maxBytes + ' bytes');
+  }
+  if (!response.body) return '';
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let totalBytes = 0;
+  let text = '';
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      totalBytes += value.byteLength;
+      if (totalBytes > maxBytes) {
+        try { await reader.cancel(); } catch { /* ignore */ }
+        throw new Error('stylesheet exceeds ' + maxBytes + ' bytes');
+      }
+      text += decoder.decode(value, { stream: true });
+    }
+    return text + decoder.decode();
+  } finally {
+    reader.releaseLock();
+  }
 }
 /**
  * 递归展开基础 @import 语法。media 条件保留在 @media 中。
