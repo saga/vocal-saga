@@ -1013,18 +1013,26 @@ ${pager}
               const { done, value } = await reader.read();
               if (done) {
                 clearTimeout(timeout);
+                reader.releaseLock();
                 streamController.close();
               } else {
                 streamController.enqueue(value);
               }
             } catch (error) {
               clearTimeout(timeout);
+              try { reader.releaseLock(); } catch { /* reader may already be released */ }
               streamController.error(error);
             }
           },
           async cancel(reason) {
             clearTimeout(timeout);
-            await reader.cancel(reason).catch(() => {});
+            try {
+              await reader.cancel(reason);
+            } catch {
+              /* upstream may already have errored */
+            } finally {
+              try { reader.releaseLock(); } catch { /* ignore */ }
+            }
           },
         });
         return new Response(body, {
