@@ -90,8 +90,7 @@ async function callApi(body: string): Promise<string> {
       const rateLimitLimit = response.headers.get('x-ratelimit-limit') || 'N/A';
       const rateLimitRemaining = response.headers.get('x-ratelimit-remaining') || 'N/A';
       const rateLimitReset = response.headers.get('x-ratelimit-reset') || 'N/A';
-      console.error('[OpenCode] 429 Rate Limit — Full response body:');
-      console.error(responseText);
+      console.warn('[OpenCode] 429 Rate Limit');
       console.error(`[OpenCode] Headers: retry-after=${retryAfter} limit=${rateLimitLimit} remaining=${rateLimitRemaining} reset=${rateLimitReset}`);
     }
     let errorMessage = `HTTP ${response.status}`;
