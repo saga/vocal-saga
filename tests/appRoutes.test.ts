@@ -1269,6 +1269,35 @@ describe('GET /article/:id', () => {
     expect(html).toContain('__vsRedirectGuard');
   });
 
+  it('展示历史缓存时展开折叠面板，代码示例不再消失（article/83）', async () => {
+    const db = createMockDb();
+    db._rows.push({
+      id: 83,
+      url: 'https://platform.claude.com/docs/en/build-with-claude/reduce-hallucinations',
+      title: 'Reduce hallucinations',
+      source_lang: 'en',
+      target_lang: 'zh',
+      // 折叠状态被原样存进缓存：静态页没有 JS 可展开，代码块看起来像丢了
+      html: `<html><head><style>.ok{color:#000}</style></head><body>
+        <h3><span class="fanyi-original">Example</span><span class="fanyi-translation">示例</span></h3>
+        <div role="region" hidden="until-found" data-closed="" data-starting-style="" data-animating="">
+          <pre translate="no"><code>Draft a press release for AcmeSecurity Pro.</code></pre>
+        </div>
+      </body></html>`,
+      created_at: new Date().toISOString(),
+    });
+
+    const app = buildApp();
+    const res = await app.request(req('/article/83'), {}, envWithDb(db));
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).not.toContain('hidden="until-found"');
+    expect(html).toContain('data-fanyi-expanded="true"');
+    expect(html).toContain('AcmeSecurity Pro');
+    // 兜底 CSS 也要进到响应里，否则站点 cssInliner 快照仍可能把它裁成 height:0
+    expect(html).toContain('[data-fanyi-expanded="true"]');
+  });
+
   it('redirects to re-translate when cached HTML is unhealthy', async () => {
     const db = createMockDb();
     db._rows.push({
