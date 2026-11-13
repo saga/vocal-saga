@@ -153,6 +153,10 @@ export function buildTranslationBrief(
   const pinnedMappings = mergePinnedProfileMappings(graph,
     Array.isArray((context as any)?.memory?.characterVoices) ? (context as any).memory.characterVoices : [],
     items, visiblePrecedingSegments);
+  const runNameDecisionDiagnostics = applyRunNameDecisionsToGraph(
+    graph, context?.runNameDecisions, items, visiblePrecedingSegments, projectId, sourceRevisionId,
+  );
+  graph = runNameDecisionDiagnostics.graph;
   applyStyleGuide(graph, temporalMemory);
   // Context Graph 的章节顺序由源文片段顺序推出，因此它就是权威边界。
   // 章节对不上时不要退而使用只存在于记忆里的摘要。
@@ -182,6 +186,7 @@ export function buildTranslationBrief(
       ...(typeof (temporalMemory as any)?.__translationBriefDiagnostics === 'object'
         ? (temporalMemory as any).__translationBriefDiagnostics : {}),
       ...graphRetrievalDiagnostics,
+      ...runNameDecisionDiagnostics.diagnostics,
       characterProfileMappingConflictCount: pinnedMappings.conflictCount,
       graphMappingCandidatesBeforeBatchFilter: pinnedMappings.candidatesBeforeBatchFilter,
       graphMappingsExcludedNotMentioned: pinnedMappings.excludedNotMentioned,
@@ -686,6 +691,110 @@ function mergePinnedProfileMappings(
     candidatesBeforeBatchFilter: graphMappingCandidatesBeforeBatchFilter,
     excludedNotMentioned: graphMappingsExcludedNotMentioned,
   };
+}
+
+/**
+ * 把 Run 在启动时锁定的命名决议投影到本批 TranslationBrief。
+ * 用户确认优先；accepted-translation 决议必须早于当前批次，别名必须已在前文/本批可见。
+ */
+function applyRunNameDecisionsToGraph(
+  graphInput: Record<string, any> | null,
+  rawDecisions: unknown,
+  items: BriefSegment[],
+  precedingSegments: BriefSegment[],
+  projectId: string,
+  sourceRevisionId: string,
+): { graph: Record<string, any> | null; diagnostics: Record<string, number> } {
+  const decisions = Array.isArray(rawDecisions) ? rawDecisions : [];
+  const diagnostics = {
+    runNameDecisionsAvailable: decisions.length,
+    runNameDecisionsInjected: 0,
+    runNameDecisionsSkippedNotYetDecided: 0,
+    runNameDecisionsSkippedNotVisible: 0,
+    runNameDecisionConflictsWithConfirmed: 0,
+    runNameDecisionAliasesFiltered: 0,
+  };
+  if (!decisions.length || !items.length) return { graph: graphInput, diagnostics };
+
+  const { db } = getDocumentProjectStore().getProjectContext(projectId);
+  const rows = db.prepare(
+    'SELECT ordinal FROM source_segments WHERE source_revision_id = ? AND segment_id IN (' +
+      items.map(() => '?').join(',') + ')'
+  ).all(sourceRevisionId, ...items.map((item) => item.id)) as Array<{ ordinal: number }>;
+  const ordinals = rows.map((row) => Number(row.ordinal)).filter(Number.isFinite);
+  const firstOrdinal = ordinals.length ? Math.min(...ordinals) : Number.POSITIVE_INFINITY;
+  const visibleText = [...precedingSegments, ...items].map((item) => item.text).join('\n');
+  const visible = (name: unknown) => sourceNameMatches(visibleText, name);
+  const aliasesVisibleAtBoundary = (alias: unknown) =>
+    visible(alias) || firstMatchingSourceOrdinal(db, sourceRevisionId, alias, 'name') < firstOrdinal;
+
+  const eligible = decisions.filter((decision: any) => {
+    if (!decision || typeof decision.source !== 'string' || typeof decision.target !== 'string') return false;
+    if (!sourceNameMatches(items.map((item) => item.text).join('\n'), decision.source)) {
+      diagnostics.runNameDecisionsSkippedNotVisible++;
+      return false;
+    }
+    const userConfirmed = ['confirmed-memory', 'confirmed'].includes(String(decision.sourceStatus));
+    if (!userConfirmed && Number(decision.decidedOrdinal) >= firstOrdinal) {
+      diagnostics.runNameDecisionsSkippedNotYetDecided++;
+      return false;
+    }
+    return true;
+  });
+  if (!eligible.length) return { graph: graphInput, diagnostics };
+
+  const graph: Record<string, any> = graphInput || {
+    nameMappings: [], characters: [], entities: [], relationships: [], chapterSummaries: [],
+    styleGuide: {}, constraints: [],
+  };
+  const mappings = Array.isArray(graph.nameMappings) ? [...graph.nameMappings] : [];
+  const normalizeName = (value: unknown) => String(value || '').normalize('NFKC')
+    .toLocaleLowerCase().replace(/[\s._'’\-]+/g, ' ').trim();
+  const namesOverlap = (left: any, right: any) => {
+    const leftNames = new Set([left?.source, ...(Array.isArray(left?.aliases) ? left.aliases : [])]
+      .map(normalizeName).filter(Boolean));
+    return [right?.source, ...(Array.isArray(right?.aliases) ? right.aliases : [])]
+      .map(normalizeName).some((name) => name && leftNames.has(name));
+  };
+
+  for (const decision of eligible as any[]) {
+    const aliases = (Array.isArray(decision.aliases) ? decision.aliases : [])
+      .filter((alias: unknown) => {
+        const allowed = aliasesVisibleAtBoundary(alias);
+        if (!allowed) diagnostics.runNameDecisionAliasesFiltered++;
+        return allowed;
+      }).slice(0, 12);
+    const incoming = {
+      source: decision.source,
+      target: decision.target,
+      aliases,
+      kind: decision.kind || 'other',
+      evidenceBacked: true,
+      sourceStatus: decision.sourceStatus,
+      confirmationSource: decision.sourceStatus === 'run-canonical' ? 'model-default' : 'user-confirmed',
+      decisionSource: decision.decisionSource,
+      evidenceSegmentIds: Array.isArray(decision.evidenceSegmentIds) ? decision.evidenceSegmentIds : [],
+    };
+    const conflicts = mappings.filter((mapping: any) => namesOverlap(mapping, incoming));
+    const confirmedConflicts = conflicts.filter((mapping: any) =>
+      ['confirmed', 'confirmed-memory'].includes(String(mapping?.sourceStatus)));
+    if (confirmedConflicts.length) {
+      if (confirmedConflicts.some((mapping: any) => normalizeName(mapping.target) !== normalizeName(incoming.target))) {
+        diagnostics.runNameDecisionConflictsWithConfirmed++;
+        continue;
+      }
+      // 相同的用户确认映射已经在图中，不再重复添加。
+      continue;
+    }
+    for (let index = mappings.length - 1; index >= 0; index--) {
+      if (namesOverlap(mappings[index], incoming)) mappings.splice(index, 1);
+    }
+    mappings.push(incoming);
+    diagnostics.runNameDecisionsInjected++;
+  }
+  graph.nameMappings = mappings;
+  graph.runNameDecisionPolicy = 'run-snapshot; accepted-evidence-only; user-confirmed-first';
+  return { graph, diagnostics };
 }
 
 /**
