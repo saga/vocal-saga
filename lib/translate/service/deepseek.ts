@@ -105,7 +105,7 @@ async function callApi(body: string, apiKey?: string): Promise<string> {
     const errorPos = positionMatch ? parseInt(positionMatch[1], 10) : 0;
     const snippetStart = Math.max(0, errorPos - 200);
     const snippetEnd = Math.min(cleaned.length, errorPos + 200);
-    console.error('[DeepSeek] Cleaned content snippet around error:', cleaned.substring(snippetStart, snippetEnd));
+    console.warn('[DeepSeek] Response JSON parse failed near position:', errorPos);
     try {
       cleaned = repairJson(cleaned);
       JSON.parse(cleaned);
