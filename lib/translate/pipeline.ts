@@ -38,6 +38,24 @@ import { parseHTML } from 'linkedom';
 import { inlineExternalStylesheets } from './cssInliner';
 import { assertNotDomainParkingPage, looksLikeDomainParkingHtml } from './pageGuard';
 
+/**
+ * Stable model identity for translation cache/singleflight isolation.
+ * Resolve defaults here so a provider's implicit default is also versioned in the cache.
+ */
+export function resolveTranslationModelIdentity(provider: string, requestedModel?: string): string {
+  if (requestedModel?.trim()) return requestedModel.trim();
+  const defaults: Record<string, string> = {
+    deepseek: 'deepseek-v4-flash',
+    openrouter: 'openai/gpt-oss-20b:free',
+    nvidia: 'stepfun-ai/step-3.7-flash',
+    cloudflare: '@cf/moonshotai/kimi-k2.6',
+    mimo: 'mimo-auto',
+    gemini: 'gemini-3.1-flash-lite',
+    opencode: 'big-pickle',
+  };
+  return defaults[provider] ?? 'provider-default';
+}
+
 // =============================================================================
 // 性能日志
 // =============================================================================
@@ -191,9 +209,10 @@ export async function translateChunk(
   skipCache = false,
   translationMode: TranslationMode = 'technical',
   diagnostics?: TranslationDiagnostics,
+  modelIdentity?: string,
 ): Promise<Map<string, string>> {
   const chunkLabel = `[Chunk ${chunk.id}]`;
-  const cacheKey = generateTranslationCacheKey(chunk.jsonContent, sourceLang, targetLang, provider, promptStyle, glossary, undefined, translationMode);
+  const cacheKey = generateTranslationCacheKey(chunk.jsonContent, sourceLang, targetLang, provider, promptStyle, glossary, undefined, translationMode, modelIdentity);
   const us = (ms: number) => `${Math.round(ms * 1000)}µs`;
   console.log(`${chunkLabel} start (${chunk.blocks.length} blocks, ${chunk.estimatedTokens} tokens)`);
 
@@ -273,6 +292,7 @@ async function translateChunksWithRetry(
   skipCache = false,
   translationMode: TranslationMode = 'technical',
   diagnostics?: TranslationDiagnostics,
+  modelIdentity?: string,
 ): Promise<Map<string, string>> {
   const finalTranslations = new Map<string, string>();
   if (diagnostics) diagnostics.totalChunks = chunks.length;
@@ -285,7 +305,7 @@ async function translateChunksWithRetry(
   async function processOneChunk(
     chunk: ReturnType<typeof buildChunks>[number]
   ): Promise<void> {
-    const result = await translateChunk(service, chunk, sourceLang, targetLang, glossary, false, provider, promptStyle, skipCache, translationMode, diagnostics);
+    const result = await translateChunk(service, chunk, sourceLang, targetLang, glossary, false, provider, promptStyle, skipCache, translationMode, diagnostics, modelIdentity);
 
     // 缺失检测 + 重试
     const inputIds = chunk.blocks.map((b) => b.id);
@@ -315,6 +335,7 @@ async function translateChunksWithRetry(
         skipCache,
         translationMode,
         diagnostics,
+        modelIdentity,
       );
       for (const [id, text] of retryResult) {
         result.set(id, text);
@@ -403,6 +424,8 @@ export async function translateText(input: TranslateTextInput): Promise<Translat
     input.promptStyle,
     false,
     input.translationMode,
+    undefined,
+    resolveTranslationModelIdentity('deepseek'),
   );
 
   return {
@@ -531,6 +554,8 @@ export async function translateBlocks(
     input.promptStyle,
     input.skipCache ?? false,
     translationMode,
+    undefined,
+    resolveTranslationModelIdentity(provider, input.model),
   );
 }
 
@@ -722,6 +747,7 @@ async function runTranslationPipeline(
     skipCache,
     translationMode,
     diagnostics,
+    resolveTranslationModelIdentity(provider, model),
   );
 
   // 回填：一次性 querySelectorAll 建 Map → O(1) 查找（原实现 O(blocks × N)）
