@@ -606,7 +606,7 @@ export function createApp(env?: Record<string, unknown>, storage?: StorageAdapte
       return `<li style="margin-bottom:16px;line-height:1.6">
         <a href="${articleHref}" style="font-size:16px;text-decoration:none;color:#2563eb;font-weight:500">${escapeHtml(displayTitle)}</a>${sourceTag}
         <br><a href="${escapeHtml(url)}" target="_blank" rel="noopener" style="color:#9ca3af;font-size:12px;text-decoration:none">${escapeHtml(url)}</a>
-        <button type="button" class="del" data-delete-id="${escapeHtml(String(r.id))}" data-delete-db="${dbIndex}" data-delete-title="${escapeHtml(displayTitle)}">删除</button>
+        <button type="button" class="del" title="删除" aria-label="删除" data-delete-id="${escapeHtml(String(r.id))}" data-delete-db="${dbIndex}" data-delete-title="${escapeHtml(displayTitle)}">del</button>
       </li>`;
     }).join('\n');
 
@@ -634,7 +634,7 @@ export function createApp(env?: Record<string, unknown>, storage?: StorageAdapte
   a:hover { text-decoration: underline !important; }
   .empty { color: #9ca3af; font-size: 15px; }
   .src { margin-left:8px; font-size:11px; color:#9ca3af; background:#f3f4f6; padding:2px 6px; border-radius:4px; }
-  .del { margin-left:10px; font-size:12px; color:#dc2626; background:none; border:1px solid #fecaca; border-radius:4px; padding:2px 8px; cursor:pointer; }
+  .del { margin-left:10px; font-size:11px; color:#000; background:none; border:1px solid #fecaca; border-radius:4px; padding:2px 8px; cursor:pointer; }
   .del:hover { background:#fef2f2; }
   .del:disabled { opacity:.5; cursor:default; }
   .tools { margin-top:32px; font-size:12px; }
