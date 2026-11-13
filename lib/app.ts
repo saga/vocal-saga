@@ -1714,7 +1714,7 @@ ${pager}
             {
               onAttemptError: (error, attempt, willRetry) => {
                 console.error(
-                  `[D1] save attempt ${attempt} failed for ${url} htmlBytes=${htmlBytes} ` +
+                  `[D1] save attempt ${attempt} failed for ${safeLogUrl(url)} htmlBytes=${htmlBytes} ` +
                     `willRetry=${willRetry}: ${describeD1Error(error)}`,
                 );
               },
