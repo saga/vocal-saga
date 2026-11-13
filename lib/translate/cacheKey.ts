@@ -19,6 +19,7 @@ export function generateTranslationCacheKey(
   glossary?: Glossary,
   sitePrompt?: string,
   translationMode?: string,
+  model?: string,
 ): string {
   // 把 provider / promptStyle / glossary / sitePrompt 都纳入 hash，
   // 避免切换 LLM、文风、改术语表、改站点规则后读到旧脏缓存（分析报告 P0）。
@@ -42,7 +43,8 @@ export function generateTranslationCacheKey(
       ? `|usr${simpleHash(glossary.document_user_prompt_template)}`
       : '') +
     (sitePrompt?.trim() ? `|r${simpleHash(sitePrompt)}` : '') +
-    (translationMode ? `|m${translationMode}` : '');
+    (translationMode ? `|m${translationMode}` : '') +
+    (model?.trim() ? `|model${simpleHash(model.trim())}` : '');
   const contentHash = simpleHash(jsonContent + extra);
   const contentPrefix = jsonContent.substring(0, 200);
   const prefixHash = simpleHash(contentPrefix + extra);
