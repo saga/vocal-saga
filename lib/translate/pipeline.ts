@@ -902,7 +902,7 @@ export async function translateUrl(input: TranslateUrlInput): Promise<TranslateU
   }).join(' -> ');
   // Log redirects before validation so rejected parking/challenge pages remain diagnosable.
   console.log(
-    `[Pipeline] Fetched ${safeLogUrl(input.url)} → ${page.finalUrl} (${page.status}, ${page.html.length} bytes); redirects=${redirectTrace}`,
+    `[Pipeline] Fetched ${safeLogUrl(input.url)} → ${safeLogUrl(page.finalUrl)} (${page.status}, ${page.html.length} bytes); redirects=${redirectTrace}`,
   );
 
   // Redirects are valid, but registrar parking pages are not article content.
@@ -989,7 +989,7 @@ export async function translateHtml(input: TranslateHtmlInput): Promise<Translat
     }
     console.log(`[Pipeline] Received pre-marked HTML from extension: ${safeLogUrl(input.url)} (${input.html.length} bytes, ${preExtractedBlocks.length} blocks, clientText=${Boolean(reconciled)})`);
   } else {
-    console.log(`[Pipeline] Received HTML from extension: ${input.url} (${input.html.length} bytes, no pre-marked blocks)`);
+    console.log(`[Pipeline] Received HTML from extension: ${safeLogUrl(input.url)} (${input.html.length} bytes, no pre-marked blocks)`);
   }
 
   const result = await runTranslationPipeline(
