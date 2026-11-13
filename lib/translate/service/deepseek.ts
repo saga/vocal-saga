@@ -103,8 +103,6 @@ async function callApi(body: string, apiKey?: string): Promise<string> {
     console.error('[DeepSeek] JSON parse error:', parseErr?.message || parseErr);
     const positionMatch = parseErr?.message?.match(/position (\d+)/);
     const errorPos = positionMatch ? parseInt(positionMatch[1], 10) : 0;
-    const snippetStart = Math.max(0, errorPos - 200);
-    const snippetEnd = Math.min(cleaned.length, errorPos + 200);
     console.warn('[DeepSeek] Response JSON parse failed near position:', errorPos);
     try {
       cleaned = repairJson(cleaned);
