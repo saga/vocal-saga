@@ -367,7 +367,7 @@ async function fetchCssBundleInternal(
     return { css: '', complete: false };
   }
   const expanded = await expandCssImports(sourceCss, absolute, state, depth, ancestors);
-  const cleaned = expanded.css.replace(/^\\s*@charset\\s+(['"]).*?\\1\\s*;\\s*/i, '');
+  const cleaned = expanded.css.replace(/^\s*@charset\s+(['"]).*?\1\s*;\s*/i, '');
   return { css: rewriteCssUrls(cleaned, absolute), complete: expanded.complete };
 }
 
