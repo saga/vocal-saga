@@ -70,11 +70,18 @@ async function callApi(body: string): Promise<string> {
     }
     throw err;
   }
-  clearTimeout(timeout);
 
   console.log('[OpenCode] Response status:', response.status);
 
-  const responseText = await response.text().catch(() => '');
+  let responseText: string;
+  try {
+    responseText = await response.text();
+  } catch (err) {
+    if (controller.signal.aborted) throw new Error('OpenCode API timeout (60000ms)');
+    throw err;
+  } finally {
+    clearTimeout(timeout);
+  }
 
   if (!response.ok) {
     // 429 限流诊断：打印完整响应体 + 限流相关 headers
