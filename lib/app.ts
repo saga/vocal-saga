@@ -921,7 +921,9 @@ ${pager}
   // ── POST /api/v1/chat/completions ─────────────────────
   app.post('/api/v1/chat/completions', requireAuth, async (c) => {
 
-    const body = await c.req.json().catch(() => ({} as any));
+    const parsedBody = await readJsonBodyLimited(c.req.raw, 4 * 1024 * 1024);
+    if (!parsedBody.ok) return c.json({ error: parsedBody.error }, parsedBody.status);
+    const body = parsedBody.value;
     const { stream, _backend } = body;
     const resolved = resolveModel(body?.model, _backend);
     if (resolved.error) {
@@ -1246,7 +1248,7 @@ ${pager}
             {
               onAttemptError: (error, attempt, willRetry) => {
                 console.error(
-                  `[D1] save attempt ${attempt} failed for ${url} sid=${sid} htmlBytes=${htmlBytes} ` +
+                  `[D1] save attempt ${attempt} failed for ${safeLogUrl(url)} sid=${sid} htmlBytes=${htmlBytes} ` +
                     `willRetry=${willRetry}: ${describeD1Error(error)}`,
                 );
               },
@@ -1418,7 +1420,9 @@ ${pager}
    * 这些长任务由扩展和本机 local-agent-service 管理。
    */
   app.post('/api/translate/document/segments', async (c) => {
-    const body = await c.req.json().catch(() => ({} as any));
+    const parsedBody = await readJsonBodyLimited(c.req.raw, 6 * 1024 * 1024);
+    if (!parsedBody.ok) return c.json({ error: parsedBody.error }, parsedBody.status);
+    const body = parsedBody.value;
     const {
       fileName, title, format, segments, warnings, source, target, glossary,
       promptStyle, translationMode, translate, provider, model, apiKey, forceRefresh,
@@ -1621,7 +1625,7 @@ ${pager}
           );
         }
         if (cached) {
-          console.warn(`[translate/url-page] D1 cache for ${url} is unhealthy, treating as miss`);
+          console.warn(`[translate/url-page] D1 cache for ${safeLogUrl(url)} is unhealthy, treating as miss`);
         }
       } catch (e) {
         console.error('[D1] lookup error:', e);
@@ -1682,7 +1686,7 @@ ${pager}
           );
         } catch (e) {
           saveError = describeD1Error(e) || 'D1 write failed';
-          console.error(`[D1] save failed for ${url} htmlBytes=${htmlBytes}: ${saveError}`);
+          console.error(`[D1] save failed for ${safeLogUrl(url)} htmlBytes=${htmlBytes}: ${saveError}`);
         }
       }
       const finalHtml = saveError
