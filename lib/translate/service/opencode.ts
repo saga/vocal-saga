@@ -70,21 +70,27 @@ async function callApi(body: string): Promise<string> {
     }
     throw err;
   }
-  clearTimeout(timeout);
 
   console.log('[OpenCode] Response status:', response.status);
 
-  const responseText = await response.text().catch(() => '');
+  let responseText: string;
+  try {
+    responseText = await response.text();
+  } catch (err) {
+    if (controller.signal.aborted) throw new Error('OpenCode API timeout (60000ms)');
+    throw err;
+  } finally {
+    clearTimeout(timeout);
+  }
 
   if (!response.ok) {
-    // 429 限流诊断：打印完整响应体 + 限流相关 headers
+    // 429 限流诊断：只记录限流相关 headers，不记录上游响应正文
     if (response.status === 429) {
       const retryAfter = response.headers.get('retry-after') || 'N/A';
       const rateLimitLimit = response.headers.get('x-ratelimit-limit') || 'N/A';
       const rateLimitRemaining = response.headers.get('x-ratelimit-remaining') || 'N/A';
       const rateLimitReset = response.headers.get('x-ratelimit-reset') || 'N/A';
-      console.error('[OpenCode] 429 Rate Limit — Full response body:');
-      console.error(responseText);
+      console.warn('[OpenCode] 429 Rate Limit');
       console.error(`[OpenCode] Headers: retry-after=${retryAfter} limit=${rateLimitLimit} remaining=${rateLimitRemaining} reset=${rateLimitReset}`);
     }
     let errorMessage = `HTTP ${response.status}`;
@@ -175,23 +181,30 @@ export class OpencodeTranslationService implements TranslationService {
       }
       throw err;
     }
-    clearTimeout(timeout);
-
     if (!response.ok) {
       const text = await response.text().catch(() => '');
+      clearTimeout(timeout);
       throw new Error(`OpenCode API error: HTTP ${response.status} - ${text.substring(0, 200)}`);
     }
 
     if (!response.body) {
+      clearTimeout(timeout);
       throw new Error('OpenCode API error: response body is null');
     }
 
     const reader = response.body.getReader();
     let fullContent = '';
 
-    for await (const delta of parseSSEStream(reader)) {
-      fullContent += delta;
-      yield fullContent;
+    try {
+      for await (const delta of parseSSEStream(reader)) {
+        fullContent += delta;
+        yield fullContent;
+      }
+    } catch (err) {
+      if (controller.signal.aborted) throw new Error('OpenCode stream timeout (60s)');
+      throw err;
+    } finally {
+      clearTimeout(timeout);
     }
 
     return fullContent;

@@ -30,6 +30,14 @@ describe('generateTranslationCacheKey', () => {
     expect(keyEnZh).not.toBe(keyZhEn);
   });
 
+  it('isolates chunk cache keys across models using the same provider', () => {
+    const json = JSON.stringify([{ id: 'b1', text: 'Hello world' }]);
+    const nvidiaStep = generateTranslationCacheKey(json, 'en', 'zh', 'nvidia', 'default', undefined, undefined, 'technical', 'stepfun-ai/step-3.7-flash');
+    const nvidiaQwen = generateTranslationCacheKey(json, 'en', 'zh', 'nvidia', 'default', undefined, undefined, 'technical', 'qwen/qwen3-next-80b-a3b-instruct');
+    expect(nvidiaStep).not.toBe(nvidiaQwen);
+    expect(generateTranslationCacheKey(json, 'en', 'zh', 'nvidia', 'default', undefined, undefined, 'technical', 'stepfun-ai/step-3.7-flash')).toBe(nvidiaStep);
+  });
+
   it('should generate different keys for different content', () => {
     const json1 = JSON.stringify([{ id: 'b1', text: 'Hello world' }]);
     const json2 = JSON.stringify([{ id: 'b1', text: 'Goodbye world' }]);

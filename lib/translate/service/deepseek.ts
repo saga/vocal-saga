@@ -55,11 +55,18 @@ async function callApi(body: string, apiKey?: string): Promise<string> {
     }
     throw err;
   }
-  clearTimeout(timeout);
 
   console.log('[DeepSeek] Response status:', response.status);
 
-  const responseText = await response.text().catch(() => '');
+  let responseText: string;
+  try {
+    responseText = await response.text();
+  } catch (err) {
+    if (controller.signal.aborted) throw new Error('DeepSeek API timeout (150000ms)');
+    throw err;
+  } finally {
+    clearTimeout(timeout);
+  }
 
   if (!response.ok) {
     let errorMessage = `HTTP ${response.status}`;
@@ -96,9 +103,7 @@ async function callApi(body: string, apiKey?: string): Promise<string> {
     console.error('[DeepSeek] JSON parse error:', parseErr?.message || parseErr);
     const positionMatch = parseErr?.message?.match(/position (\d+)/);
     const errorPos = positionMatch ? parseInt(positionMatch[1], 10) : 0;
-    const snippetStart = Math.max(0, errorPos - 200);
-    const snippetEnd = Math.min(cleaned.length, errorPos + 200);
-    console.error('[DeepSeek] Cleaned content snippet around error:', cleaned.substring(snippetStart, snippetEnd));
+    console.warn('[DeepSeek] Response JSON parse failed near position:', errorPos);
     try {
       cleaned = repairJson(cleaned);
       JSON.parse(cleaned);
@@ -165,23 +170,30 @@ export class DeepSeekTranslationService implements TranslationService {
       }
       throw err;
     }
-    clearTimeout(timeout);
-
     if (!response.ok) {
       const text = await response.text().catch(() => '');
+      clearTimeout(timeout);
       throw new Error(`DeepSeek API error: HTTP ${response.status} - ${text.substring(0, 200)}`);
     }
 
     if (!response.body) {
+      clearTimeout(timeout);
       throw new Error('DeepSeek API error: response body is null');
     }
 
     const reader = response.body.getReader();
     let fullContent = '';
 
-    for await (const delta of parseSSEStream(reader)) {
-      fullContent += delta;
-      yield fullContent;
+    try {
+      for await (const delta of parseSSEStream(reader)) {
+        fullContent += delta;
+        yield fullContent;
+      }
+    } catch (err) {
+      if (controller.signal.aborted) throw new Error('DeepSeek stream timeout (45s)');
+      throw err;
+    } finally {
+      clearTimeout(timeout);
     }
 
     return fullContent;

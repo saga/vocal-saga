@@ -15,7 +15,7 @@ export interface StorageAdapter {
   /** 写字符串 */
   set(key: string, value: string): Promise<void>;
   /** JSON.stringify 后写入 */
-  setJSON(key: string, value: unknown): Promise<void>;
+  setJSON(key: string, value: unknown, ttlMs?: number): Promise<void>;
   /** 删除单个 key */
   delete(key: string): Promise<void>;
   /** 列出所有 key（adapter 内的全部 key；调用方按前缀过滤） */

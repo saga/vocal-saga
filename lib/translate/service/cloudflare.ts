@@ -66,19 +66,30 @@ Return ONLY the final JSON object. No prose, no explanation, no markdown outside
     const apiUrl = `https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/${MODEL}`;
 
     console.log(`[CloudAI] Calling ${MODEL}, ${blocks.length} blocks`);
-    const response = await fetch(apiUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiToken}`,
-      },
-      body: JSON.stringify({
-        ...body,
-        max_tokens: estimateMaxTokens(JSON.stringify(body.messages)),
-      }),
-    });
-
-    const responseText = await response.text().catch(() => '');
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 120_000);
+    let response: Response;
+    let responseText: string;
+    try {
+      response = await fetch(apiUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiToken}`,
+        },
+        body: JSON.stringify({
+          ...body,
+          max_tokens: estimateMaxTokens(JSON.stringify(body.messages)),
+        }),
+        signal: controller.signal,
+      });
+      responseText = await response.text();
+    } catch (error) {
+      if (controller.signal.aborted) throw new Error('Cloudflare AI request timeout (120s)');
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
     if (!response.ok) {
       throw new Error(
         `Cloudflare AI API error: HTTP ${response.status} - ${responseText.slice(0, 200)}`
@@ -92,7 +103,7 @@ Return ONLY the final JSON object. No prose, no explanation, no markdown outside
       throw new Error(`Cloudflare AI returned invalid JSON: ${responseText.slice(0, 200)}`);
     }
 
-    console.log('[CloudAI] raw response:', JSON.stringify(parsedResponse)?.slice(0, 2000));
+    console.log('[CloudAI] response parsed; top-level keys:', Object.keys(parsedResponse ?? {}).slice(0, 12));
 
     // Workers AI REST 返回格式：
     //   { result: { choices: [{ message: { role, content, reasoning? } }] } }
@@ -135,16 +146,13 @@ Return ONLY the final JSON object. No prose, no explanation, no markdown outside
       parsedForCheck = JSON.parse(cleaned);
     } catch (e) {
       throw new Error(
-        `[CloudAI] cleaned content is not valid JSON. content=${cleaned.slice(0, 1000)}`
+        '[CloudAI] cleaned model response is not valid JSON'
       );
     }
     const arr = parsedForCheck?.translations;
     if (!Array.isArray(arr)) {
-      console.log('[CloudAI] parsed keys:', Object.keys(parsedForCheck ?? {}));
-      console.log('[CloudAI] parsed.translations type:', typeof arr, 'value:', arr);
-      throw new Error(
-        `[CloudAI] translations is not iterable. payload=${JSON.stringify(parsedForCheck).slice(0, 2000)}`
-      );
+      console.warn('[CloudAI] response did not contain a translations array; keys:', Object.keys(parsedForCheck ?? {}).slice(0, 12));
+      throw new Error('[CloudAI] response did not contain a translations array');
     }
 
     return cleaned;

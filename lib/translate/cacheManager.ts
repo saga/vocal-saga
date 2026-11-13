@@ -49,7 +49,7 @@ export class CacheManager {
   ) {
     this._storage = storage ?? null;
     this.prefix = `cache:${storeName}:`;
-    this.maxMemoryEntries = maxMemoryEntries;
+    this.maxMemoryEntries = Math.max(1, Math.floor(maxMemoryEntries));
   }
 
   async get<T>(key: string): Promise<T | null> {
@@ -68,6 +68,7 @@ export class CacheManager {
       if (entry) {
         if (!this.isExpired(entry)) {
           this.memoryCache.set(key, entry);
+          this.evictIfNeeded();
           return entry.data;
         }
         // 过期 → 顺手删
@@ -91,7 +92,7 @@ export class CacheManager {
     this.evictIfNeeded();
 
     try {
-      await this.storage.setJSON(this.prefix + key, entry);
+      await this.storage.setJSON(this.prefix + key, entry, entry.ttl);
     } catch (err) {
       console.warn(`[CacheManager:${this.storeName}] set failed for ${key}:`, (err as Error).message);
     }

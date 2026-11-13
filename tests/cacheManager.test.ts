@@ -130,6 +130,18 @@ describe('CacheManager', () => {
     expect(stats2.memorySize).toBeLessThanOrEqual(5);
   });
 
+  it('enforces the memory bound when entries are restored from persistent storage', async () => {
+    const persistent = new MapStorage('test:lru-restore');
+    for (let i = 0; i < 5; i++) {
+      await persistent.setJSON(`cache:restore:key${i}`, {
+        data: `value${i}`, timestamp: Date.now(), ttl: 10_000,
+      });
+    }
+    const c = new CacheManager('restore', 10_000, persistent, 2);
+    for (let i = 0; i < 5; i++) await c.get(`key${i}`);
+    expect((await c.getStats()).memorySize).toBeLessThanOrEqual(2);
+  });
+
   it('does not evict when under maxMemoryEntries', async () => {
     const c = new CacheManager('test:lru3', 1000, storage, 10);
     for (let i = 0; i < 5; i++) {

@@ -103,8 +103,7 @@ export function logUnchangedBlocks(
         console.warn(
           '[TranslateApi] Block',
           item.id,
-          'came back unchanged (LLM refused / no-op). Original:',
-          original.substring(0, 80)
+          'came back unchanged (LLM refused / no-op)'
         );
       }
     }
@@ -238,10 +237,8 @@ export function processTranslationWithCheck(
           verdict.origSentences,
           'transSent',
           verdict.transSentences,
-          '| orig=',
-          original.substring(0, 50),
-          '| trans=',
-          translated.substring(0, 50)
+          '| sourceChars=', original.length,
+          '| translatedChars=', translated.length
         );
       }
     }

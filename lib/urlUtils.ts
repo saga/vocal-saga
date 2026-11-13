@@ -32,6 +32,16 @@ export function normalizeUrl(rawPath: string): string {
  * 缓存 key 直接用完整 URL（保留 scheme 和 www）。
  * www.example.com 和 example.com 暂时视为不同 URL。
  */
+/** Remove query strings, fragments, and embedded credentials from URLs used in logs. */
+export function safeLogUrl(value: string): string {
+  try {
+    const parsed = new URL(value);
+    return parsed.origin + parsed.pathname;
+  } catch {
+    return '(invalid URL)';
+  }
+}
+
 export function cacheKeyUrl(url: string): string {
   return url;
 }

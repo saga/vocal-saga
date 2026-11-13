@@ -86,6 +86,15 @@ beforeAll(async () => {
       return;
     }
 
+    if (url.pathname === '/slow-body') {
+      // Return headers immediately, then stall the body to verify the timeout
+      // remains active after fetch() has resolved.
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.flushHeaders?.();
+      setTimeout(() => res.end('<!doctype html><html><body>late</body></html>'), 300);
+      return;
+    }
+
     res.writeHead(418, { 'Content-Type': 'text/plain' });
     res.end("I'm a teapot");
   });
@@ -112,6 +121,11 @@ describe('fetchPage', () => {
 
   it('throws on 4xx', async () => {
     await expect(fetchLocal(`${baseUrl}/404`)).rejects.toThrow(/HTTP 404/);
+  });
+
+  it('keeps the timeout active while reading a response body after headers arrive', async () => {
+    await expect(fetchLocal(`${baseUrl}/slow-body`, { timeoutMs: 100 }))
+      .rejects.toThrow(/fetch page body timeout/);
   });
 
 

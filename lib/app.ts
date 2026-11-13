@@ -80,7 +80,7 @@ import type { PromptStyle, TranslationMode } from './translate/service/shared';
 import { setDefaultStorage, type StorageAdapter } from './storage';
 import { requireAuth } from './auth';
 import { extractClientInfo, formatClientLabel } from './clientInfo';
-import { normalizeUrl, cacheKeyUrl, assertPublicUrl } from './urlUtils';
+import { normalizeUrl, cacheKeyUrl, assertPublicUrl, safeLogUrl } from './urlUtils';
 import { looksLikeDomainParkingHtml } from './translate/pageGuard';
 import { injectRedirectGuard } from './redirectGuard';
 import { stripDangerousScripts, stripNavigationScripts } from './spaGuard';
@@ -115,6 +115,52 @@ import {
   getCfAccountId,
   getCfApiToken,
 } from './config';
+
+export type LimitedJsonBodyResult =
+  | { ok: true; value: any }
+  | { ok: false; status: 400 | 413; error: string };
+
+/**
+ * Parse JSON while enforcing a byte limit during stream consumption.
+ * Content-Length is only an early rejection optimization; the streamed byte count
+ * remains authoritative for chunked requests.
+ */
+export async function readJsonBodyLimited(request: Request, maxBytes: number): Promise<LimitedJsonBodyResult> {
+  const limit = Math.max(1, Math.floor(maxBytes));
+  const contentLength = Number(request.headers.get('content-length'));
+  if (Number.isFinite(contentLength) && contentLength > limit) {
+    return { ok: false, status: 413, error: 'request body exceeds the configured size limit' };
+  }
+  if (!request.body) return { ok: true, value: {} };
+
+  const reader = request.body.getReader();
+  const decoder = new TextDecoder();
+  let totalBytes = 0;
+  let text = '';
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      totalBytes += value.byteLength;
+      if (totalBytes > limit) {
+        try { await reader.cancel(); } catch { /* ignore */ }
+        return { ok: false, status: 413, error: 'request body exceeds the configured size limit' };
+      }
+      text += decoder.decode(value, { stream: true });
+    }
+    text += decoder.decode();
+  } catch {
+    return { ok: false, status: 400, error: 'could not read request body' };
+  } finally {
+    reader.releaseLock();
+  }
+
+  try {
+    return { ok: true, value: JSON.parse(text) };
+  } catch {
+    return { ok: false, status: 400, error: 'request body must be valid JSON' };
+  }
+}
 
 /**
  * 校验缓存的翻译 HTML 是否结构完整。
@@ -880,7 +926,9 @@ ${pager}
   // ── POST /api/v1/chat/completions ─────────────────────
   app.post('/api/v1/chat/completions', requireAuth, async (c) => {
 
-    const body = await c.req.json().catch(() => ({} as any));
+    const parsedBody = await readJsonBodyLimited(c.req.raw, 4 * 1024 * 1024);
+    if (!parsedBody.ok) return c.json({ error: parsedBody.error }, parsedBody.status);
+    const body = parsedBody.value;
     const { stream, _backend } = body;
     const resolved = resolveModel(body?.model, _backend);
     if (resolved.error) {
@@ -936,25 +984,63 @@ ${pager}
     }
 
     const startedAt = Date.now();
+    const controller = new AbortController();
+    const timeoutMs = 120_000;
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const upstream = await fetch(targetUrl, {
         method: 'POST',
         headers,
         body: JSON.stringify(updated),
+        signal: controller.signal,
       });
 
       const latency = Date.now() - startedAt;
 
       if (!upstream.ok) {
-        const errData = await upstream.json();
-        console.error(`[resp] status=${upstream.status} latency=${latency}ms error=${JSON.stringify(errData)}`);
+        let errData: any;
+        try {
+          errData = await upstream.json();
+        } finally {
+          clearTimeout(timeout);
+        }
+        console.error(`[resp] status=${upstream.status} latency=${latency}ms upstream_error_keys=${Object.keys(errData ?? {}).slice(0, 8).join(',')}`);
         return c.json(errData, upstream.status as 400 | 401 | 403 | 404 | 429 | 500 | 502 | 503);
       }
 
       if (stream && upstream.body) {
         console.log(`[resp] status=${upstream.status} latency=${latency}ms stream=started`);
-        // 把上游 ReadableStream 直接透传
-        return new Response(upstream.body, {
+        const reader = upstream.body.getReader();
+        // Keep the deadline active until the client finishes or cancels the stream.
+        const body = new ReadableStream<Uint8Array>({
+          async pull(streamController) {
+            try {
+              const { done, value } = await reader.read();
+              if (done) {
+                clearTimeout(timeout);
+                reader.releaseLock();
+                streamController.close();
+              } else {
+                streamController.enqueue(value);
+              }
+            } catch (error) {
+              clearTimeout(timeout);
+              try { reader.releaseLock(); } catch { /* reader may already be released */ }
+              streamController.error(error);
+            }
+          },
+          async cancel(reason) {
+            clearTimeout(timeout);
+            try {
+              await reader.cancel(reason);
+            } catch {
+              /* upstream may already have errored */
+            } finally {
+              try { reader.releaseLock(); } catch { /* ignore */ }
+            }
+          },
+        });
+        return new Response(body, {
           status: 200,
           headers: {
             'Content-Type': 'text/event-stream',
@@ -965,14 +1051,20 @@ ${pager}
         });
       }
 
-      const data = (await upstream.json()) as Record<string, any>;
-      const usage = data.usage;
-      console.log(`[resp] status=${upstream.status} latency=${latency}ms` +
-        (usage ? ` tokens_in=${usage.prompt_tokens} tokens_out=${usage.completion_tokens}` : ''));
-      return c.json({ ...data, _backend: backend });
+      try {
+        const data = (await upstream.json()) as Record<string, any>;
+        const usage = data.usage;
+        console.log(`[resp] status=${upstream.status} latency=${latency}ms` +
+          (usage ? ` tokens_in=${usage.prompt_tokens} tokens_out=${usage.completion_tokens}` : ''));
+        return c.json({ ...data, _backend: backend });
+      } finally {
+        clearTimeout(timeout);
+      }
     } catch (err) {
-      console.error(`[resp] error="${(err as Error).message}" latency=${Date.now() - startedAt}ms`);
-      return c.json({ error: 'Upstream request failed', detail: (err as Error).message }, 502);
+      clearTimeout(timeout);
+      const detail = controller.signal.aborted ? `Upstream request timeout (${timeoutMs}ms)` : (err as Error).message;
+      console.error(`[resp] error="${detail}" latency=${Date.now() - startedAt}ms`);
+      return c.json({ error: 'Upstream request failed', detail }, 502);
     }
   });
 
@@ -1018,7 +1110,7 @@ ${pager}
       });
       const { hit, stale } = pickPageCacheHit(candidates, expectedContentHash, true);
       if (hit) {
-        console.log(`[fanyi/page/check] D1 cache hit for ${url} sid=${sid}`);
+        console.log(`[fanyi/page/check] D1 cache hit for ${safeLogUrl(url)} sid=${sid}`);
         return new Response(
           await renderCachedTranslationHtml(hit.row.html, url, hit.db, hit.row.id),
           {
@@ -1032,7 +1124,7 @@ ${pager}
         );
       }
       if (stale && expectedContentHash) {
-        console.log(`[fanyi/page/check] D1 cache stale for ${url} (content_hash mismatch) sid=${sid}`);
+        console.log(`[fanyi/page/check] D1 cache stale for ${safeLogUrl(url)} (content_hash mismatch) sid=${sid}`);
         return new Response(null, { status: 410 });
       }
     } catch (e) {
@@ -1051,7 +1143,9 @@ ${pager}
   // 用于绕过 Cloudflare Challenge 等反爬场景——扩展在真实浏览器中拿到 HTML，
   // 传给服务端翻译，服务端不再直接 fetch 目标 URL。
   app.post('/fanyi/page', async (c) => {
-    const body = await c.req.json().catch(() => ({} as any));
+    const parsedBody = await readJsonBodyLimited(c.req.raw, 8 * 1024 * 1024);
+    if (!parsedBody.ok) return c.json({ error: parsedBody.error }, parsedBody.status);
+    const body = parsedBody.value;
     const { html, url } = body;
 
     // 客户端浏览器信息：优先用扩展端带来的精确 client 对象，缺失时由 UA header 推导。
@@ -1066,6 +1160,9 @@ ${pager}
 
     if (!html || typeof html !== 'string' || html.length === 0) {
       return c.json({ error: 'html is required' }, 400);
+    }
+    if (new TextEncoder().encode(html).byteLength > 5 * 1024 * 1024) {
+      return c.json({ error: 'html must be at most 5 MiB' }, 413);
     }
     if (!url || typeof url !== 'string') {
       return c.json({ error: 'url is required' }, 400);
@@ -1104,7 +1201,7 @@ ${pager}
     // JS 的 string.length 是 UTF-16 code unit 数，不是网络传输字节数。同时记录字符数和 UTF-8 字节数，
     // 以便排查大页面请求；这里不设置应用层 HTML 大小上限。
     const htmlUtf8Bytes = new TextEncoder().encode(html).byteLength;
-    console.log(`[fanyi/page] url=${url} src=${sourceStored} tgt=${targetStored} mode=${mode} provider=${provider} quality=${qualityMode} htmlChars=${html.length} htmlUtf8Bytes=${htmlUtf8Bytes} client=${clientLabel} sid=${sid}`);
+    console.log(`[fanyi/page] url=${safeLogUrl(url)} src=${sourceStored} tgt=${targetStored} mode=${mode} provider=${provider} quality=${qualityMode} htmlChars=${html.length} htmlUtf8Bytes=${htmlUtf8Bytes} client=${clientLabel} sid=${sid}`);
 
     // ── D1 缓存：同 URL+source+target 已存在且 content_hash 匹配则直接返回 ──
     // content_hash 的语义是「这份缓存的 block id 映射是否仍然有效」：
@@ -1134,7 +1231,7 @@ ${pager}
       });
       const { hit, stale } = pickPageCacheHit(candidates, contentHash, true);
       if (hit) {
-        console.log(`[fanyi/page] D1 cache hit for ${url} sid=${sid}`);
+        console.log(`[fanyi/page] D1 cache hit for ${safeLogUrl(url)} sid=${sid}`);
         return new Response(
           await renderCachedTranslationHtml(hit.row.html, url, hit.db, hit.row.id),
           {
@@ -1148,7 +1245,7 @@ ${pager}
         );
       }
       if (stale) {
-        console.log(`[fanyi/page] D1 cache stale for ${url} (content_hash mismatch), re-translating sid=${sid}`);
+        console.log(`[fanyi/page] D1 cache stale for ${safeLogUrl(url)} (content_hash mismatch), re-translating sid=${sid}`);
       }
     } catch (e) {
       console.error('[D1] lookup error:', e);
@@ -1200,7 +1297,7 @@ ${pager}
             {
               onAttemptError: (error, attempt, willRetry) => {
                 console.error(
-                  `[D1] save attempt ${attempt} failed for ${url} sid=${sid} htmlBytes=${htmlBytes} ` +
+                  `[D1] save attempt ${attempt} failed for ${safeLogUrl(url)} sid=${sid} htmlBytes=${htmlBytes} ` +
                     `willRetry=${willRetry}: ${describeD1Error(error)}`,
                 );
               },
@@ -1208,7 +1305,7 @@ ${pager}
           );
         } catch (e) {
           saveError = describeD1Error(e) || 'D1 write failed';
-          console.error(`[D1] save failed for ${url} sid=${sid} htmlBytes=${htmlBytes}: ${saveError}`);
+          console.error(`[D1] save failed for ${safeLogUrl(url)} sid=${sid} htmlBytes=${htmlBytes}: ${saveError}`);
         }
       }
 
@@ -1269,9 +1366,14 @@ ${pager}
 
   // ── 翻译代理 ──────────────────────────────────────────
   app.post('/api/translate/text', async (c) => {
-    const { text, source, target, glossary, promptStyle, translationMode } = await c.req.json().catch(() => ({} as any));
+    const parsedBody = await readJsonBodyLimited(c.req.raw, 1024 * 1024);
+    if (!parsedBody.ok) return c.json({ error: parsedBody.error }, parsedBody.status);
+    const { text, source, target, glossary, promptStyle, translationMode } = parsedBody.value;
     if (!text || typeof text !== 'string') {
       return c.json({ error: 'text is required' }, 400);
+    }
+    if (new TextEncoder().encode(text).byteLength > 256 * 1024) {
+      return c.json({ error: 'text must be at most 256 KiB' }, 413);
     }
     console.log(`[translate/text] chars=${text.length} src=${source || 'en'} tgt=${target || 'zh'}`);
     try {
@@ -1286,7 +1388,7 @@ ${pager}
       console.log(`[translate/text] chunks=${result.chunks} duration=${result.duration_ms}ms`);
       return c.json(result);
     } catch (err) {
-      console.error('[translate/text] error:', err);
+      console.error('[translate/text] translation failed:', (err as Error)?.name || 'Error');
       return c.json({ error: (err as Error).message }, 500);
     }
   });
@@ -1298,7 +1400,9 @@ ${pager}
    * as the public /translate/* routes, but wraps the resulting HTML and metrics as JSON.
    */
   app.post('/api/translate/url', async (c) => {
-    const body = await c.req.json().catch(() => ({} as any));
+    const parsedBody = await readJsonBodyLimited(c.req.raw, 32 * 1024);
+    if (!parsedBody.ok) return c.json({ error: parsedBody.error }, parsedBody.status);
+    const body = parsedBody.value;
     if (typeof body?.url !== 'string' || !body.url.trim() || body.url.length > 4096) {
       return c.json({ error: 'url is required and must be at most 4096 characters' }, 400);
     }
@@ -1368,7 +1472,9 @@ ${pager}
    * 这些长任务由扩展和本机 local-agent-service 管理。
    */
   app.post('/api/translate/document/segments', async (c) => {
-    const body = await c.req.json().catch(() => ({} as any));
+    const parsedBody = await readJsonBodyLimited(c.req.raw, 6 * 1024 * 1024);
+    if (!parsedBody.ok) return c.json({ error: parsedBody.error }, parsedBody.status);
+    const body = parsedBody.value;
     const {
       fileName, title, format, segments, warnings, source, target, glossary,
       promptStyle, translationMode, translate, provider, model, apiKey, forceRefresh,
@@ -1472,7 +1578,7 @@ ${pager}
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.error('[document/segments] translation failed:', error);
+      console.error('[document/segments] translation failed:', error instanceof Error ? error.name : 'UnknownError');
       return c.json({ error: message }, 502);
     }
   });
@@ -1534,7 +1640,7 @@ ${pager}
     } catch (e) {
       return c.json({ error: (e as Error).message }, 400);
     }
-    console.log(`[translate/url-page] url=${url} src=${sourceStored} tgt=${targetStored} mode=${mode} promptStyle=${promptStyle || 'default'} translationMode=${translationMode} provider=${provider} force=${force}`);
+    console.log(`[translate/url-page] url=${safeLogUrl(url)} src=${sourceStored} tgt=${targetStored} mode=${mode} promptStyle=${promptStyle || 'default'} translationMode=${translationMode} provider=${provider} force=${force}`);
 
     // A URL result is reusable only when provider/model/style/mode/site rules/prompt revision match.
     // The previous empty content_hash allowed every provider and style to overwrite the same D1 row.
@@ -1557,7 +1663,7 @@ ${pager}
         const cached = candidates[0] ?? null;
         cachedRow = cached ? { ...cached.row, db: cached.db } : null;
         if (cached && isHealthyCachedHtml(cached.row.html)) {
-          console.log(`[translate/url-page] D1 cache hit for ${url}`);
+          console.log(`[translate/url-page] D1 cache hit for ${safeLogUrl(url)}`);
           return new Response(
             await renderCachedTranslationHtml(cached.row.html, url, cached.db, cached.row.id),
             {
@@ -1571,7 +1677,7 @@ ${pager}
           );
         }
         if (cached) {
-          console.warn(`[translate/url-page] D1 cache for ${url} is unhealthy, treating as miss`);
+          console.warn(`[translate/url-page] D1 cache for ${safeLogUrl(url)} is unhealthy, treating as miss`);
         }
       } catch (e) {
         console.error('[D1] lookup error:', e);
@@ -1624,7 +1730,7 @@ ${pager}
             {
               onAttemptError: (error, attempt, willRetry) => {
                 console.error(
-                  `[D1] save attempt ${attempt} failed for ${url} htmlBytes=${htmlBytes} ` +
+                  `[D1] save attempt ${attempt} failed for ${safeLogUrl(url)} htmlBytes=${htmlBytes} ` +
                     `willRetry=${willRetry}: ${describeD1Error(error)}`,
                 );
               },
@@ -1632,7 +1738,7 @@ ${pager}
           );
         } catch (e) {
           saveError = describeD1Error(e) || 'D1 write failed';
-          console.error(`[D1] save failed for ${url} htmlBytes=${htmlBytes}: ${saveError}`);
+          console.error(`[D1] save failed for ${safeLogUrl(url)} htmlBytes=${htmlBytes}: ${saveError}`);
         }
       }
       const finalHtml = saveError
@@ -1664,11 +1770,11 @@ ${pager}
     } catch (err) {
       const message = (err as Error)?.message || String(err);
       const rejectedParkingPage = message.includes('likely domain-parking page');
-      console.error(`[translate/url-page] error url=${url}:`, message);
+      console.error(`[translate/url-page] error url=${safeLogUrl(url)}:`, message);
       // A stale-cache fallback must not resurrect the same parking page that caused
       // the live fetch to be rejected.
       if (cachedRow?.html && !looksLikeDomainParkingHtml(cachedRow.html)) {
-        console.warn(`[translate/url-page] serving stale D1 cache for ${url} after failure`);
+        console.warn(`[translate/url-page] serving stale D1 cache for ${safeLogUrl(url)} after failure`);
         return new Response(await renderCachedTranslationHtml(cachedRow.html, url, cachedRow.db, cachedRow.id), {
           status: 200,
           headers: {

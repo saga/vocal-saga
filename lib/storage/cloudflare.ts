@@ -23,8 +23,11 @@ export class CloudflareKVStorage implements StorageAdapter {
     await this.kv.put(key, value);
   }
 
-  async setJSON(key: string, value: unknown): Promise<void> {
-    await this.kv.put(key, JSON.stringify(value));
+  async setJSON(key: string, value: unknown, ttlMs?: number): Promise<void> {
+    const expirationTtl = Number.isFinite(ttlMs) && (ttlMs ?? 0) > 0
+      ? Math.max(60, Math.ceil((ttlMs as number) / 1000))
+      : undefined;
+    await this.kv.put(key, JSON.stringify(value), expirationTtl ? { expirationTtl } : undefined);
   }
 
   async delete(key: string): Promise<void> {
@@ -32,7 +35,16 @@ export class CloudflareKVStorage implements StorageAdapter {
   }
 
   async list(): Promise<string[]> {
-    const result = await this.kv.list();
-    return result.keys.map((k: { name: string }) => k.name);
+    const names: string[] = [];
+    let cursor: string | undefined;
+    do {
+      const result: any = await this.kv.list(cursor ? { cursor } : undefined);
+      names.push(...(result.keys ?? []).map((key: { name: string }) => key.name));
+      cursor = result.list_complete ? undefined : result.cursor;
+      if (!result.list_complete && !cursor) {
+        throw new Error('Cloudflare KV list returned an incomplete page without a cursor');
+      }
+    } while (cursor);
+    return names;
   }
 }

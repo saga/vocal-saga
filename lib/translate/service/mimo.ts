@@ -29,6 +29,7 @@ const SOURCE_HEADER = 'mimocode-cli-free';
 // JWT 缓存（module-level，Worker 实例存活期间复用）
 let _cachedJwt: string | null = null;
 let _cachedExp = 0;
+let _bootstrapPromise: Promise<BootstrapResponse> | null = null;
 
 // 预留 5 分钟缓冲期，避免在临界时刻使用即将过期的 token
 const EXPIRY_BUFFER_MS = 5 * 60 * 1000;
@@ -42,13 +43,24 @@ async function bootstrap(): Promise<BootstrapResponse> {
   const clientId = getMimoClientId();
   console.log('[MiMo] Bootstrapping JWT with client:', clientId);
 
-  const response = await fetch(BOOTSTRAP_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ client: clientId }),
-  });
-
-  const responseText = await response.text().catch(() => '');
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15_000);
+  let response: Response;
+  let responseText: string;
+  try {
+    response = await fetch(BOOTSTRAP_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ client: clientId }),
+      signal: controller.signal,
+    });
+    responseText = await response.text();
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error('MiMo bootstrap timeout (15s)');
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 
   if (!response.ok) {
     throw new Error(`MiMo bootstrap error: HTTP ${response.status} - ${responseText.substring(0, 200)}`);
@@ -80,7 +92,13 @@ async function getJwt(): Promise<string> {
     return _cachedJwt;
   }
 
-  const data = await bootstrap();
+  // Concurrent chunks in a cold Worker isolate share one bootstrap request.
+  if (!_bootstrapPromise) {
+    _bootstrapPromise = bootstrap().finally(() => {
+      _bootstrapPromise = null;
+    });
+  }
+  const data = await _bootstrapPromise;
   _cachedJwt = data.jwt;
   _cachedExp = data.exp;
   return _cachedJwt;
@@ -115,11 +133,18 @@ async function callApi(body: string): Promise<string> {
     }
     throw err;
   }
-  clearTimeout(timeout);
 
   console.log('[MiMo] Response status:', response.status);
 
-  const responseText = await response.text().catch(() => '');
+  let responseText: string;
+  try {
+    responseText = await response.text();
+  } catch (err) {
+    if (controller.signal.aborted) throw new Error('MiMo API timeout (120s)');
+    throw err;
+  } finally {
+    clearTimeout(timeout);
+  }
 
   if (!response.ok) {
     // 401 可能表示 JWT 已过期，清除缓存让下次重新 bootstrap
@@ -246,27 +271,34 @@ export class MimoTranslationService implements TranslationService {
       }
       throw err;
     }
-    clearTimeout(timeout);
-
     if (!response.ok) {
       if (response.status === 401) {
         _cachedJwt = null;
         _cachedExp = 0;
       }
       const text = await response.text().catch(() => '');
+      clearTimeout(timeout);
       throw new Error(`MiMo API error: HTTP ${response.status} - ${text.substring(0, 200)}`);
     }
 
     if (!response.body) {
+      clearTimeout(timeout);
       throw new Error('MiMo API error: response body is null');
     }
 
     const reader = response.body.getReader();
     let fullContent = '';
 
-    for await (const delta of parseSSEStream(reader)) {
-      fullContent += delta;
-      yield fullContent;
+    try {
+      for await (const delta of parseSSEStream(reader)) {
+        fullContent += delta;
+        yield fullContent;
+      }
+    } catch (err) {
+      if (controller.signal.aborted) throw new Error('MiMo stream timeout (120s)');
+      throw err;
+    } finally {
+      clearTimeout(timeout);
     }
 
     return fullContent;

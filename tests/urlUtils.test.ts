@@ -2,7 +2,18 @@
  * urlUtils 单测：URL 标准化和缓存 key 生成。
  */
 import { describe, it, expect } from 'vitest';
-import { normalizeUrl, cacheKeyUrl, assertPublicUrl } from '../lib/urlUtils';
+import { normalizeUrl, cacheKeyUrl, assertPublicUrl, safeLogUrl } from '../lib/urlUtils';
+
+describe('safeLogUrl', () => {
+  it('strips query strings, fragments, and embedded credentials', () => {
+    expect(safeLogUrl('https://user:pass@example.com/path/to/page?token=secret#section'))
+      .toBe('https://example.com/path/to/page');
+  });
+
+  it('returns a safe placeholder for invalid URL input', () => {
+    expect(safeLogUrl('not a url')).toBe('(invalid URL)');
+  });
+});
 
 describe('normalizeUrl', () => {
   it('strips https:// prefix', () => {

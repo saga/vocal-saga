@@ -42,11 +42,18 @@ async function callApi(body: string): Promise<string> {
     }
     throw err;
   }
-  clearTimeout(timeout);
 
   console.log('[NVIDIA] Response status:', response.status);
 
-  const responseText = await response.text().catch(() => '');
+  let responseText: string;
+  try {
+    responseText = await response.text();
+  } catch (err) {
+    if (controller.signal.aborted) throw new Error('NVIDIA API timeout (180000ms)');
+    throw err;
+  } finally {
+    clearTimeout(timeout);
+  }
 
   if (!response.ok) {
     let errorMessage = `HTTP ${response.status}`;
@@ -160,23 +167,30 @@ export class NvidiaTranslationService implements TranslationService {
       }
       throw err;
     }
-    clearTimeout(timeout);
-
     if (!response.ok) {
       const text = await response.text().catch(() => '');
+      clearTimeout(timeout);
       throw new Error(`NVIDIA API error: HTTP ${response.status} - ${text.substring(0, 200)}`);
     }
 
     if (!response.body) {
+      clearTimeout(timeout);
       throw new Error('NVIDIA API error: response body is null');
     }
 
     const reader = response.body.getReader();
     let fullContent = '';
 
-    for await (const delta of parseSSEStream(reader)) {
-      fullContent += delta;
-      yield fullContent;
+    try {
+      for await (const delta of parseSSEStream(reader)) {
+        fullContent += delta;
+        yield fullContent;
+      }
+    } catch (err) {
+      if (controller.signal.aborted) throw new Error('NVIDIA stream timeout (60s)');
+      throw err;
+    } finally {
+      clearTimeout(timeout);
     }
 
     return fullContent;

@@ -56,7 +56,7 @@ export class MapStorage implements StorageAdapter {
     this.map.set(key, value);
   }
 
-  async setJSON(key: string, value: unknown): Promise<void> {
+  async setJSON(key: string, value: unknown, _ttlMs?: number): Promise<void> {
     this.map.set(key, JSON.stringify(value));
   }
 
