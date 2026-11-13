@@ -985,9 +985,9 @@ export async function translateHtml(input: TranslateHtmlInput): Promise<Translat
       : extractBlocksFromMarkedHtml(doc);
     preExtractedBlocks = reconciled ?? extractBlocksFromMarkedHtml(doc);
     if (input.blocks && !reconciled) {
-      console.warn(`[Pipeline] Client block snapshot did not match marked HTML; falling back to DOM text: ${input.url}`);
+      console.warn(`[Pipeline] Client block snapshot did not match marked HTML; falling back to DOM text: ${safeLogUrl(input.url)}`);
     }
-    console.log(`[Pipeline] Received pre-marked HTML from extension: ${input.url} (${input.html.length} bytes, ${preExtractedBlocks.length} blocks, clientText=${Boolean(reconciled)})`);
+    console.log(`[Pipeline] Received pre-marked HTML from extension: ${safeLogUrl(input.url)} (${input.html.length} bytes, ${preExtractedBlocks.length} blocks, clientText=${Boolean(reconciled)})`);
   } else {
     console.log(`[Pipeline] Received HTML from extension: ${input.url} (${input.html.length} bytes, no pre-marked blocks)`);
   }
