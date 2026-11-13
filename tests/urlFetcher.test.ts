@@ -91,7 +91,7 @@ beforeAll(async () => {
       // remains active after fetch() has resolved.
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.flushHeaders?.();
-      setTimeout(() => res.end('<!doctype html><html><body>late</body></html>'), 100);
+      setTimeout(() => res.end('<!doctype html><html><body>late</body></html>'), 300);
       return;
     }
 
@@ -124,7 +124,7 @@ describe('fetchPage', () => {
   });
 
   it('keeps the timeout active while reading a response body after headers arrive', async () => {
-    await expect(fetchLocal(`${baseUrl}/slow-body`, { timeoutMs: 20 }))
+    await expect(fetchLocal(`${baseUrl}/slow-body`, { timeoutMs: 100 }))
       .rejects.toThrow(/fetch page body timeout/);
   });
 
