@@ -117,6 +117,52 @@ import {
  * 导致页面 CSS 全部丢失。某些损坏缓存虽保留 <html>，但原页面内联
  * 样式被清空，只剩 OneTrust / fanyi 样式，也要视为 miss 重新翻译。
  */
+export type LimitedJsonBodyResult =
+  | { ok: true; value: any }
+  | { ok: false; status: 400 | 413; error: string };
+
+/**
+ * Parse JSON while enforcing a byte limit during stream consumption.
+ * Content-Length is only an early rejection optimization; the streamed byte count
+ * remains authoritative for chunked requests.
+ */
+export async function readJsonBodyLimited(request: Request, maxBytes: number): Promise<LimitedJsonBodyResult> {
+  const limit = Math.max(1, Math.floor(maxBytes));
+  const contentLength = Number(request.headers.get('content-length'));
+  if (Number.isFinite(contentLength) && contentLength > limit) {
+    return { ok: false, status: 413, error: 'request body exceeds the configured size limit' };
+  }
+  if (!request.body) return { ok: true, value: {} };
+
+  const reader = request.body.getReader();
+  const decoder = new TextDecoder();
+  let totalBytes = 0;
+  let text = '';
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      totalBytes += value.byteLength;
+      if (totalBytes > limit) {
+        try { await reader.cancel(); } catch { /* ignore */ }
+        return { ok: false, status: 413, error: 'request body exceeds the configured size limit' };
+      }
+      text += decoder.decode(value, { stream: true });
+    }
+    text += decoder.decode();
+  } catch {
+    return { ok: false, status: 400, error: 'could not read request body' };
+  } finally {
+    reader.releaseLock();
+  }
+
+  try {
+    return { ok: true, value: JSON.parse(text) };
+  } catch {
+    return { ok: false, status: 400, error: 'request body must be valid JSON' };
+  }
+}
+
 export function isHealthyCachedHtml(html: string): boolean {
   // Structural completeness is not enough: a registrar parking page can have
   // valid HTML, CSS, and translated spans. Never serve it as a healthy translation.
@@ -1046,7 +1092,9 @@ ${pager}
   // 用于绕过 Cloudflare Challenge 等反爬场景——扩展在真实浏览器中拿到 HTML，
   // 传给服务端翻译，服务端不再直接 fetch 目标 URL。
   app.post('/fanyi/page', async (c) => {
-    const body = await c.req.json().catch(() => ({} as any));
+    const parsedBody = await readJsonBodyLimited(c.req.raw, 8 * 1024 * 1024);
+    if (!parsedBody.ok) return c.json({ error: parsedBody.error }, parsedBody.status);
+    const body = parsedBody.value;
     const { html, url } = body;
 
     // 客户端浏览器信息：优先用扩展端带来的精确 client 对象，缺失时由 UA header 推导。
@@ -1061,6 +1109,9 @@ ${pager}
 
     if (!html || typeof html !== 'string' || html.length === 0) {
       return c.json({ error: 'html is required' }, 400);
+    }
+    if (new TextEncoder().encode(html).byteLength > 5 * 1024 * 1024) {
+      return c.json({ error: 'html must be at most 5 MiB' }, 413);
     }
     if (!url || typeof url !== 'string') {
       return c.json({ error: 'url is required' }, 400);
@@ -1264,7 +1315,9 @@ ${pager}
 
   // ── 翻译代理 ──────────────────────────────────────────
   app.post('/api/translate/text', async (c) => {
-    const { text, source, target, glossary, promptStyle, translationMode } = await c.req.json().catch(() => ({} as any));
+    const parsedBody = await readJsonBodyLimited(c.req.raw, 1024 * 1024);
+    if (!parsedBody.ok) return c.json({ error: parsedBody.error }, parsedBody.status);
+    const { text, source, target, glossary, promptStyle, translationMode } = parsedBody.value;
     if (!text || typeof text !== 'string') {
       return c.json({ error: 'text is required' }, 400);
     }
@@ -1293,7 +1346,9 @@ ${pager}
    * as the public /translate/* routes, but wraps the resulting HTML and metrics as JSON.
    */
   app.post('/api/translate/url', async (c) => {
-    const body = await c.req.json().catch(() => ({} as any));
+    const parsedBody = await readJsonBodyLimited(c.req.raw, 32 * 1024);
+    if (!parsedBody.ok) return c.json({ error: parsedBody.error }, parsedBody.status);
+    const body = parsedBody.value;
     if (typeof body?.url !== 'string' || !body.url.trim() || body.url.length > 4096) {
       return c.json({ error: 'url is required and must be at most 4096 characters' }, 400);
     }
