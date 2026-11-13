@@ -10,9 +10,10 @@
  * 故意不测 CloudflareKVStorage：它需要真实 Worker binding，
  * 单测里用 mock 反而把单测变成 mock 测试，价值低。集成覆盖留给 e2e。
  */
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   MapStorage,
+  CloudflareKVStorage,
   setDefaultStorage,
   getDefaultStorage,
   clearDefaultStorage,
@@ -71,6 +72,37 @@ describe('MapStorage', () => {
     expect(await b.get('k')).toBe('2');
   });
 
+});
+
+describe('CloudflareKVStorage', () => {
+  it('applies the logical cache TTL as a KV expiration', async () => {
+    const put = async () => {};
+    const kv: any = { put, list: async () => ({ keys: [], list_complete: true }) };
+    const storage = new CloudflareKVStorage(kv);
+    const spy = vi.spyOn(kv, 'put');
+    await storage.setJSON('cache:test:key', { ok: true }, 7 * 24 * 60 * 60 * 1000);
+    expect(spy).toHaveBeenCalledWith(
+      'cache:test:key',
+      JSON.stringify({ ok: true }),
+      { expirationTtl: 7 * 24 * 60 * 60 },
+    );
+  });
+
+  it('lists every KV page until list_complete', async () => {
+    const calls: any[] = [];
+    const kv: any = {
+      list: async (options?: any) => {
+        calls.push(options);
+        if (!options?.cursor) {
+          return { keys: [{ name: 'a' }], list_complete: false, cursor: 'next-page' };
+        }
+        return { keys: [{ name: 'b' }], list_complete: true };
+      },
+    };
+    const storage = new CloudflareKVStorage(kv);
+    expect(await storage.list()).toEqual(['a', 'b']);
+    expect(calls).toEqual([undefined, { cursor: 'next-page' }]);
+  });
 });
 
 describe('default storage registry', () => {
