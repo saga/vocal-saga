@@ -61,6 +61,13 @@ beforeAll(async () => {
       res.end('.o{}');
       return;
     }
+
+    if (url === '/slow.css') {
+      res.writeHead(200, { 'Content-Type': 'text/css' });
+      res.flushHeaders?.();
+      setTimeout(() => res.end('.slow{color:red}'), 100);
+      return;
+    }
     res.writeHead(404);
     res.end('');
   });
@@ -155,6 +162,13 @@ describe('inlineExternalStylesheets', () => {
     expect(out).toContain('<\\/style>');
     // 转义后结构仍然完整，body 内容没被吞
     expect(out).toContain('<p>after</p>');
+  });
+
+  it('响应头到达后 CSS body 仍受 timeout 约束', async () => {
+    const html = `<html><head><link rel="stylesheet" href="/slow.css"></head><body>x</body></html>`;
+    const out = await run(html, { timeoutMs: 20, onError: () => {} });
+    expect(out).toContain('data-fanyi-render-mode="reader"');
+    expect(out).not.toContain('.slow{color:red}');
   });
 
   it('超出单张字节上限时不内联', async () => {
