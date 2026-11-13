@@ -1367,6 +1367,9 @@ ${pager}
     if (!text || typeof text !== 'string') {
       return c.json({ error: 'text is required' }, 400);
     }
+    if (new TextEncoder().encode(text).byteLength > 256 * 1024) {
+      return c.json({ error: 'text must be at most 256 KiB' }, 413);
+    }
     console.log(`[translate/text] chars=${text.length} src=${source || 'en'} tgt=${target || 'zh'}`);
     try {
       const result = await translateText({
