@@ -29,6 +29,7 @@ const SOURCE_HEADER = 'mimocode-cli-free';
 // JWT 缓存（module-level，Worker 实例存活期间复用）
 let _cachedJwt: string | null = null;
 let _cachedExp = 0;
+let _bootstrapPromise: Promise<BootstrapResponse> | null = null;
 
 // 预留 5 分钟缓冲期，避免在临界时刻使用即将过期的 token
 const EXPIRY_BUFFER_MS = 5 * 60 * 1000;
@@ -80,7 +81,13 @@ async function getJwt(): Promise<string> {
     return _cachedJwt;
   }
 
-  const data = await bootstrap();
+  // Concurrent chunks in a cold Worker isolate share one bootstrap request.
+  if (!_bootstrapPromise) {
+    _bootstrapPromise = bootstrap().finally(() => {
+      _bootstrapPromise = null;
+    });
+  }
+  const data = await _bootstrapPromise;
   _cachedJwt = data.jwt;
   _cachedExp = data.exp;
   return _cachedJwt;
