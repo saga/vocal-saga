@@ -979,25 +979,55 @@ ${pager}
     }
 
     const startedAt = Date.now();
+    const controller = new AbortController();
+    const timeoutMs = 120_000;
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const upstream = await fetch(targetUrl, {
         method: 'POST',
         headers,
         body: JSON.stringify(updated),
+        signal: controller.signal,
       });
 
       const latency = Date.now() - startedAt;
 
       if (!upstream.ok) {
-        const errData = await upstream.json();
+        let errData: any;
+        try {
+          errData = await upstream.json();
+        } finally {
+          clearTimeout(timeout);
+        }
         console.error(`[resp] status=${upstream.status} latency=${latency}ms upstream_error_keys=${Object.keys(errData ?? {}).slice(0, 8).join(',')}`);
         return c.json(errData, upstream.status as 400 | 401 | 403 | 404 | 429 | 500 | 502 | 503);
       }
 
       if (stream && upstream.body) {
         console.log(`[resp] status=${upstream.status} latency=${latency}ms stream=started`);
-        // 把上游 ReadableStream 直接透传
-        return new Response(upstream.body, {
+        const reader = upstream.body.getReader();
+        // Keep the deadline active until the client finishes or cancels the stream.
+        const body = new ReadableStream<Uint8Array>({
+          async pull(streamController) {
+            try {
+              const { done, value } = await reader.read();
+              if (done) {
+                clearTimeout(timeout);
+                streamController.close();
+              } else {
+                streamController.enqueue(value);
+              }
+            } catch (error) {
+              clearTimeout(timeout);
+              streamController.error(error);
+            }
+          },
+          async cancel(reason) {
+            clearTimeout(timeout);
+            await reader.cancel(reason).catch(() => {});
+          },
+        });
+        return new Response(body, {
           status: 200,
           headers: {
             'Content-Type': 'text/event-stream',
@@ -1008,14 +1038,20 @@ ${pager}
         });
       }
 
-      const data = (await upstream.json()) as Record<string, any>;
-      const usage = data.usage;
-      console.log(`[resp] status=${upstream.status} latency=${latency}ms` +
-        (usage ? ` tokens_in=${usage.prompt_tokens} tokens_out=${usage.completion_tokens}` : ''));
-      return c.json({ ...data, _backend: backend });
+      try {
+        const data = (await upstream.json()) as Record<string, any>;
+        const usage = data.usage;
+        console.log(`[resp] status=${upstream.status} latency=${latency}ms` +
+          (usage ? ` tokens_in=${usage.prompt_tokens} tokens_out=${usage.completion_tokens}` : ''));
+        return c.json({ ...data, _backend: backend });
+      } finally {
+        clearTimeout(timeout);
+      }
     } catch (err) {
-      console.error(`[resp] error="${(err as Error).message}" latency=${Date.now() - startedAt}ms`);
-      return c.json({ error: 'Upstream request failed', detail: (err as Error).message }, 502);
+      clearTimeout(timeout);
+      const detail = controller.signal.aborted ? `Upstream request timeout (${timeoutMs}ms)` : (err as Error).message;
+      console.error(`[resp] error="${detail}" latency=${Date.now() - startedAt}ms`);
+      return c.json({ error: 'Upstream request failed', detail }, 502);
     }
   });
 
