@@ -37,6 +37,7 @@ import { matchSiteRule } from './rules';
 import { parseHTML } from 'linkedom';
 import { inlineExternalStylesheets } from './cssInliner';
 import { assertNotDomainParkingPage, looksLikeDomainParkingHtml } from './pageGuard';
+import { safeLogUrl } from '../urlUtils';
 
 /**
  * Stable model identity for translation cache/singleflight isolation.
@@ -354,7 +355,7 @@ async function translateChunksWithRetry(
     await runWithConcurrency(chunks, concurrency, processOneChunk);
     console.log(`[Pipeline] translateChunks done (${us(performance.now() - tAll)})`);
   } catch (err) {
-    console.error(`[Pipeline] translateChunks failed after ${us(performance.now() - tAll)}:`, err);
+    console.error(`[Pipeline] translateChunks failed after ${us(performance.now() - tAll)}:`, (err as Error)?.name || 'UnknownError');
     throw err;
   }
 
@@ -901,7 +902,7 @@ export async function translateUrl(input: TranslateUrlInput): Promise<TranslateU
   }).join(' -> ');
   // Log redirects before validation so rejected parking/challenge pages remain diagnosable.
   console.log(
-    `[Pipeline] Fetched ${input.url} → ${page.finalUrl} (${page.status}, ${page.html.length} bytes); redirects=${redirectTrace}`,
+    `[Pipeline] Fetched ${safeLogUrl(input.url)} → ${page.finalUrl} (${page.status}, ${page.html.length} bytes); redirects=${redirectTrace}`,
   );
 
   // Redirects are valid, but registrar parking pages are not article content.
