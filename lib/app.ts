@@ -111,12 +111,6 @@ import {
   getCfApiToken,
 } from './config';
 
-/**
- * 校验缓存的翻译 HTML 是否结构完整。
- * 旧版 pipeline 曾输出缺少 <html> 标签、<head> 被吞掉的损坏 HTML，
- * 导致页面 CSS 全部丢失。某些损坏缓存虽保留 <html>，但原页面内联
- * 样式被清空，只剩 OneTrust / fanyi 样式，也要视为 miss 重新翻译。
- */
 export type LimitedJsonBodyResult =
   | { ok: true; value: any }
   | { ok: false; status: 400 | 413; error: string };
@@ -163,6 +157,12 @@ export async function readJsonBodyLimited(request: Request, maxBytes: number): P
   }
 }
 
+/**
+ * 校验缓存的翻译 HTML 是否结构完整。
+ * 旧版 pipeline 曾输出缺少 <html> 标签、<head> 被吞掉的损坏 HTML，
+ * 导致页面 CSS 全部丢失。某些损坏缓存虽保留 <html>，但原页面内联
+ * 样式被清空，只剩 OneTrust / fanyi 样式，也要视为 miss 重新翻译。
+ */
 export function isHealthyCachedHtml(html: string): boolean {
   // Structural completeness is not enough: a registrar parking page can have
   // valid HTML, CSS, and translated spans. Never serve it as a healthy translation.
