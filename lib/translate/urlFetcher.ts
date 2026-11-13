@@ -171,11 +171,14 @@ export async function fetchPage(
     response = guarded.response;
     finalUrl = guarded.finalUrl;
     redirectChain = guarded.redirectChain;
-  } finally {
+  } catch (error) {
     clearTimeout(timer);
+    if (controller.signal.aborted) throw new Error(`fetch page timeout (${timeoutMs}ms)`);
+    throw error;
   }
 
   if (!response.ok) {
+    clearTimeout(timer);
     const diagnosticUrl = (value: string): string => {
       try {
         const parsed = new URL(value);
@@ -195,7 +198,16 @@ export async function fetchPage(
   // 不这样做的话，缓存页里的哈希文件名（/assets/app-XXXX.css）在原站发版后
   // 404 → Chrome ORB 拦掉 → 页面布局类全部失效、图片按原始尺寸渲染。
   // 抓取前对每张样式表复用同一个 guard，页面里的 <link href> 是不可信输入。
-  const finalHtml = await inlineExternalStylesheets(await response.text(), {
+  let sourceHtml: string;
+  try {
+    sourceHtml = await response.text();
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error(`fetch page body timeout (${timeoutMs}ms)`);
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+  const finalHtml = await inlineExternalStylesheets(sourceHtml, {
     baseUrl: finalUrl,
     ssrfGuard: guard,
   });
