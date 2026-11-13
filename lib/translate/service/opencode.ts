@@ -84,7 +84,7 @@ async function callApi(body: string): Promise<string> {
   }
 
   if (!response.ok) {
-    // 429 限流诊断：打印完整响应体 + 限流相关 headers
+    // 429 限流诊断：只记录限流相关 headers，不记录上游响应正文
     if (response.status === 429) {
       const retryAfter = response.headers.get('retry-after') || 'N/A';
       const rateLimitLimit = response.headers.get('x-ratelimit-limit') || 'N/A';
