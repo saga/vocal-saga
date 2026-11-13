@@ -122,6 +122,73 @@ function cleanTimelineContainer(el: Element, document: Document): void {
 }
 
 /**
+ * 折叠面板的状态属性。SPA 文档站靠它们配合 CSS 变体把内容裁到 height:0 /
+ * clip-path:inset(...)，只摘掉 hidden 仍然是一片空白，必须一起清掉。
+ */
+const COLLAPSED_STATE_ATTRS = [
+  'data-closed',
+  'data-hidden',
+  'data-starting-style',
+  'data-ending-style',
+  'data-animating',
+] as const;
+
+/**
+ * 展开「内容仍在 DOM 里、但被折叠状态藏住」的区域。
+ *
+ * ## 背景
+ * 文档站（如 platform.claude.com）把示例代码放进 accordion：
+ *   <div role="region" hidden="until-found" data-closed data-starting-style data-animating>
+ *     <pre><code>…</code></pre>
+ *   </div>
+ * `hidden=until-found` 在规范里等价于 content-visibility:hidden；站点 CSS 又给
+ * `[data-starting-style]` 加了 height:0 和 clip-path。这些内容依赖 React 挂载后
+ * 点击展开。翻译页会移除 SPA chunk / hydration 脚本（见 spaGuard），交互永远不会
+ * 触发，于是缓存页里整块代码凭空「消失」（article/83）。
+ *
+ * ## 处理范围
+ * 只认内容面板，避开同样带 hidden 的下拉菜单、弹窗、响应式占位：
+ *   1. 原生 <details> → 补 open
+ *   2. hidden="until-found" / role=region+hidden / AccordionPanel+hidden → 清状态
+ * 展开后打上 data-fanyi-expanded，由 TRANSLATION_CSS 兜底覆盖站点残留的隐藏样式。
+ */
+function expandCollapsedContent(document: Document): number {
+  let count = 0;
+
+  document.querySelectorAll('details').forEach((node) => {
+    const el = node as Element;
+    if (el.hasAttribute('open')) return;
+    el.setAttribute('open', '');
+    el.setAttribute('data-fanyi-expanded', 'true');
+    count++;
+  });
+
+  document.querySelectorAll(
+    '[hidden="until-found"], [role="region"][hidden], [data-cds="AccordionPanel"][hidden]',
+  ).forEach((node) => {
+    const el = node as Element;
+    el.removeAttribute('hidden');
+    for (const attr of COLLAPSED_STATE_ATTRS) el.removeAttribute(attr);
+    el.setAttribute('data-fanyi-expanded', 'true');
+
+    // 父层 accordion item / header 仍是收起态：caret 会指错方向，
+    // 站点 CSS 也可能继续裁剪面板。同步成展开态。
+    const parent = el.parentElement;
+    if (parent) {
+      parent.removeAttribute('data-closed');
+      parent.removeAttribute('data-hidden');
+      parent.setAttribute('data-panel-open', '');
+      parent.querySelectorAll('[aria-expanded="false"]').forEach((trigger) => {
+        (trigger as Element).setAttribute('aria-expanded', 'true');
+      });
+    }
+    count++;
+  });
+
+  return count;
+}
+
+/**
  * 去虚拟化布局 — 服务端 DOM rewrite。
  *
  * 解析 HTML，移除 Virtual Scroller 的 inline 定位样式，
@@ -184,8 +251,15 @@ export function devirtualizeLayout(html: string): string {
     totalCleaned++;
   });
 
-  if (totalCleaned > 0) {
-    console.log(`[devirtualize] 清理了 ${totalCleaned} 个元素的 virtual 定位样式`);
+  // 7. 展开 SPA 折叠面板（accordion / <details>）
+  // 内容已经在缓存 HTML 里，但静态页没有 JS 可展开；不处理就等于内容丢失。
+  const expanded = expandCollapsedContent(document);
+
+  if (totalCleaned > 0 || expanded > 0) {
+    console.log(
+      `[devirtualize] 清理了 ${totalCleaned} 个元素的 virtual 定位样式` +
+      (expanded > 0 ? `，展开了 ${expanded} 个折叠区域` : ''),
+    );
   }
 
   return document.toString();

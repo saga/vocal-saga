@@ -157,3 +157,76 @@ describe('devirtualizeLayout', () => {
     expect(out).toContain('正文译文第二段');
   });
 });
+
+/**
+ * SPA 文档站的示例代码放在 accordion 里，靠 hidden="until-found" +
+ * data-starting-style(height:0) + data-animating(clip-path) 折叠。
+ * 翻译页移除 hydration 脚本后折叠永远打不开，缓存页看起来像「代码丢了」
+ * （article/83）。展示期必须把内容静态展开。
+ */
+describe('devirtualizeLayout — 展开折叠内容', () => {
+  const collapsedPanel = (label: string) => `
+    <div data-orientation="vertical" data-hidden="" data-closed="" class="group/accordion">
+      <h3 data-closed="" data-cds="AccordionHeader">
+        <button type="button" aria-expanded="false">${label}</button>
+      </h3>
+      <div role="region" data-index="0" data-closed="" data-hidden=""
+           data-starting-style="" data-animating="" hidden="until-found"
+           class="h-[var(--cds-disclosure-panel-height)] data-[starting-style]:h-0">
+        <pre translate="no"><code>Draft a press release for AcmeSecurity Pro.
+&lt;documents&gt;{{DOCUMENTS}}&lt;/documents&gt;</code></pre>
+      </div>
+    </div>`;
+
+  it('展开 hidden=until-found 的 accordion 面板并保留代码块', () => {
+    const out = devirtualizeLayout(`<html><body>${collapsedPanel('Example')}</body></html>`);
+    const panelTag = out.match(/<div[^>]*data-fanyi-expanded="true"[^>]*>/)?.[0] ?? '';
+
+    expect(panelTag).not.toBe('');
+    expect(panelTag).not.toContain('hidden');
+    expect(panelTag).not.toContain('data-closed');
+    expect(panelTag).not.toContain('data-starting-style');
+    expect(panelTag).not.toContain('data-animating');
+    // 代码本身一个字都不能丢
+    expect(out).toContain('AcmeSecurity Pro');
+    expect(out).toContain('{{DOCUMENTS}}');
+    expect(out).toContain('<pre');
+    // 展开态同步到 header / 容器，避免 caret 仍指向收起
+    expect(out).toContain('aria-expanded="true"');
+    expect(out).not.toContain('aria-expanded="false"');
+    expect(out).toContain('data-panel-open');
+  });
+
+  it('同一个页面的多个折叠面板全部展开', () => {
+    const out = devirtualizeLayout(
+      `<html><body>${collapsedPanel('A')}${collapsedPanel('B')}${collapsedPanel('C')}</body></html>`,
+    );
+    expect(out.match(/data-fanyi-expanded="true"/g)).toHaveLength(3);
+    expect(out).not.toContain('hidden="until-found"');
+    expect(out.match(/AcmeSecurity Pro/g)).toHaveLength(3);
+  });
+
+  it('原生 <details> 补 open', () => {
+    const html = `<html><body>
+      <details><summary>Example</summary><pre><code>prompt text</code></pre></details>
+      <details open><summary>Already open</summary><p>visible</p></details>
+    </body></html>`;
+    const out = devirtualizeLayout(html);
+    expect(out.match(/data-fanyi-expanded="true"/g)).toHaveLength(1);
+    expect(out).toContain('prompt text');
+    expect(out).toContain('<details');
+  });
+
+  it('不误伤同样带 hidden 的下拉菜单 / 弹窗 / 响应式占位', () => {
+    const html = `<html><body>
+      <div data-closed="" hidden class="dropdown-menu"><p>菜单项</p></div>
+      <div role="status" hidden><p>状态</p></div>
+      <div data-fanyi-remove="true"><p>噪声</p></div>
+    </body></html>`;
+    const out = devirtualizeLayout(html);
+    expect(out).toContain('dropdown-menu');
+    expect(out).toContain('hidden');
+    expect(out).not.toContain('data-fanyi-expanded');
+    expect(out).not.toContain('data-panel-open');
+  });
+});

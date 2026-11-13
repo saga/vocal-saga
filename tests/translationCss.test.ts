@@ -26,4 +26,11 @@ describe('TRANSLATION_CSS', () => {
     expect(out).toContain('data-fanyi-css');
     expect(out).toContain('[data-fanyi-remove="true"]{display:none');
   });
+
+  it('包含展开面板的兜底规则，覆盖站点的 height:0 / clip-path', () => {
+    expect(TRANSLATION_CSS).toContain('[data-fanyi-expanded="true"]');
+    expect(TRANSLATION_CSS).toContain('height:auto!important');
+    expect(TRANSLATION_CSS).toContain('clip-path:none!important');
+    expect(TRANSLATION_CSS).toContain('content-visibility:visible!important');
+  });
 });

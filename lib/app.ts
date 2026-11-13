@@ -30,6 +30,11 @@ export const TRANSLATION_CSS = [
   '[data-fanyi-remove="true"]{display:none!important;visibility:hidden!important;pointer-events:none!important}',
   '[data-fanyi-low-priority="true"]{opacity:.35;filter:grayscale(60%);transition:opacity .2s ease,filter .2s ease}',
   '[data-fanyi-low-priority="true"]:hover{opacity:1;filter:none}',
+  // 展示期展开的折叠面板：devirtualizeLayout 已清掉 hidden / data-closed /
+  // data-starting-style，但历史缓存里的 CSS 快照版本不一，这里再兜一层，
+  // 确保 accordion 里的代码示例不会再被 height:0 / clip-path 裁成空白。
+  '[data-fanyi-expanded="true"]{display:block!important;height:auto!important;max-height:none!important;',
+  'clip-path:none!important;content-visibility:visible!important;overflow:visible!important;visibility:visible!important}',
   // 动态注入的通知/订阅弹窗兜底隐藏（InfoWorld 等站点的 subscribers notification prompt）
   '[class*="notification"],[id*="notification"],[class*="subscribers"],[id*="subscribers"],[class*="push-notification"],[id*="push-notification"]{display:none!important}',
 ].join('');
