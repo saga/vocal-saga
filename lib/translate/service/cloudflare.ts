@@ -146,7 +146,7 @@ Return ONLY the final JSON object. No prose, no explanation, no markdown outside
       parsedForCheck = JSON.parse(cleaned);
     } catch (e) {
       throw new Error(
-        `[CloudAI] cleaned content is not valid JSON. content=${cleaned.slice(0, 1000)}`
+        '[CloudAI] cleaned model response is not valid JSON'
       );
     }
     const arr = parsedForCheck?.translations;
