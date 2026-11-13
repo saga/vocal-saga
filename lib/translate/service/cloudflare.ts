@@ -151,11 +151,8 @@ Return ONLY the final JSON object. No prose, no explanation, no markdown outside
     }
     const arr = parsedForCheck?.translations;
     if (!Array.isArray(arr)) {
-      console.log('[CloudAI] parsed keys:', Object.keys(parsedForCheck ?? {}));
-      console.log('[CloudAI] parsed.translations type:', typeof arr, 'value:', arr);
-      throw new Error(
-        `[CloudAI] translations is not iterable. payload=${JSON.stringify(parsedForCheck).slice(0, 2000)}`
-      );
+      console.warn('[CloudAI] response did not contain a translations array; keys:', Object.keys(parsedForCheck ?? {}).slice(0, 12));
+      throw new Error('[CloudAI] response did not contain a translations array');
     }
 
     return cleaned;
