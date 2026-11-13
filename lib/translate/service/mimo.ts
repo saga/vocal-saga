@@ -49,15 +49,7 @@ async function bootstrap(): Promise<BootstrapResponse> {
     body: JSON.stringify({ client: clientId }),
   });
 
-  let responseText: string;
-  try {
-    responseText = await response.text();
-  } catch (err) {
-    if (controller.signal.aborted) throw new Error('MiMo API timeout (120000ms)');
-    throw err;
-  } finally {
-    clearTimeout(timeout);
-  }
+  const responseText = await response.text().catch(() => '');
 
   if (!response.ok) {
     throw new Error(`MiMo bootstrap error: HTTP ${response.status} - ${responseText.substring(0, 200)}`);
@@ -133,7 +125,15 @@ async function callApi(body: string): Promise<string> {
 
   console.log('[MiMo] Response status:', response.status);
 
-  const responseText = await response.text().catch(() => '');
+  let responseText: string;
+  try {
+    responseText = await response.text();
+  } catch (err) {
+    if (controller.signal.aborted) throw new Error('MiMo API timeout (120s)');
+    throw err;
+  } finally {
+    clearTimeout(timeout);
+  }
 
   if (!response.ok) {
     // 401 可能表示 JWT 已过期，清除缓存让下次重新 bootstrap
