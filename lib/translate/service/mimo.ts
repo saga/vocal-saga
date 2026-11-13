@@ -43,13 +43,24 @@ async function bootstrap(): Promise<BootstrapResponse> {
   const clientId = getMimoClientId();
   console.log('[MiMo] Bootstrapping JWT with client:', clientId);
 
-  const response = await fetch(BOOTSTRAP_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ client: clientId }),
-  });
-
-  const responseText = await response.text().catch(() => '');
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15_000);
+  let response: Response;
+  let responseText: string;
+  try {
+    response = await fetch(BOOTSTRAP_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ client: clientId }),
+      signal: controller.signal,
+    });
+    responseText = await response.text();
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error('MiMo bootstrap timeout (15s)');
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 
   if (!response.ok) {
     throw new Error(`MiMo bootstrap error: HTTP ${response.status} - ${responseText.substring(0, 200)}`);
