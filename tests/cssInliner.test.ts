@@ -65,7 +65,7 @@ beforeAll(async () => {
     if (url === '/slow.css') {
       res.writeHead(200, { 'Content-Type': 'text/css' });
       res.flushHeaders?.();
-      setTimeout(() => res.end('.slow{color:red}'), 100);
+      setTimeout(() => res.end('.slow{color:red}'), 300);
       return;
     }
     res.writeHead(404);
@@ -166,7 +166,7 @@ describe('inlineExternalStylesheets', () => {
 
   it('响应头到达后 CSS body 仍受 timeout 约束', async () => {
     const html = `<html><head><link rel="stylesheet" href="/slow.css"></head><body>x</body></html>`;
-    const out = await run(html, { timeoutMs: 20, onError: () => {} });
+    const out = await run(html, { timeoutMs: 100, onError: () => {} });
     expect(out).toContain('data-fanyi-render-mode="reader"');
     expect(out).not.toContain('.slow{color:red}');
   });
