@@ -90,7 +90,7 @@ export function buildCanonicalTermProtections(
         typeof mapping?.source !== 'string' || !mapping.source.trim() ||
         typeof mapping?.target !== 'string' || !mapping.target.trim()) return false;
     const explicitlyConfirmed = sourceStatus === 'confirmed' ||
-      (sourceStatus === 'confirmed-memory' && mapping.confirmationSource === 'user-confirmed');
+      (sourceStatus === 'confirmed-memory' && ['user-confirmed', 'user-modified'].includes(String(mapping.confirmationSource || '')));
     const kind = String(mapping.kind || 'other');
     if (!explicitlyConfirmed && !isWorthCanonicalEntityMapping({ source: mapping.source, kind, explicitBookSpecificMeaning: mapping.explicitBookSpecificMeaning === true })) return false;
     return validateCanonicalTarget({
