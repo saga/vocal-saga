@@ -627,9 +627,10 @@ function mergePinnedProfileMappings(
       const userConfirmed = status === 'confirmed' && ['user-confirmed', 'user-modified'].includes(String(profile.confirmationSource || ''));
       const incoming = {
         source, target, aliases, kind: 'character',
-        evidenceBacked: userConfirmed || status === 'confirmed',
-        targetConfidence: userConfirmed ? 'confirmed' : status === 'confirmed' ? 'corroborated' : 'candidate',
-        sourceStatus: userConfirmed ? 'confirmed-memory' : status === 'confirmed' ? 'auto' : 'candidate',
+        // 画像的声音证据不等于译名证据；非用户确认的 profile target 不能单独升级为强映射。
+        evidenceBacked: userConfirmed,
+        targetConfidence: userConfirmed ? 'confirmed' : 'candidate',
+        sourceStatus: userConfirmed ? 'confirmed-memory' : 'candidate',
         confirmationSource: profile.confirmationSource || 'legacy-unknown',
       };
       const names = new Set([source, ...aliases].map(normalizedSourceText));
@@ -657,7 +658,7 @@ function mergePinnedProfileMappings(
         continue;
       }
       const matched = graph.nameMappings.filter(matches);
-      if (status === 'candidate' && matched.some((mapping: any) =>
+      if (incoming.sourceStatus === 'candidate' && matched.some((mapping: any) =>
           ['confirmed', 'confirmed-memory', 'run-canonical', 'auto'].includes(String(mapping?.sourceStatus || '')))) continue;
       const mergedAliases = safeCanonicalSourceAliases(source, [
         ...aliases,
