@@ -301,7 +301,7 @@ export function prepareRunNameDecisions(
           Number(row.ordinal) < firstMention && !!rowMatchesGroup(row, group));
         const vote = chooseAcceptedTranslationTarget(
           Array.from(group.targets),
-          priorRows.map((row) => ({ segmentId: row.segmentId, translation: row.translation, ordinal: row.ordinal })),
+          priorRows,
         );
         if (!vote || !validateCanonicalTarget({
           source: group.source, target: vote.target, targetLang: String(context.run.targetLang || 'zh'), kind: group.kind,
@@ -381,7 +381,7 @@ export function consolidateAcceptedRunNames(
       if (!matchingRows.length) continue;
       const vote = chooseAcceptedTranslationTarget(
         Array.from(group.targets),
-        matchingRows.map((row) => ({ segmentId: row.segmentId, translation: row.translation, ordinal: row.ordinal })),
+        matchingRows,
       );
       if (!vote || !validateCanonicalTarget({ source: group.source, target: vote.target, targetLang, kind: group.kind }).valid) continue;
 
