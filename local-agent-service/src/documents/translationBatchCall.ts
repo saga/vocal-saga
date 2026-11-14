@@ -179,7 +179,7 @@ function appendPromptAudit(
     // 又不把完整源文或完整提示词写进事件流。
     contextGraphNameMappingPreview: (Array.isArray((contextGraph as any)?.nameMappings)
       ? (contextGraph as any).nameMappings : []).slice(0, 12).map((item: any) => ({
-        source: typeof item?.source === 'string' ? item.sourceForm.slice(0, 120) : '',
+        source: typeof item?.source === 'string' ? item.source.slice(0, 120) : '',
         target: typeof item?.target === 'string' ? item.target.slice(0, 120) : '',
       })),
     contextGraphRelationships: count((contextGraph as any)?.relationships),
