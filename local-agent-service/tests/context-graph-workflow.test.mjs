@@ -12,7 +12,7 @@ const {
   CONTEXT_GRAPH_WORKFLOW_VERSION,
 } = await import('../src/documents/contextGraphWorkflow.ts');
 const { ANALYSIS_SCHEMA, CONTEXT_GRAPH_ANALYSIS_VERSION } = await import('../src/documents/contextGraph.ts');
-const { isContextGraphReadyForTranslationRun } = await import('../src/documents/translationAgent.ts');
+const { isContextGraphReadyForTranslationRun, shouldUseLightweightLiteraryContext } = await import('../src/documents/translationAgent.ts');
 const { buildWorkbuddyOptions } = await import('../src/agents/workbuddy.ts');
 
 test('literary style dimensions are optional observations, not translation prerequisites', () => {
@@ -225,7 +225,7 @@ test('standalone review keeps model-default mappings weak and excludes rejected 
   assert.equal(mappings.has('Dave'), false);
 });
 
-test('literary translation requires a complete, current full-book preprocessing snapshot', () => {
+test('literary translation reuses a completed current graph even when some style fields are absent', () => {
   const run = {
     sourceRevisionId: 'source-1',
     sourceLang: 'en',
@@ -245,7 +245,8 @@ test('literary translation requires a complete, current full-book preprocessing 
     },
   };
   assert.equal(isContextGraphReadyForTranslationRun(ready, run), true);
-  assert.equal(isContextGraphReadyForTranslationRun({ ...ready, styleGuideReady: false }, run), false);
+  assert.equal(isContextGraphReadyForTranslationRun({ ...ready, styleGuideReady: false }, run), true,
+    'style-guide completeness is useful context, not a translation prerequisite');
   assert.equal(isContextGraphReadyForTranslationRun({
     ...ready,
     progress: { ...ready.progress, strategy: undefined },
@@ -266,6 +267,19 @@ test('literary translation requires a complete, current full-book preprocessing 
     ...ready,
     progress: { ...ready.progress, sampleCount: 0 },
   }, run), false);
+});
+
+
+test('small literary selections can use lightweight local context without a full-book graph', async () => {
+  assert.equal(shouldUseLightweightLiteraryContext([
+    { text: 'A short opening.' }, { text: 'A quiet reply.' },
+  ]), true);
+  assert.equal(shouldUseLightweightLiteraryContext(
+    Array.from({ length: 13 }, () => ({ text: 'x' })),
+  ), false, 'more than one small batch should retain full-book context preparation');
+  assert.equal(shouldUseLightweightLiteraryContext([{ text: 'x'.repeat(6001) }]), false);
+  assert.equal(shouldUseLightweightLiteraryContext([{ text: '   ' }]), false);
+  assert.equal(shouldUseLightweightLiteraryContext([]), false);
 });
 
 test('auto source language reuses a graph recorded with a concrete detected language', () => {
