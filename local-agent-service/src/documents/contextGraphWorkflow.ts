@@ -75,8 +75,8 @@ export function contextGraphStageWave(stageId: string): number {
 const STAGE_INSTRUCTIONS: Record<ContextGraphWorkflowStageId, string> = {
   style: [
     '只完成本阶段：bookSummary、narrativeStyle、styleRegister、styleRhythm、styleDialogue、styleDiction、styleRules、styleAvoid、styleEvidence。',
-    '叙述声音、语域、节奏与句法、对白特征、措辞与词汇必须分别填写，不能因为证据不是绝对确定就返回空字符串。请根据已提供的样本给出具体、可用于翻译的观察，并说明观察范围；避免泛化套话。',
-    '每个文风维度优先引用本次样本中可核验的 segmentId 和连续短引文。styleRules 至少给出一条有针对性的翻译建议；styleAvoid 可为空数组，但不能臆造原文没有的问题。',
+    '叙述声音、语域、节奏与句法、对白特征、措辞与词汇分别评估，但只填写样本中确实观察到、且对翻译有帮助的特征。某个维度证据不足、样本不具代表性或只能给出泛化描述时，允许返回空字符串；不要为了填满字段而推断作者意图、虚构风格标签或编造规则。',
+    '每个非空文风观察都应尽可能引用本次样本中可核验的 segmentId 和连续短引文。只有发现可复用、可执行且有原文证据支持的翻译规律时才输出 styleRules；没有就返回空数组。styleAvoid 同样允许为空，不得为了完整性臆造问题。',
     '不要在本阶段生成人物、实体、关系或章节摘要。只返回本阶段 Schema 中定义的 JSON 字段。',
   ].join('\n'),
   characters: [

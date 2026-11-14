@@ -24,7 +24,7 @@ export {
 export {
   selectVerifiedStyleReviewCandidates,
   resolveBilingualVerifiedChineseEdits,
-  isReviewWorthSending,
+  selectModelReviewTargets,
   buildDeterministicBatchReview,
 } from './translationReviewPolicy.ts';
 
@@ -43,6 +43,7 @@ export { mergeConfirmedMemoryNameMappings, runLiteraryReviewWithMissingRetry } f
 export type { PreparedRunExecution } from './translationRun.ts';
 export {
   isContextGraphReadyForTranslationRun,
+  shouldUseLightweightLiteraryContext,
   autoAcceptFinishedRunCandidates,
   startProjectTranslationRun,
   isProjectRunActive,

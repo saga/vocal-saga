@@ -63,17 +63,11 @@ export function resolveBilingualVerifiedChineseEdits(
 }
 
 /**
- * 「中」档的送审筛选：短、无数字、无对白、无专名的片段单独送审收益极低。
- * 章节名、页码、单句过渡这类片段在文学书里占比不小，每送一次都要付一次完整模型调用。
+ * 模型审校覆盖范围。文学文本不能按字符长度、标点或大写字母猜测价值：
+ * 短句、对白、留白和章节题记可能承载关键语气与节奏；medium/strong 都覆盖全部有效译文。
  */
-export function isReviewWorthSending(item: { text?: string | null }): boolean {
-  const source = String(item?.text ?? '').trim();
-  if (!source) return false;
-  if (source.length >= 40) return true;
-  if (/\d/.test(source)) return true;
-  if (/["“”'‘’「」『』—]/.test(source)) return true;
-  // 句首之外的大写开头词通常是专名，需要对照规范译名。
-  return /[A-Z]/.test(source.slice(1));
+export function selectModelReviewTargets<T>(items: T[], reviewStrength: string): T[] {
+  return reviewStrength === 'medium' || reviewStrength === 'strong' ? items : [];
 }
 
 /**

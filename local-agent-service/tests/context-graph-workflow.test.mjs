@@ -12,7 +12,7 @@ const {
   CONTEXT_GRAPH_WORKFLOW_VERSION,
 } = await import('../src/documents/contextGraphWorkflow.ts');
 const { ANALYSIS_SCHEMA, CONTEXT_GRAPH_ANALYSIS_VERSION } = await import('../src/documents/contextGraph.ts');
-const { isContextGraphReadyForTranslationRun } = await import('../src/documents/translationAgent.ts');
+const { isContextGraphReadyForTranslationRun, shouldUseLightweightLiteraryContext } = await import('../src/documents/translationAgent.ts');
 const { buildWorkbuddyOptions } = await import('../src/agents/workbuddy.ts');
 
 test('literary style dimensions are optional observations, not translation prerequisites', () => {
@@ -53,11 +53,13 @@ test('strategy defaults to the checkpointed parallel workflow and A stays an exp
   assert.equal(chooseContextGraphStrategy('a', 'B'), 'A');
 });
 
-test('B style prompt asks for concrete values in every field instead of allowing silent blanks', () => {
+test('B style prompt records only evidence-backed observations and permits empty dimensions', () => {
   const prompt = buildContextGraphWorkflowPrompt('style', 'SAMPLED SOURCE TEXT', {}, false);
-  assert.match(prompt, /必须分别填写/);
-  assert.match(prompt, /styleRules 至少给出一条/);
-  assert.doesNotMatch(prompt, /某维度证据不足时返回空字符串/);
+  assert.match(prompt, /允许返回空字符串/);
+  assert.match(prompt, /没有就返回空数组/);
+  assert.match(prompt, /不要为了填满字段/);
+  assert.doesNotMatch(prompt, /必须分别填写/);
+  assert.doesNotMatch(prompt, /styleRules 至少给出一条/);
 });
 
 test('entity preflight preserves fictional clan names instead of replacing historical analogues', () => {
@@ -225,7 +227,7 @@ test('standalone review keeps model-default mappings weak and excludes rejected 
   assert.equal(mappings.has('Dave'), false);
 });
 
-test('literary translation requires a complete, current full-book preprocessing snapshot', () => {
+test('literary translation reuses a completed current graph even when some style fields are absent', () => {
   const run = {
     sourceRevisionId: 'source-1',
     sourceLang: 'en',
@@ -245,7 +247,8 @@ test('literary translation requires a complete, current full-book preprocessing 
     },
   };
   assert.equal(isContextGraphReadyForTranslationRun(ready, run), true);
-  assert.equal(isContextGraphReadyForTranslationRun({ ...ready, styleGuideReady: false }, run), false);
+  assert.equal(isContextGraphReadyForTranslationRun({ ...ready, styleGuideReady: false }, run), true,
+    'style-guide completeness is useful context, not a translation prerequisite');
   assert.equal(isContextGraphReadyForTranslationRun({
     ...ready,
     progress: { ...ready.progress, strategy: undefined },
@@ -266,6 +269,20 @@ test('literary translation requires a complete, current full-book preprocessing 
     ...ready,
     progress: { ...ready.progress, sampleCount: 0 },
   }, run), false);
+});
+
+
+test('small literary selections can use lightweight local context without a full-book graph', async () => {
+  assert.equal(shouldUseLightweightLiteraryContext([
+    { text: 'A short opening.' }, { text: 'A quiet reply.' },
+  ], 'ids'), true);
+  assert.equal(shouldUseLightweightLiteraryContext(Array.from({ length: 13 }, () => ({ text: 'x' })), 'ids'), false,
+    'more than one small batch should retain full-book context preparation');
+  assert.equal(shouldUseLightweightLiteraryContext([{ text: 'x'.repeat(6001) }], 'ids'), false);
+  assert.equal(shouldUseLightweightLiteraryContext([{ text: '   ' }], 'ids'), false);
+  assert.equal(shouldUseLightweightLiteraryContext([], 'ids'), false);
+  assert.equal(shouldUseLightweightLiteraryContext([{ text: 'short' }], 'all'), false,
+    'an all-scope run must never qualify based only on its remaining pending segment count');
 });
 
 test('auto source language reuses a graph recorded with a concrete detected language', () => {

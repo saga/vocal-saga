@@ -16,7 +16,7 @@ import { buildTranslationBrief, summarizeTranslationBrief } from './translationB
 import { combineTranslationContextDeltas, type ValidatedTranslationContextDelta } from './translationContextDelta.ts';
 import type { TranslationItem } from './translationSchema.ts';
 import { buildDocumentBatchSessionScope, type ConcurrencyLimiter } from './translationConcurrency.ts';
-import { buildDeterministicBatchReview, isReviewWorthSending, resolveBilingualVerifiedChineseEdits, selectVerifiedStyleReviewCandidates } from './translationReviewPolicy.ts';
+import { buildDeterministicBatchReview, resolveBilingualVerifiedChineseEdits, selectModelReviewTargets, selectVerifiedStyleReviewCandidates } from './translationReviewPolicy.ts';
 import { addRunUsage } from './translationRunUsage.ts';
 import { translateBatch } from './translationBatchCall.ts';
 import { runLiteraryReviewWithMissingRetry } from './translationLiteraryReview.ts';
@@ -344,22 +344,9 @@ async function runBatchReview(scope: RunBatchScope, state: BatchReviewState): Pr
     return;
   }
 
-  // 「中」档只把值得送审的片段交给模型；整批都不值得时一次调用都不发。
-  state.reviewTargets = scope.reviewStrength === 'medium'
-    ? state.reviewedItems.filter((item) => isReviewWorthSending(item))
-    : state.reviewedItems;
-  if (!state.reviewTargets.length) {
-    store.appendEvent(projectId, runId, 'stage.skipped', {
-      stage: 'review', batchIndex, reviewStrength: scope.reviewStrength,
-      reason: '本批全部是短片段且无数字/对白/专名，合并审校的收益低于一次模型调用',
-      skippedSegmentCount: state.reviewedItems.length,
-    });
-    store.appendEvent(projectId, runId, 'batch.completed', {
-      batchIndex, batchCount: batches.length, candidateCount: translations.size,
-      failedIds, reviewCompleted: true,
-    });
-    return;
-  }
+  // 文学审校不能用长度、标点或大写字母启发式跳过短句；短句、留白和对白本身
+  // 可能承载关键语气与节奏。medium 默认一次合并审校覆盖本批全部有效译文。
+  state.reviewTargets = selectModelReviewTargets(state.reviewedItems, scope.reviewStrength);
 
   store.appendEvent(projectId, runId, 'stage.started', {
     stage: 'review', batchIndex, timeoutMs: REVIEW_TIMEOUT_MS,

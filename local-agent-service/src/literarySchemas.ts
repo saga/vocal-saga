@@ -65,7 +65,7 @@ export const DEFAULT_LITERARY_ANALYSIS_SYSTEM_PROMPT = [
   '新人物声音、关系语言规则、声音锚点全部输出 candidate，不能伪称人工审核。只返回 JSON 对象：{ "entities": [], "relationships": [], "styleGuide": {}, "chapterSummary": "", "characterVoices": [], "relationshipVoiceRules": [], "voiceAnchors": [], "openQuestions": [] }。styleGuide 可包含 narrativeVoice、register、rhythm、dialogue、diction、avoid。',
 ].join('\n');
 
-/** 每个审校阶段只接受它自己负责的 finding 类别；合并阶段两者都收，但优先级规则不变。 */
+/** 每个审校阶段只接受它自己负责的 finding 类别；合并阶段同时收准确性、术语和文学表达问题。 */
 export const REVIEW_FOCUS_CATEGORIES: Record<'accuracy' | 'style' | 'combined', string[]> = {
   accuracy: ['accuracy', 'terminology'],
   style: ['style'],
