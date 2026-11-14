@@ -285,14 +285,17 @@ export function prepareRunNameDecisions(
       if (explicitTargets.length === 1) {
         const explicitSource = group.explicitTargets.some((item) => item.source === 'memory') ? 'user-confirmed-memory' : 'user-confirmed-context-graph';
         const target = explicitTargets[0]!;
-        if (validateCanonicalTarget({ source: group.source, target, targetLang: String(context.run.targetLang || 'zh'), kind: group.kind }).valid) {
-          decision = {
-            source: group.source, aliases: Array.from(group.aliases).slice(0, 12), target, kind: group.kind,
-            sourceStatus: explicitSource === 'user-confirmed-memory' ? 'confirmed-memory' : 'confirmed',
-            decisionSource: explicitSource, decidedOrdinal: -1, evidenceSegmentIds: [],
-          };
-          userDecisionCount++;
+        if (!validateCanonicalTarget({ source: group.source, target, targetLang: String(context.run.targetLang || 'zh'), kind: group.kind }).valid) {
+          // 用户确认的值不合格时也失败关闭；不能绕过用户决定退回模型/历史投票。
+          explicitConflictCount++;
+          continue;
         }
+        decision = {
+          source: group.source, aliases: Array.from(group.aliases).slice(0, 12), target, kind: group.kind,
+          sourceStatus: explicitSource === 'user-confirmed-memory' ? 'confirmed-memory' : 'confirmed',
+          decisionSource: explicitSource, decidedOrdinal: -1, evidenceSegmentIds: [],
+        };
+        userDecisionCount++;
       } else if (explicitTargets.length > 1) {
         explicitConflictCount++;
         continue;
