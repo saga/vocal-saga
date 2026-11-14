@@ -456,13 +456,13 @@ export function consolidateAcceptedRunNames(
         const proposedTranslation = variants.reduce((text, variant) => text.split(variant).join(vote.target), row.translation);
         if (proposedTranslation === row.translation) continue;
         const existing = db.prepare(
-          "SELECT finding_id FROM review_findings WHERE run_id = ? AND segment_id = ? AND category = 'name-consistency' AND status = 'pending' LIMIT 1"
+          "SELECT finding_id FROM review_findings WHERE run_id = ? AND segment_id = ? AND category = 'terminology' AND status = 'pending' LIMIT 1"
         ).get(runId, row.segmentId);
         if (existing) continue;
         const finding = {
           id: row.segmentId,
-          category: 'name-consistency',
-          priority: 'medium',
+          category: 'terminology',
+          priority: 'must_fix',
           sourceName: group.source,
           expectedTarget: vote.target,
           observedTargets: variants,
@@ -473,7 +473,7 @@ export function consolidateAcceptedRunNames(
           explanation: '同一源名的已采纳译文存在不同目标表面。本建议只做确定性的名称替换，不会自动改写已采纳正文；应用前仍可检查上下文。',
         };
         db.prepare(
-          "INSERT INTO review_findings(run_id, segment_id, category, priority, finding_json, status, created_at) VALUES (?, ?, 'name-consistency', 'medium', ?, 'pending', ?)"
+          "INSERT INTO review_findings(run_id, segment_id, category, priority, finding_json, status, created_at) VALUES (?, ?, 'terminology', 'must_fix', ?, 'pending', ?)"
         ).run(runId, row.segmentId, JSON.stringify(finding), new Date().toISOString());
         minorityFindingCount++;
       }
