@@ -16,7 +16,7 @@ Local Agent 已经拥有服务端 SQLite Context Graph、可恢复的预处理�
 
 1. **先完成全书预处理，再开始任何文学翻译模型调用。** 对同一个文学翻译操作，当前 source revision 的 Context Graph 必须先完成并通过 readiness 检查。技术文档模式不受此门禁影响。
 2. **预处理结果必须属于本次翻译的准确输入版本。** readiness 必须同时匹配 sourceRevisionId、服务端当前 CONTEXT_GRAPH_ANALYSIS_VERSION、sourceLang 和 targetLang；不能把旧原文版本、旧分析版本或其他语言方向的结果用于当前 Run。
-3. **完成状态不是单独的充分条件。** 必须有受支持的工作流策略（A 或 B）、大于零的有效分析样本、完整的五项必需文风基准（叙述声音、语域、节奏与句法、对白特征、措辞与词汇）及至少一条 style rule。B 工作流还必须完成 style、characters、entities、relationships、chapters 五个阶段。styleAvoid 可以为空；它不是强制字段。
+3. **完成状态不是单独的充分条件，但风格报告不设字段齐全门槛。** readiness 要求受支持的工作流策略（A 或 B）、大于零的有效分析样本，以及 B 工作流的 style、characters、entities、relationships、chapters 必要阶段检查点。五项文风描述（叙述声音、语域、节奏与句法、对白特征、措辞与词汇）、styleRules 和 styleAvoid 是模型尽力提取的参考资料，不是翻译准入条件；缺少某项只表示该维度没有可靠资料，不得阻止翻译或要求模型编造补齐。
 4. **区分预处理完整性与用户确认。** styleGuideReady 表示服务端分析契约完整，不代表用户已经确认文风。符合版本和完整性要求的机器文风基准可按现有策略自动应用；明确的用户编辑/确认具有更高优先级。自动应用不得伪装成用户确认。中文 Literary Editorial Profile 仍遵循独立的来源版本与证据追溯约束，但通过校验后默认以 `model-default` 应用；用户可以事后编辑或拒绝，不需要确认步骤，也不影响主翻译 Run。
 5. **扩展负责正常 UI 前置检查，服务端负责最终执行门禁。** 扩展从轻量 /context-graph/status 投影读取状态；来源、版本、语言、阶段或完整性未通过，以及状态读取失败时，不得调用翻译模型。用户明确点击一次“开始翻译”后，扩展可以自动启动/重试一次必要的预处理并等待 readiness，不要求用户返回阅读页再次点击；等待期间不创建文学翻译 Run。扩展不下载或复制图谱节点、证据和章节摘要。
 6. **服务端门禁不可绕过。** executeRun 在 Run 进入 running、读取待翻译片段和调用翻译模型之前再次验证。旧版客户端或直接 API 调用可能先持久化一个 queued Run；服务端可以自动启动/等待匹配的 Context Graph，但在 readiness 通过前绝不进入翻译阶段或写入译文候选。Run 创建本身不等于翻译已经开始。
@@ -40,7 +40,7 @@ Local Agent 已经拥有服务端 SQLite Context Graph、可恢复的预处理�
 
 ## 验收标准
 
-1. 当前原文版本、分析版本或语言方向不匹配时，文学 Run 不调用翻译模型。
+1. 当前原文版本、分析版本或语言方向不匹配时，文学 Run 不调用翻译模型；单纯缺少某个文风字段或 style rule 不得阻断 Run。
 2. 状态未知、预处理 queued/running/failed 或完整性不足时，不调用文学翻译模型；用户发起的同一次操作可以自动启动/等待一次预处理，ready 后再创建 Run。
 3. B 策略缺少任一必需阶段时，服务端和扩展都拒绝 readiness。
 4. 直接调用 Run API 时，服务端可持久化 queued Run，但在 Context Graph ready 前不得将 Run 设为 running、调用翻译模型或保存候选。
