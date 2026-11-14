@@ -46,19 +46,19 @@ flowchart TD
 
 统一的是项目、调度、持久化、恢复、输出校验、审校、候选和审计契约；不要求小说、技术文档和短文本使用相同 Prompt。任务类型差异以同一执行器中的显式策略表达，不能按 UI 入口分叉。文学上下文增量对文学模式生效，非文学请求继续使用相同结构化翻译和候选生命周期，但不会把普通术语或代码片段强行建模成人物关系。
 
-## 1.1 文学翻译前的全书预处理门禁（ADR-0005）
+## 1.1 文学翻译的全书上下文策略（ADR-0005）
 
 文学模式必须先完成当前原文版本的全书 Context Graph 预处理，再开始任何翻译模型调用。技术文档模式不要求这一步。
 
 正常扩展路径如下：
 
-1. 新文学项目建立后，扩展自动启动一次全书预处理，并从 `GET /api/documents/projects/:projectId/context-graph/status` 轮询轻量状态投影。
+1. 新文学项目建立后，扩展可以自动启动全书预处理，并从 `GET /api/documents/projects/:projectId/context-graph/status` 轮询轻量状态投影；全书预处理主要服务于长文档和全书范围翻译。
 2. 预处理未完成、失败、状态未知、来源版本/分析版本/语言方向不匹配或完整性不足时，扩展对开始、重译、重试和恢复入口 fail closed，不创建文学翻译 Run。
-3. 只有 readiness 通过后，扩展才开放文学翻译操作。失败、旧版本或语言变化不做无限自动重试；用户在“人物与预处理”中显式重新分析。
-4. 服务端 `executeRun` 在 Run 进入 `running` 前再次检查，作为最终执行门禁。旧客户端或直接 API 调用可能先持久化 queued Run；服务端会有限地启动/等待匹配的 Context Graph，但在 readiness 通过前不读取待译片段、不调用翻译模型、不保存候选。
+3. 长范围翻译需要匹配当前原文版本的全书上下文。小范围选段（不超过 12 个有效片段且源文合计不超过 6,000 字符）在没有可用全书图谱、且没有正在运行的分析时，可以使用当前片段、前文和已确认记忆直接翻译；若全书分析已经在运行则等待其完成。失败、旧版本或语言变化不做无限自动重试；长范围任务由用户在“人物与预处理”中显式重新分析。
+4. 服务端 `executeRun` 在 Run 进入 `running` 前再次检查，作为最终执行门禁。旧客户端或直接 API 调用可能先持久化 queued Run；服务端对长范围任务会有限地启动/等待匹配的 Context Graph。小范围任务只在确认 Run 仍绑定项目当前原文版本后，才允许跳过全书分析等待。
 5. 状态与图谱事实只由服务端 SQLite 管理。扩展只消费小型 readiness/status DTO，不复制 nodes、edges、evidence 或章节摘要。
 
-readiness 不等于要求模型必须产出一份字段齐全的风格分析报告。它检查 source revision、服务端当前分析版本、source/target language、受支持的策略 A/B、非零有效样本，以及 B 策略的必要阶段检查点（style、characters、entities、relationships、chapters），以确保预处理任务确实完成。五项文风描述、styleRules 和 styleAvoid 是尽力提取的参考资料，不是翻译准入条件；缺少某一项只表示该维度没有可靠资料，不能阻止翻译，也不能要求模型编造补齐。机器文风基准完整不等于用户确认；机器应用与用户确认/编辑必须保留不同 provenance。
+readiness 不等于要求模型必须产出一份字段齐全的风格分析报告。它检查 source revision、服务端当前分析版本、source/target language、受支持的策略 A/B、非零有效样本，以及 B 策略的必要阶段检查点（style、characters、entities、relationships、chapters），以确保预处理任务确实完成。`styleGuideReady` 和五项文风字段完整性不是翻译门槛；已完成的分析即使部分文风维度证据不足，也可作为部分上下文使用。五项文风描述、styleRules 和 styleAvoid 是尽力提取的参考资料，不是翻译准入条件；缺少某一项只表示该维度没有可靠资料，不能阻止翻译，也不能要求模型编造补齐。机器文风基准完整不等于用户确认；机器应用与用户确认/编辑必须保留不同 provenance。
 
 预处理失败不会降级为“只做逐章分析然后继续文学翻译”。失败阶段、缺失字段和错误通过服务端状态及 Run 事件诊断；重分析不得覆盖已采纳译文、人工修订或旧 Run 的固定快照。详见 [ADR-0005](adr/0005-literary-preprocessing-before-translation.md) 与 [完整流程说明](../FULL-BOOK-PREPROCESSING-FIRST-TRANSLATION-FLOW-2026-10-31.md)。
 
