@@ -627,10 +627,10 @@ function mergePinnedProfileMappings(
       const userConfirmed = status === 'confirmed' && ['user-confirmed', 'user-modified'].includes(String(profile.confirmationSource || ''));
       const incoming = {
         source, target, aliases, kind: 'character',
-        // 画像的声音证据不等于译名证据；非用户确认的 profile target 不能单独升级为强映射。
-        evidenceBacked: userConfirmed,
-        targetConfidence: userConfirmed ? 'confirmed' : 'candidate',
-        sourceStatus: userConfirmed ? 'confirmed-memory' : 'candidate',
+        // 维持已验证人物画像的既有映射行为，但保留 provenance；Run 级已采纳译名可覆盖非用户确认画像。
+        evidenceBacked: status === 'confirmed',
+        targetConfidence: status === 'confirmed' ? 'confirmed' : 'candidate',
+        sourceStatus: status === 'confirmed' ? 'confirmed-memory' : 'candidate',
         confirmationSource: profile.confirmationSource || 'legacy-unknown',
       };
       const names = new Set([source, ...aliases].map(normalizedSourceText));
@@ -786,7 +786,9 @@ function applyRunNameDecisionsToGraph(
     };
     const conflicts = mappings.filter((mapping: any) => namesOverlap(mapping, incoming));
     const confirmedConflicts = conflicts.filter((mapping: any) =>
-      ['confirmed', 'confirmed-memory'].includes(String(mapping?.sourceStatus)));
+      mapping?.sourceStatus === 'confirmed' ||
+      (mapping?.sourceStatus === 'confirmed-memory' &&
+        ['user-confirmed', 'user-modified'].includes(String(mapping?.confirmationSource || ''))));
     if (confirmedConflicts.length) {
       if (confirmedConflicts.some((mapping: any) => normalizeName(mapping.target) !== normalizeName(incoming.target))) {
         diagnostics.runNameDecisionConflictsWithConfirmed++;
