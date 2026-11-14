@@ -62,7 +62,7 @@ export async function translateBatch(context: any, items: TranslationItem[], req
 
   const value = await requestTranslation(store, context, request, items, requestId, batchIndex, requestStartedAt);
   const parsed = parseTranslations(value, new Set(items.map((item) => item.id)));
-  const translations = acceptCanonicalTranslations(store, context, request, parsed.translations, batchIndex, requestId);
+  const translations = acceptCanonicalTranslations(store, context, request, parsed.translations, batchIndex, requestId, items);
   appendOutputAudit(store, context, request, items, translations, value, parsed.diagnostics, requestId, batchIndex, requestStartedAt);
 
   const delta = parseBatchContextDelta(context, items, translations, value, request, requestId, batchIndex);
@@ -265,6 +265,7 @@ function acceptCanonicalTranslations(
   parsedTranslations: Map<string, string>,
   batchIndex: number,
   requestId: string,
+  items: TranslationItem[],
 ): Map<string, string> {
   const { termProtections, maskedSourceById } = request;
   const translations = new Map<string, string>();
