@@ -275,13 +275,14 @@ test('literary translation reuses a completed current graph even when some style
 test('small literary selections can use lightweight local context without a full-book graph', async () => {
   assert.equal(shouldUseLightweightLiteraryContext([
     { text: 'A short opening.' }, { text: 'A quiet reply.' },
-  ]), true);
-  assert.equal(shouldUseLightweightLiteraryContext(
-    Array.from({ length: 13 }, () => ({ text: 'x' })),
-  ), false, 'more than one small batch should retain full-book context preparation');
-  assert.equal(shouldUseLightweightLiteraryContext([{ text: 'x'.repeat(6001) }]), false);
-  assert.equal(shouldUseLightweightLiteraryContext([{ text: '   ' }]), false);
-  assert.equal(shouldUseLightweightLiteraryContext([]), false);
+  ], 'ids'), true);
+  assert.equal(shouldUseLightweightLiteraryContext(Array.from({ length: 13 }, () => ({ text: 'x' })), 'ids'), false,
+    'more than one small batch should retain full-book context preparation');
+  assert.equal(shouldUseLightweightLiteraryContext([{ text: 'x'.repeat(6001) }], 'ids'), false);
+  assert.equal(shouldUseLightweightLiteraryContext([{ text: '   ' }], 'ids'), false);
+  assert.equal(shouldUseLightweightLiteraryContext([], 'ids'), false);
+  assert.equal(shouldUseLightweightLiteraryContext([{ text: 'short' }], 'all'), false,
+    'an all-scope run must never qualify based only on its remaining pending segment count');
 });
 
 test('auto source language reuses a graph recorded with a concrete detected language', () => {
