@@ -813,3 +813,38 @@ test('reviewer canonical mappings are scoped to reviewed source and confirmed ta
   assert.equal(merged.canonicalNameMappingConflicts, undefined,
     'a stale auto mapping is superseded by the confirmed target instead of creating a false conflict');
 });
+
+
+test('literary translation contract treats 信达雅 as simultaneous quality goals', async () => {
+  const { LITERARY_TRANSLATION_CONTRACT, MANDATORY_TRANSLATION_CONTRACT } = await import('../src/documents/translationSchema.ts');
+  const { buildLiteraryReviewPrompt } = await import('../src/literaryPrompts.ts');
+  assert.match(LITERARY_TRANSLATION_CONTRACT, /信、达、雅必须同时成立/);
+  assert.doesNotMatch(LITERARY_TRANSLATION_CONTRACT, /原文含义\/事实\/叙事视角\s*>/);
+  assert.match(MANDATORY_TRANSLATION_CONTRACT, /不得无故漏掉源文/);
+  assert.doesNotMatch(MANDATORY_TRANSLATION_CONTRACT, /不得原样保留源语言单词/);
+
+  const prompt = buildLiteraryReviewPrompt({
+    body: { target: 'zh', chapterTitle: 'Chapter 1' },
+    segments: [{ id: 's1', source: 'He said nothing.', draft: '他什么也没说。' }],
+    reviewFocus: 'combined',
+    translationBrief: null,
+    precedingSegments: [],
+    voiceContext: {},
+    contextGraph: null,
+  });
+  assert.match(prompt.systemPrompt, /必须同时检查准确性与文学表达/);
+  assert.doesNotMatch(prompt.systemPrompt, /准确性优先，文风其次/);
+});
+
+test('medium and strong literary review include short lines, dialogue and title-like segments', async () => {
+  const { selectModelReviewTargets } = await import('../src/documents/translationAgent.ts');
+  const items = [
+    { id: 'short', text: 'No.' },
+    { id: 'dialogue', text: 'Go!' },
+    { id: 'quiet', text: 'A pale light.' },
+  ];
+  assert.deepEqual(selectModelReviewTargets(items, 'medium'), items);
+  assert.deepEqual(selectModelReviewTargets(items, 'strong'), items);
+  assert.deepEqual(selectModelReviewTargets(items, 'weak'), []);
+  assert.deepEqual(selectModelReviewTargets(items, 'off'), []);
+});
