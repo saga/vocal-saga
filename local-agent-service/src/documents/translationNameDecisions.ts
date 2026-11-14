@@ -90,7 +90,7 @@ function loadNameGroups(db: any, sourceRevisionId: string, memory: Record<string
     if (!source || !key) return null;
     let group = groups.get(key);
     if (!group) {
-      group = { source, aliases: new Set(), targets: new Set(), kind: normalizeCanonicalEntityKind(kindValue) };
+      group = { source, aliases: new Set(), targets: new Set(), kind: normalizeCanonicalEntityKind(kindValue), explicitTargets: [] };
       groups.set(key, group);
     } else if (group.kind === 'other' && kindValue) {
       group.kind = normalizeCanonicalEntityKind(kindValue);
