@@ -197,7 +197,13 @@ export function validateBlockMapping(
     }
     // 「骤减」需要原文句数足够多才有区分度：中文把几个英文短句并成一句是常态，
     // 3 句→1 句（比 0.33）刚好压在阈值下，属于正常合并，不告警。
-    if (sentenceRatio < minSentenceRatio && origSentences >= minOrigForCollapse) {
+    // 二次门控：译文只有 1 句且绝对差 ≥ 4 时才算骤减；译文 ≥ 2 句的多对多合并
+    // 一律不告警（此时 charRatio 已能覆盖真正的截断/错配）。5→1（0.20）、10→3（0.30）仍被捕获。
+    if (
+      sentenceRatio < minSentenceRatio &&
+      transSentences === 1 &&
+      origSentences - transSentences >= minOrigForCollapse
+    ) {
       reasons.push(`句子数骤减：比 ${sentenceRatio.toFixed(2)} < ${minSentenceRatio}`);
     }
   }

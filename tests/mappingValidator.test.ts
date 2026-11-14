@@ -107,7 +107,7 @@ describe('validateBlockMapping', () => {
     expect(verdict.suspect).toBe(false);
   });
 
-  // 「骤减」只在原文句数 ≥ 4 时启用：中文把 3 个英文短句并成 1 句是常态。
+  // 「骤减」二次门控：译文只有 1 句且绝对差 ≥ 4 才算骤减。3→1 不告警。
   it('does NOT flag 3-sentence original collapsed into 1 Chinese sentence', () => {
     const verdict = validateBlockMapping(
       'The harness runs tool calls in parallel. Results come back to the same model. The model decides the next step.',
@@ -116,6 +116,28 @@ describe('validateBlockMapping', () => {
     expect(verdict.origSentences).toBe(3);
     expect(verdict.transSentences).toBe(1);
     expect(verdict.suspect).toBe(false);
+  });
+
+  // 回归：couchbase.com 文章页 12 EN → 4 CN（比 0.33），多对多合并，不告警。
+  it('does NOT flag many-to-many merge with transSentences >= 2', () => {
+    const verdict = validateBlockMapping(
+      'Agents plan. They act. They adapt. They persist state. They resume after failures. They own processes. They interact with people. They interact with systems. They take days. They take weeks. They are durable. They are not short-lived.',
+      '智能体规划、行动并适应。它们持久化状态、故障后恢复。它们与人和系统交互。它们持续数天或数周。'
+    );
+    expect(verdict.origSentences).toBe(12);
+    expect(verdict.transSentences).toBe(4);
+    expect(verdict.suspect).toBe(false);
+  });
+
+  // 回归：couchbase.com b54 — 5 EN → 1 CN（比 0.20），译文正常但句数骤减确实可疑，仍告警。
+  it('still flags 5 EN → 1 CN collapse (transSentences === 1, abs diff >= 4)', () => {
+    const verdict = validateBlockMapping(
+      'Durable execution is a programming model. The runtime records every step. If the process crashes it replays them. State is durable. Recovery is automatic.',
+      '持久化执行是一种编程模型，其中运行时会记录下每一个与外部世界交互的步骤结果；一旦发生故障，程序会重新执行这些步骤。'
+    );
+    expect(verdict.origSentences).toBe(5);
+    expect(verdict.transSentences).toBe(1);
+    expect(verdict.reasons.join('; ')).toMatch(/句子数骤减/);
   });
 
   it('still flags a many-sentence original collapsed into 1 sentence', () => {
