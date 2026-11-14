@@ -303,7 +303,8 @@ export function prepareRunNameDecisions(
 
       if (!decision) {
         const priorRows = accepted.filter((row) =>
-          Number(row.ordinal) < firstMention && !!rowMatchesGroup(row, group));
+          // 同一原文片段在此前 Run 已采纳的译文也是合法先例；它不是未来章节知识，且 source_hash 已锁定。
+          Number(row.ordinal) <= firstMention && !!rowMatchesGroup(row, group));
         const vote = chooseAcceptedTranslationTarget(
           Array.from(group.targets),
           priorRows,
