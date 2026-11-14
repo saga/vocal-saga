@@ -6,7 +6,7 @@
  * 去导入整条构造链。
  */
 
-export const TRANSLATION_BRIEF_POLICY_VERSION = 'translation-brief-v10-bounded-examples';
+export const TRANSLATION_BRIEF_POLICY_VERSION = 'translation-brief-v11-run-name-decisions';
 // 历史示例是文风证据，不是章节逐字记录。
 export const MAX_ACCEPTED_EXAMPLES = 8;
 /** 单个已采纳示例的字符上限；超出部分截断，保证示例总量可控。 */
