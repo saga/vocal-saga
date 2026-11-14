@@ -117,3 +117,25 @@ test('marker reminder repeats the batch markers with their required occurrence c
   assert.equal(buildCanonicalMarkerReminder(masked, []), '');
   assert.equal(buildCanonicalMarkerReminder(['没有标记的文本'], protections), '');
 });
+
+
+test('candidate name proposals remain fail-closed and are not protected as canonical mappings', () => {
+  const candidateGraph = {
+    nameMappings: [
+      { source: 'Yabu', target: '薮', aliases: [], kind: 'person', sourceStatus: 'candidate', confirmationSource: 'model-default' },
+    ],
+  };
+  assert.deepEqual(buildCanonicalTermProtections(items, candidateGraph), []);
+});
+
+test('run-canonical decisions are protected within the run without becoming user-confirmed memory', () => {
+  const runGraph = {
+    nameMappings: [
+      { source: 'Yabu', target: '薮', aliases: [], kind: 'person', sourceStatus: 'run-canonical', confirmationSource: 'model-default' },
+    ],
+  };
+  const protections = buildCanonicalTermProtections(items, runGraph);
+  assert.equal(protections.length, 1);
+  assert.equal(protections[0].sourceForm, 'Yabu');
+  assert.equal(protections[0].target, '薮');
+});
