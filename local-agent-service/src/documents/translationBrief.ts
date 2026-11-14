@@ -162,9 +162,6 @@ export function buildTranslationBrief(
   // 章节对不上时不要退而使用只存在于记忆里的摘要。
   voiceContext.chapterSummaries = graph && chapterPath ? graph.chapterSummaries : [];
 
-  const { componentDiagnostics, componentLargest } = measureBriefComponents(
-    glossary, visiblePrecedingSegments, graph, voiceContext);
-
   const brief: TranslationBrief = {
     version: 1,
     policyVersion: TRANSLATION_BRIEF_POLICY_VERSION,
@@ -887,17 +884,11 @@ function measureBriefComponents(
  * 对预加载记忆执行相关性优先的真实预算控制。
  * 先裁剪可选历史材料，再裁剪低优先级连续性提示；用户确认的规范译名永不因预算被丢弃。
  */
-function enforceBriefContextBudget(brief: TranslationBrief, configuredBudget: number): Record<string, number | string> {
+export function enforceBriefContextBudget(brief: TranslationBrief, configuredBudget: number): Record<string, number | string> {
   const budget = Math.max(6_000, Math.min(MAX_TRANSLATION_BRIEF_CHARS, Math.floor(configuredBudget || 24_000)));
   const beforeChars = serializedContext(brief).length;
   const trimmed: Record<string, number> = {};
   const count = (key: string, values: any[]) => { trimmed[key] = (trimmed[key] || 0) + values.length; };
-  const trimTail = (owner: any, key: string, diagnosticKey = key) => {
-    if (!Array.isArray(owner?.[key]) || !owner[key].length) return;
-    const values = owner[key];
-    owner[key] = [];
-    count(diagnosticKey, values);
-  };
   const trimUntilBudget = (owner: any, key: string, diagnosticKey = key, minimum = 0) => {
     if (!Array.isArray(owner?.[key])) return;
     while (owner[key].length > minimum && serializedContext(brief).length > budget) {
