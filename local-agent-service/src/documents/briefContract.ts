@@ -6,12 +6,12 @@
  * 去导入整条构造链。
  */
 
-export const TRANSLATION_BRIEF_POLICY_VERSION = 'translation-brief-v11-run-name-decisions';
+export const TRANSLATION_BRIEF_POLICY_VERSION = 'translation-brief-v12-ranked-budgeted-memory';
 // 历史示例是文风证据，不是章节逐字记录。
 export const MAX_ACCEPTED_EXAMPLES = 8;
 /** 单个已采纳示例的字符上限；超出部分截断，保证示例总量可控。 */
 export const MAX_ACCEPTED_EXAMPLE_CHARS = 4_000;
-// 序列化安全上限的绝对天花板。
+// TranslationBrief 序列化绝对上限；超过时必须先裁剪可选记忆，不能静默发送超大上下文。
 export const MAX_TRANSLATION_BRIEF_CHARS = 1_000_000;
 
 /** 组翻译简报时用的片段视图，带版式元信息以便还原结构。 */
