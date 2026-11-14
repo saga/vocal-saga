@@ -167,7 +167,7 @@ test('TranslationBrief is revision-pinned, bounded and hashes the source selecti
   assert.equal(snapshots.length, 1);
   assert.equal(snapshots[0].contextHash, first.contextHash);
   assert.deepEqual(snapshots[0].sourceSegmentIds, ['c1-1']);
-  assert.equal(snapshots[0].brief.policyVersion, 'translation-brief-v10-bounded-examples');
+  assert.equal(snapshots[0].brief.policyVersion, 'translation-brief-v11-run-name-decisions');
 
   const configuredContext = {
     ...context,
