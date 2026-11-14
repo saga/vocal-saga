@@ -100,7 +100,7 @@ export function saveLiteraryMemory(store: DocumentProjectStore, projectId: strin
     evidenceVerifiedCharacterCount: memory.characterVoices.filter((profile: any) =>
       profile.status === 'confirmed' && profile.confirmationSource === 'evidence-verified').length,
     userConfirmedCharacterCount: memory.characterVoices.filter((profile: any) =>
-      profile.status === 'confirmed' && profile.confirmationSource === 'user-confirmed').length,
+      profile.status === 'confirmed' && ['user-confirmed', 'user-modified'].includes(String(profile.confirmationSource || ''))).length,
     candidateCharacterCount: statusCount('candidate'),
     rejectedCharacterCount: statusCount('rejected'),
     relationshipCount: memory.relationships.length,
@@ -276,7 +276,7 @@ export function validateLiteraryMemoryAgainstProject(store: DocumentProjectStore
       evidenceDimensionCount >= 2 &&
       hasSubstantiveVoiceCore;
     const userConfirmed = profile.status === 'confirmed' &&
-      profile.confirmationSource === 'user-confirmed';
+      ['user-confirmed', 'user-modified'].includes(String(profile.confirmationSource || ''));
     const legacyConfirmed = profile.status === 'confirmed' &&
       profile.confirmationSource === 'legacy-unknown' &&
       evidence.length > 0;
@@ -294,7 +294,7 @@ export function validateLiteraryMemoryAgainstProject(store: DocumentProjectStore
       ...(status === 'confirmed' && evidenceVerified
         ? { confirmationSource: 'evidence-verified' }
         : status === 'confirmed' && userConfirmed
-          ? { confirmationSource: 'user-confirmed' }
+          ? { confirmationSource: profile.confirmationSource === 'user-modified' ? 'user-modified' : 'user-confirmed' }
           : status === 'confirmed' && modelDefault
             ? { confirmationSource: 'model-default' }
             : status === 'confirmed' && legacyConfirmed
