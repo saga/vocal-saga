@@ -114,6 +114,10 @@ export async function ensureLiteraryPreprocessingBeforeRun(
     // 全书人物/关系/风格提取而阻塞。当前片段、前文与已确认译名仍会进入 Brief。
     if (!['queued', 'running'].includes(status)) {
       const selectedSegments = store.getRunSegmentsForExecution(projectId, runId) as TranslationItem[];
+      const currentSourceRevisionId = store.getProjectContext(projectId).currentSourceRevisionId;
+      if (String(currentSourceRevisionId || '') !== String(run.sourceRevisionId || '')) {
+        throw new Error('翻译 Run 绑定的原文版本已不是项目当前版本；为避免上下文与原文错配，本轮不会启动。请基于当前原文新建 Run。');
+      }
       if (shouldUseLightweightLiteraryContext(selectedSegments)) {
         const sourceChars = selectedSegments.reduce((total, item) => total + String(item.text || '').length, 0);
         store.appendEvent(projectId, runId, 'context-graph.gate.skipped', {
