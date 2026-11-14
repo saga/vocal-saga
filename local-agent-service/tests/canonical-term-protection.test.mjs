@@ -139,3 +139,15 @@ test('run-canonical decisions are protected within the run without becoming user
   assert.equal(protections[0].sourceForm, 'Yabu');
   assert.equal(protections[0].target, '薮');
 });
+
+
+test('user-modified memory decisions retain the same authority as explicit user confirmation', () => {
+  const graph = {
+    nameMappings: [
+      { source: 'Yabu', target: '矢部', aliases: [], kind: 'person', sourceStatus: 'confirmed-memory', confirmationSource: 'user-modified' },
+    ],
+  };
+  const protections = buildCanonicalTermProtections(items, graph);
+  assert.equal(protections.length, 1);
+  assert.equal(protections[0].target, '矢部');
+});
