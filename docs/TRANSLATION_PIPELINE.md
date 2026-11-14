@@ -58,11 +58,15 @@ flowchart TD
 4. 服务端 `executeRun` 在 Run 进入 `running` 前再次检查，作为最终执行门禁。旧客户端或直接 API 调用可能先持久化 queued Run；服务端会有限地启动/等待匹配的 Context Graph，但在 readiness 通过前不读取待译片段、不调用翻译模型、不保存候选。
 5. 状态与图谱事实只由服务端 SQLite 管理。扩展只消费小型 readiness/status DTO，不复制 nodes、edges、evidence 或章节摘要。
 
-readiness 不是单看数据库 `status=completed`。它还要求 source revision、服务端当前分析版本、source/target language、受支持的策略 A/B、非零有效样本、完整的五项文风描述及至少一条 style rule；B 策略必须完成 style、characters、entities、relationships、chapters 五个阶段。styleAvoid 允许为空。机器文风基准完整不等于用户确认；机器应用与用户确认/编辑必须保留不同 provenance。
+readiness 不等于要求模型必须产出一份字段齐全的风格分析报告。它检查 source revision、服务端当前分析版本、source/target language、受支持的策略 A/B、非零有效样本，以及 B 策略的必要阶段检查点（style、characters、entities、relationships、chapters），以确保预处理任务确实完成。五项文风描述、styleRules 和 styleAvoid 是尽力提取的参考资料，不是翻译准入条件；缺少某一项只表示该维度没有可靠资料，不能阻止翻译，也不能要求模型编造补齐。机器文风基准完整不等于用户确认；机器应用与用户确认/编辑必须保留不同 provenance。
 
 预处理失败不会降级为“只做逐章分析然后继续文学翻译”。失败阶段、缺失字段和错误通过服务端状态及 Run 事件诊断；重分析不得覆盖已采纳译文、人工修订或旧 Run 的固定快照。详见 [ADR-0005](adr/0005-literary-preprocessing-before-translation.md) 与 [完整流程说明](../FULL-BOOK-PREPROCESSING-FIRST-TRANSLATION-FLOW-2026-10-31.md)。
 
-文学模式仍复用两个既有 Reviewer 任务，不新增 Agent 或模型调用。非中文目标语言保持原有顺序和行为。中文目标语言下，Style Review 改为真正的中文单语编辑：模型只接收中文初稿、目标语言人物声音描述、已确认中文风格规范和同一来源版本中更早已采纳的中文例句；不接收英文原文、英文引文、源语言人名/别名、源语言术语表、来源摘要或前文原文。编辑 finding 必须引用中文初稿中的 `targetExcerpt`。编辑候选随后交给 Accuracy / Terminology Review，与原文和初译对照复核；初译仅作为变化比较，不作为正确答案。中文单语编辑只产生 provisional edit，不直接写入候选。后续双语准确性/术语复核必须按 segment 明确覆盖并返回完整非空最终译文；覆盖成功时保留双语复核最终文本（包括复核修订），未覆盖、缺失、空/无效结果、补审失败或复核调用失败时自动恢复初译。部分覆盖按片段分别处理；双语复核将编辑改回初译时，对应 finding 自动 dismissed 并记录机器回退来源，不留人工待处理项。未经验证的编辑不得进入候选、context delta 或项目记忆，不要求用户点击。其他目标语言的文风修订须有对应的原文/译文证据 finding，随后自动保存为 Run 候选。Run 最终化统一自动采纳候选，但不覆盖更新较新的人工修订。详见根目录 [VOCAL-SAGA-LOCAL-AGENT-CHINESE-LITERARY-EDITING-RESEARCH-AND-IMPROVEMENT-PLAN-2026-10-31.md](../VOCAL-SAGA-LOCAL-AGENT-CHINESE-LITERARY-EDITING-RESEARCH-AND-IMPROVEMENT-PLAN-2026-10-31.md)。
+文学模式仍复用两个既有 Reviewer 任务，不新增 Agent 或模型调用。默认 medium 是一次合并双语审校，同时检查准确性、自然度、翻译腔、语气节奏和人物声音；短句、短对白、留白句不再因长度/标点/大写启发式被跳过。strong 才拆成独立文风与双语准确性两次调用，weak 仅运行确定性检查，off 关闭审校。非中文目标语言保持原有强审校顺序。中文目标语言的 strong Style Review 改为真正的中文单语编辑：模型只接收中文初稿、目标语言人物声音描述、已确认中文风格规范和同一来源版本中更早已采纳的中文例句；不接收英文原文、英文引文、源语言人名/别名、源语言术语表、来源摘要或前文原文。编辑 finding 必须引用中文初稿中的 `targetExcerpt`。编辑候选随后交给 Accuracy / Terminology Review，与原文和初译对照复核；初译仅作为变化比较，不作为正确答案。中文单语编辑只产生 provisional edit，不直接写入候选。后续双语准确性/术语复核必须按 segment 明确覆盖并返回完整非空最终译文；覆盖成功时保留双语复核最终文本（包括复核修订），未覆盖、缺失、空/无效结果、补审失败或复核调用失败时自动恢复初译。部分覆盖按片段分别处理；双语复核将编辑改回初译时，对应 finding 自动 dismissed 并记录机器回退来源，不留人工待处理项。未经验证的编辑不得进入候选、context delta 或项目记忆，不要求用户点击。其他目标语言的文风修订须有对应的原文/译文证据 finding，随后自动保存为 Run 候选。Run 最终化统一自动采纳候选，但不覆盖更新较新的人工修订。详见根目录 [VOCAL-SAGA-LOCAL-AGENT-CHINESE-LITERARY-EDITING-RESEARCH-AND-IMPROVEMENT-PLAN-2026-10-31.md](../VOCAL-SAGA-LOCAL-AGENT-CHINESE-LITERARY-EDITING-RESEARCH-AND-IMPROVEMENT-PLAN-2026-10-31.md)。
+
+## 1.2 文学翻译质量目标
+
+文学翻译以信、达、雅同时成立为验收目标：准确传达原文事实、叙事视角、语气和潜台词；译文自然、清楚、符合目标语言阅读习惯；尽可能保留作者文体、节奏、修辞和人物声音。不能把准确性作为唯一硬指标、把文学性降为可选润色，也不能把文学性理解为擅自扩写。默认合并审校同时检查这三个方面；只有强审校或明确风险才增加独立审校调用。审校只修改有明确证据、确实损害译文质量的地方，不为制造“修改痕迹”而重写原本自然准确的句子。
 
 ## 2. 初译响应契约
 
