@@ -71,20 +71,6 @@ export function selectModelReviewTargets<T>(items: T[], reviewStrength: string):
 }
 
 /**
- * 「中」档的送审筛选：短、无数字、无对白、无专名的片段单独送审收益极低。
- * 章节名、页码、单句过渡这类片段在文学书里占比不小，每送一次都要付一次完整模型调用。
- */
-export function isReviewWorthSending(item: { text?: string | null }): boolean {
-  const source = String(item?.text ?? '').trim();
-  if (!source) return false;
-  if (source.length >= 40) return true;
-  if (/\d/.test(source)) return true;
-  if (/["“”'‘’「」『』—]/.test(source)) return true;
-  // 句首之外的大写开头词通常是专名，需要对照规范译名。
-  return /[A-Z]/.test(source.slice(1));
-}
-
-/**
  * 「弱」档审校：不调用模型，只跑全书质量审计已经在用的确定性检查。
  * 输出仍然只是 finding 提示：数字与英文残留一律 optional，只有对照已确认规范译名的漂移
  * 保留 must_fix——这是既有策略，不因审校强度而下调。
