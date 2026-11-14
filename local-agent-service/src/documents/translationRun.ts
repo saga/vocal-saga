@@ -141,6 +141,7 @@ export async function ensureLiteraryPreprocessingBeforeRun(
           note: 'No full-book graph was ready; translation continues with current segments, preceding context and confirmed memory only.',
         });
         return true;
+        }
       }
     }
     if (String(graph.sourceRevisionId || '') !== String(run.sourceRevisionId || '')) {
