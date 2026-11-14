@@ -267,7 +267,7 @@ function normalizeMemoryEntities(raw: Record<string, any>): Array<Record<string,
     const explicitlyRejected = item.reviewStatus === 'rejected';
     const confirmation = explicitlyRejected ? undefined : item.reviewStatus === 'confirmed'
       ? (item.confirmationSource ? confirmationSource(item.confirmationSource, true) : 'legacy-unknown') : 'model-default';
-    const userConfirmed = item.reviewStatus === 'confirmed' && confirmation === 'user-confirmed';
+    const userConfirmed = item.reviewStatus === 'confirmed' && ['user-confirmed', 'user-modified'].includes(String(confirmation || ''));
     const targetEvidenceRefs = Array.isArray(item.targetEvidenceRefs) ? item.targetEvidenceRefs.slice(-8).flatMap((ref: any) => {
       if (!ref || typeof ref !== 'object' || Array.isArray(ref)) return [];
       const segmentId = text(ref.segmentId, 160);
