@@ -37,9 +37,8 @@ export function buildLiteraryReviewPrompt(input: {
     reviewFocus === 'style'
       ? '本次是独立文风审校阶段：只输出 category=style 的 findings，重点检查人物声音差异、叙述声音、语域、节奏、翻译腔和不自然表达；不要输出 accuracy/terminology findings。finalTranslation 如有文风改进，应给出完整修订译文，但不得改变事实或新增原文没有的信息。'
       : reviewFocus === 'combined'
-        // 「中」档：一次调用同时承担必须修复的准确性和可选的文风改进。
-        // 两级优先级不能合并：accuracy/terminology 仍是 must_fix，style 仍是 optional，
-        // 否则文风偏好会被当成硬错误写回译文。
+        // 默认合并审校同时检查准确性与文学表达；只有主观偏好才保持 optional，
+        // 有证据且确实损害自然度/作者表达效果的风格问题同样需要修复。
         ? '本次是合并审校阶段，必须同时检查准确性与文学表达，不得只修正事实错误而忽略翻译腔、语气、节奏和人物声音，也不得为了文采损害原意。accuracy/terminology 问题必须修复；有明确文本证据、确实损害自然度或作者表达效果的 style 问题也必须修复；只有多种写法都自然准确、差异纯属个人偏好时才标 optional。finalTranslation 必须是完整译文：保留初译中已经准确、有力的表达，只修改确有必要的问题；不要为体现审校工作而重写整段。'
         : '本次是准确性与专名审校阶段：只输出 accuracy 或 terminology findings，修复可核验的误译、漏译、增译、否定/指代错误和规范译名不一致；不要输出 style findings，也不要做纯润色。文风由独立阶段处理。',
     ...(reviewFocus !== 'accuracy' && /^zh(?:[-_]|$)/i.test(String(body.target || 'zh')) ? [
