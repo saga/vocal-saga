@@ -658,7 +658,7 @@ async function drainAndSettleReviews(
  * 只允许被当前原文版本、当前 source_hash 且已采纳的译文支撑的增量进入长期记忆。
  * 波次内仍可使用原始已校验 delta；这里是项目级持久化的第二道门。
  */
-function retainAcceptedEvidenceDeltas(
+export function retainAcceptedEvidenceDeltas(
   db: any,
   sourceRevisionId: string,
   deltas: ValidatedTranslationContextDelta[],
