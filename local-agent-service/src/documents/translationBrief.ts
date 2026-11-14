@@ -127,8 +127,8 @@ export function buildTranslationBrief(
     ? precedingSegments.slice(-strategy.precedingContextSegments)
     : [];
   const visiblePrecedingSegments = resolveVisiblePrecedingSegments(projectId, sourceRevisionId, selectedPrecedingSegments);
-  // 配置里的软上限只用来裁剪可选的「历史文风示例」。核心源文上下文、术语表条目、
-  // 当前可见的规范名映射以及有证据支撑的声音数据都不会被丢弃。
+  // 配置预算先约束可选历史材料，再按相关性裁剪低优先级连续性记忆；
+  // 当前片段、术语表与用户确认/Run 规范译名始终保留。
   const glossary = filterGlossaryForBatch(context, items);
   const exampleBudgetChars = Math.min(MAX_ACCEPTED_EXAMPLE_CHARS,
     Math.max(1_000, Math.floor(strategy.contextBudgetChars * 0.25)));
@@ -222,8 +222,17 @@ export function buildTranslationBrief(
     chapterSummariesTrimmedByBudget: Number(trimCounts.voiceChapterSummaries || 0) + Number(trimCounts.graphChapterSummaries || 0),
     precedingSegmentsTrimmedByBudget: Number(trimCounts.precedingSegments || 0),
     acceptedExamplesTrimmedByBudget: Number((temporalMemory as any)?.__translationBriefDiagnostics?.acceptedExamplesTrimmedByBudget || 0) + Number(trimCounts.recentExamples || 0),
+    graphCharactersTrimmedByBudget: Number(trimCounts.graphCharacters || 0),
+    graphEntitiesTrimmedByBudget: Number(trimCounts.graphEntities || 0),
+    graphRelationshipsTrimmedByBudget: Number(trimCounts.graphRelationships || 0),
+    characterVoiceEvidenceTrimmedByBudget: Number(trimCounts.characterVoiceEvidence || 0),
+    characterVoiceContrastRulesTrimmedByBudget: Number(trimCounts.characterVoiceContrastRules || 0),
+    budgetTrimCount: Number(trimCounts.contextBudgetTrimCount || 0) +
+      Number((temporalMemory as any)?.__translationBriefDiagnostics?.acceptedExamplesTrimmedByBudget || 0),
   });
-  const budgetExcess = Math.max(0, brief.contextChars - strategy.contextBudgetChars);
+  const effectiveBudget = Number(budgetDiagnostics.contextBudgetChars || strategy.contextBudgetChars);
+  const budgetExcess = Math.max(0, brief.contextChars - effectiveBudget);
+  (brief.contextDiagnostics as any).contextBudgetChars = effectiveBudget;
   (brief.contextDiagnostics as any).contextBudgetExcessChars = budgetExcess;
   logInfo('translation-brief', 'assembled · segments=' + brief.sourceSegmentIds.length +
     ' · chars=' + brief.contextChars +
