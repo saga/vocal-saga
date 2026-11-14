@@ -1408,3 +1408,54 @@ test('invalid leading candidates do not consume the evidence-backed persistence 
   assert.equal(contextGraphCandidateDisposition(1, 40, 40), 'valid-limit');
 });
 
+
+test('TranslationBrief enforces the configured memory budget while preserving canonical name decisions', async () => {
+  const { enforceBriefContextBudget } = await import('../src/documents/translationBrief.ts');
+  const brief = {
+    version: 1,
+    policyVersion: 'translation-brief-v12-ranked-budgeted-memory',
+    sourceRevisionId: 'revision',
+    promptRevisionId: 'prompt',
+    memoryRevisionId: 'memory',
+    contextDeltaCount: 0,
+    sourceSegmentIds: ['current'],
+    chapterPath: 'Chapter 1',
+    glossary: { document_terms: [] },
+    precedingSegments: [],
+    contextGraph: {
+      nameMappings: [
+        { source: 'UserName', target: '用户确认译名', sourceStatus: 'confirmed-memory', confirmationSource: 'user-confirmed' },
+        { source: 'RunName', target: '本次运行译名', sourceStatus: 'run-canonical' },
+        ...Array.from({ length: 40 }, (_, index) => ({
+          source: 'Candidate ' + index, target: '候选译名'.repeat(12), sourceStatus: 'candidate',
+        })),
+      ],
+      characters: [], entities: [], relationships: [], chapterSummaries: [],
+    },
+    voiceContext: {
+      recentExamples: Array.from({ length: 40 }, (_, index) => ({
+        source: 'Source example ' + index + ' '.repeat(180),
+        target: 'Target example ' + index + ' '.repeat(180),
+      })),
+      chapterSummaries: Array.from({ length: 10 }, (_, index) => ({ chapter: 'Chapter ' + index, summary: 'summary '.repeat(80) })),
+      voiceAnchors: [], dialogueParticipants: [], relationshipVoiceRules: [],
+      relationships: [], entities: [], characterVoices: [],
+    },
+    contextDiagnostics: {},
+    contextChars: 0,
+    contextHash: '',
+  };
+  const diagnostics = enforceBriefContextBudget(brief, 6_000);
+  const serializedChars = JSON.stringify({
+    policyVersion: brief.policyVersion, sourceRevisionId: brief.sourceRevisionId,
+    promptRevisionId: brief.promptRevisionId, memoryRevisionId: brief.memoryRevisionId,
+    contextDeltaCount: brief.contextDeltaCount, sourceSegmentIds: brief.sourceSegmentIds,
+    chapterPath: brief.chapterPath, glossary: brief.glossary, precedingSegments: brief.precedingSegments,
+    contextGraph: brief.contextGraph, voiceContext: brief.voiceContext,
+  }).length;
+  assert.ok(serializedChars <= 6_000, 'optional memory should be trimmed to the configured budget');
+  assert.equal(brief.contextGraph.nameMappings.some((item) => item.source === 'UserName'), true);
+  assert.equal(brief.contextGraph.nameMappings.some((item) => item.source === 'RunName'), true);
+  assert.ok(diagnostics.contextBudgetTrimCount > 0);
+  assert.equal(diagnostics.contextBudgetPolicy, 'relevance-ranked; preserve-canonical-names; trim-optional-memory-first');
+});
