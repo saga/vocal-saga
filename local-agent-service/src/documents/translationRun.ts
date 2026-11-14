@@ -338,6 +338,11 @@ export function finalizeRunExecution(
     }
   }
 
+  // 长期记忆只吸收最终采纳译文能支撑的增量。初译/Reviewer 的临时输出不能直接污染项目记忆。
+  if (context.run.translationMode === 'literary' && ['completed', 'partial'].includes(String(finishedRun.status))) {
+    commitRunContextMemory(store, projectId, runId, context);
+  }
+
   // 只在候选已采纳后回校命名记忆；审计/记忆失败不能撤销已经落盘的译文。
   if (context.run.translationMode === 'literary' && ['completed', 'partial'].includes(String(finishedRun.status))) {
     try {
@@ -512,12 +517,7 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
       stage: 'validate',
       label: '结果结构与片段映射检查完成',
     });
-    // 直到上下文记忆事务提交前，Run 都保持 running：否则新 Run 会在「翻译完成」到
-    // 「记忆落盘」之间的缝隙里快照到旧记忆。
-    if (prepared.context.run.translationMode === 'literary') {
-      commitRunContextMemory(store, projectId, runId, prepared.context);
-    }
-
+    // 长期记忆在最终采纳之后提交；初译阶段的 context_delta 仍只在 Run 内供后续波次参考。
     finalizeRunExecution(store, projectId, runId, prepared.context, runStartedAt);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -655,6 +655,59 @@ async function drainAndSettleReviews(
 }
 
 /**
+ * 只允许被当前原文版本、当前 source_hash 且已采纳的译文支撑的增量进入长期记忆。
+ * 波次内仍可使用原始已校验 delta；这里是项目级持久化的第二道门。
+ */
+export function retainAcceptedEvidenceDeltas(
+  db: any,
+  sourceRevisionId: string,
+  deltas: ValidatedTranslationContextDelta[],
+): ValidatedTranslationContextDelta[] {
+  const acceptedRows = db.prepare(
+    'SELECT tr.segment_id AS segmentId, tr.translation_text AS translation, s.text AS sourceText ' +
+    'FROM translation_results tr JOIN source_segments s ' +
+    'ON s.source_revision_id = tr.source_revision_id AND s.segment_id = tr.segment_id ' +
+    'WHERE tr.source_revision_id = ? AND tr.accepted = 1 AND tr.source_hash = s.source_hash ' +
+    'ORDER BY COALESCE(tr.accepted_at, tr.created_at) DESC, tr.created_at DESC, tr.rowid DESC'
+  ).all(sourceRevisionId) as Array<{ segmentId: string; translation: string; sourceText: string }>;
+  const accepted = new Map<string, { segmentId: string; translation: string; sourceText: string }>();
+  for (const row of acceptedRows) {
+    if (!accepted.has(row.segmentId)) accepted.set(row.segmentId, row);
+  }
+  const hasAcceptedEvidence = (evidence: any[]) => (Array.isArray(evidence) ? evidence : [])
+    .some((item) => accepted.has(String(item?.segmentId || '')) &&
+      String(accepted.get(String(item?.segmentId || ''))?.sourceText || '')
+        .normalize('NFKC').includes(String(item?.sourceQuote || '').normalize('NFKC')));
+  const output = deltas.map((delta) => {
+    const entityMentions = (delta.entityMentions || []).filter((mention: any) => {
+      const row = accepted.get(String(mention.segmentId || ''));
+      return !!row && !!mention.targetSurface &&
+        row.translation.normalize('NFKC').includes(String(mention.targetSurface).normalize('NFKC'));
+    });
+    const acceptedMentions = new Set(entityMentions.map((mention: any) => String(mention.entityRef || '')));
+    const entityCandidates = (delta.entityCandidates || []).filter((candidate: any) =>
+      hasAcceptedEvidence(candidate.evidence) &&
+      (acceptedMentions.has(String(candidate.localId || '')) ||
+        (Array.isArray(candidate.evidence) && candidate.evidence.some((item: any) => {
+          const row = accepted.get(String(item?.segmentId || ''));
+          return !!row && !!candidate.targetProposal &&
+            row.translation.normalize('NFKC').includes(String(candidate.targetProposal).normalize('NFKC'));
+        }))));
+    return {
+      ...delta,
+      entityCandidates,
+      entityMentions: entityMentions.filter((mention: any) =>
+        entityCandidates.some((candidate: any) => String(candidate.localId) === String(mention.entityRef)) ||
+        entityCandidates.some((candidate: any) => String(candidate.canonicalSource) === String(mention.entityRef))),
+      relationshipDeltas: (delta.relationshipDeltas || []).filter((item: any) => hasAcceptedEvidence(item.evidence)),
+      openQuestions: (delta.openQuestions || []).filter((item: any) => hasAcceptedEvidence(item.evidence)),
+      conflicts: (delta.conflicts || []).filter((item: any) => hasAcceptedEvidence(item.evidence)),
+    };
+  });
+  return output;
+}
+
+/**
  * 把本轮 Run 的 context delta 并入项目文学记忆。
  *
  * 上下文记忆是译文的附属产物：并入失败只写警告，绝不把已经完成的翻译改成失败 Run。
@@ -670,9 +723,9 @@ function commitRunContextMemory(
     db.exec('BEGIN IMMEDIATE');
     try {
       const lockedRunStatus = store.getRunStatus(projectId, runId);
-      if (lockedRunStatus !== 'running') {
+      if (!['completed', 'partial'].includes(String(lockedRunStatus))) {
         store.appendEvent(projectId, runId, 'translation.context-memory.skipped', {
-          reason: 'run-left-finalization-before-memory-commit',
+          reason: 'run-not-successfully-finalized',
           runStatus: lockedRunStatus,
         });
       } else {
@@ -685,8 +738,9 @@ function commitRunContextMemory(
             retainedInRunLedger: true,
           });
         } else {
-          const runDeltas = store.listTranslationContextDeltas(projectId, runId)
+          const rawRunDeltas = store.listTranslationContextDeltas(projectId, runId)
             .map((item: any) => item.delta as ValidatedTranslationContextDelta);
+          const runDeltas = retainAcceptedEvidenceDeltas(db, context.run.sourceRevisionId, rawRunDeltas);
           const currentMemory = store.getCurrentLiteraryMemory(projectId);
           const merged = mergeTranslationContextDeltasIntoMemory(currentMemory.memory, runDeltas);
           if (merged.changed) {
