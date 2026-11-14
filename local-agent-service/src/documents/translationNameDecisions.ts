@@ -382,12 +382,22 @@ export function consolidateAcceptedRunNames(
     const entities = Array.isArray(memory.entities) ? memory.entities : [];
 
     for (const [key, group] of groups) {
+      // 只回校本次 Run 真正采纳的名字；但目标表面仍以全书有效已采纳译文投票，避免单个局部 Run 反向改写全书规范。
+      const runMatchingRows = accepted.filter((row) => runSegmentIds.has(row.segmentId) && !!rowMatchesGroup(row, group));
+      if (!runMatchingRows.length) continue;
       const matchingRows = accepted.filter((row) => !!rowMatchesGroup(row, group));
-      if (!matchingRows.length) continue;
-      const vote = chooseAcceptedTranslationTarget(
-        Array.from(group.targets),
-        matchingRows,
-      );
+      const explicitTargets = Array.from(new Set(group.explicitTargets.map((item) => item.target).filter(Boolean)));
+      if (explicitTargets.length > 1) continue;
+      const vote = explicitTargets.length === 1
+        ? (() => {
+            const target = explicitTargets[0]!;
+            const rows = matchingRows.filter((row) => hasText(row.translation, target));
+            return rows.length ? {
+              target, count: rows.length,
+              firstOrdinal: Math.min(...rows.map((row) => Number(row.ordinal))), rows,
+            } : null;
+          })()
+        : chooseAcceptedTranslationTarget(Array.from(group.targets), matchingRows);
       if (!vote || !validateCanonicalTarget({ source: group.source, target: vote.target, targetLang, kind: group.kind }).valid) continue;
 
       const memoryEntity = entities.find((entity: any) => normalizeEntityName(String(entity?.source || '')) === key);
