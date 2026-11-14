@@ -473,7 +473,7 @@ function decideMemoryMapping(
   const target = String(entity?.target || '').trim();
   const evidence = String(entity?.evidence || '').trim();
   const rawAliases = Array.isArray(entity.aliases) ? entity.aliases : [];
-  const userConfirmedMapping = entity.reviewStatus === 'confirmed' && entity.confirmationSource === 'user-confirmed';
+  const userConfirmedMapping = entity.reviewStatus === 'confirmed' && ['user-confirmed', 'user-modified'].includes(String(entity.confirmationSource || ''));
   const entityKind = normalizeCanonicalEntityKind(entity.kind);
   if (!source || !target || !validateCanonicalTarget({ source, target, targetLang: targetLang, kind: entityKind }).valid) return null;
   if (!userConfirmedMapping && !isWorthCanonicalEntityMapping({
@@ -623,7 +623,7 @@ function mergePinnedProfileMappings(
       // 规范源名、或至少一个安全的、在源文里可见的别名，必须与本批次相关。
       // 只是存在于书里别处的名字，不会注入提示词。
       if (!isVisibleHere(source) && !aliases.length) continue;
-      const userConfirmed = status === 'confirmed' && profile.confirmationSource === 'user-confirmed';
+      const userConfirmed = status === 'confirmed' && ['user-confirmed', 'user-modified'].includes(String(profile.confirmationSource || ''));
       const incoming = {
         source, target, aliases, kind: 'character',
         evidenceBacked: userConfirmed || status === 'confirmed',
