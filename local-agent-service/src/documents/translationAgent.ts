@@ -24,7 +24,7 @@ export {
 export {
   selectVerifiedStyleReviewCandidates,
   resolveBilingualVerifiedChineseEdits,
-  isReviewWorthSending,
+  selectModelReviewTargets,
   buildDeterministicBatchReview,
 } from './translationReviewPolicy.ts';
 
