@@ -496,8 +496,13 @@ function decideMemoryMapping(
   // 只在后续章节才揭示的别名，仍然不能激活这条映射。
   const aliases = rawAliases.filter((alias: unknown) => visibility.aliasVisible(alias));
   const targetRefs = Array.isArray(entity.targetEvidenceRefs) ? entity.targetEvidenceRefs : [];
+  // 目标译名的交叉佐证也必须早于当前批次；不能拿后文已采纳译文反向决定前文译名。
+  const priorTargetEvidence = targetRefs.filter((ref: any) => {
+    const row = visibility.sourceRowFor(ref?.segmentId);
+    return !!row && row.ordinal < visibility.firstOrdinal;
+  });
   const corroboratedTarget = entity.targetConfidence === 'corroborated' &&
-    new Set(targetRefs.map((ref: any) => ref?.segmentId).filter(Boolean)).size >= 2;
+    new Set(priorTargetEvidence.map((ref: any) => ref?.segmentId).filter(Boolean)).size >= 2;
   return {
     incoming: {
       source, target, aliases,
@@ -618,11 +623,13 @@ function mergePinnedProfileMappings(
       // 规范源名、或至少一个安全的、在源文里可见的别名，必须与本批次相关。
       // 只是存在于书里别处的名字，不会注入提示词。
       if (!isVisibleHere(source) && !aliases.length) continue;
+      const userConfirmed = status === 'confirmed' && profile.confirmationSource === 'user-confirmed';
       const incoming = {
         source, target, aliases, kind: 'character',
-        evidenceBacked: status === 'confirmed',
-        targetConfidence: status === 'confirmed' ? 'confirmed' : 'candidate',
-        sourceStatus: status === 'confirmed' ? 'confirmed-memory' : 'candidate',
+        evidenceBacked: userConfirmed || status === 'confirmed',
+        targetConfidence: userConfirmed ? 'confirmed' : status === 'confirmed' ? 'corroborated' : 'candidate',
+        sourceStatus: userConfirmed ? 'confirmed-memory' : status === 'confirmed' ? 'auto' : 'candidate',
+        confirmationSource: profile.confirmationSource || 'legacy-unknown',
       };
       const names = new Set([source, ...aliases].map(normalizedSourceText));
       const matches = (mapping: any) =>
