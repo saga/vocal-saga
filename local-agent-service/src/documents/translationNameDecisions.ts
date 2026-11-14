@@ -364,9 +364,13 @@ export function consolidateAcceptedRunNames(
   const db = store.getProjectContext(projectId).db;
   db.exec('BEGIN IMMEDIATE');
   try {
+    const sourceRevisionId = String(context.run.sourceRevisionId || '');
+    const currentSourceRevisionId = String(store.getProjectContext(projectId).currentSourceRevisionId || '');
+    if (!sourceRevisionId || sourceRevisionId !== currentSourceRevisionId) {
+      throw new Error('原文版本已变化，跳过旧 Run 的命名记忆回校；已采纳译文保持不变。');
+    }
     const memoryResult = store.getCurrentLiteraryMemory(projectId);
     const memory = memoryResult.memory as Record<string, any>;
-    const sourceRevisionId = String(context.run.sourceRevisionId || '');
     const groups = loadNameGroups(db, sourceRevisionId, memory, runId);
     const accepted = acceptedRows(db, sourceRevisionId);
     const runSegmentIds = new Set((db.prepare(
