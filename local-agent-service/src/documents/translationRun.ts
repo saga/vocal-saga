@@ -674,15 +674,20 @@ export function retainAcceptedEvidenceDeltas(
   for (const row of acceptedRows) {
     if (!accepted.has(row.segmentId)) accepted.set(row.segmentId, row);
   }
-  const hasAcceptedEvidence = (evidence: any[]) => (Array.isArray(evidence) ? evidence : [])
-    .some((item) => accepted.has(String(item?.segmentId || '')) &&
-      String(accepted.get(String(item?.segmentId || ''))?.sourceText || '')
-        .normalize('NFKC').includes(String(item?.sourceQuote || '').normalize('NFKC')));
+  const isAcceptedEvidence = (item: any) => {
+    const row = accepted.get(String(item?.segmentId || ''));
+    const quote = String(item?.sourceQuote || '').normalize('NFKC').trim();
+    return !!row && quote.length > 0 &&
+      String(row.sourceText || '').normalize('NFKC').includes(quote);
+  };
+  const hasAcceptedEvidence = (evidence: any[]) =>
+    (Array.isArray(evidence) ? evidence : []).some(isAcceptedEvidence);
   const output = deltas.map((delta) => {
     const entityMentions = (delta.entityMentions || []).filter((mention: any) => {
       const row = accepted.get(String(mention.segmentId || ''));
-      return !!row && !!mention.targetSurface &&
-        row.translation.normalize('NFKC').includes(String(mention.targetSurface).normalize('NFKC'));
+      const targetSurface = String(mention.targetSurface || '').normalize('NFKC').trim();
+      return !!row && isAcceptedEvidence(mention) && targetSurface.length > 0 &&
+        row.translation.normalize('NFKC').includes(targetSurface);
     });
     const acceptedMentions = new Set(entityMentions.map((mention: any) => String(mention.entityRef || '')));
     const entityCandidates = (delta.entityCandidates || []).filter((candidate: any) =>
