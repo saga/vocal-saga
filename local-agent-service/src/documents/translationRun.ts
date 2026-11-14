@@ -667,9 +667,13 @@ export function retainAcceptedEvidenceDeltas(
     'SELECT tr.segment_id AS segmentId, tr.translation_text AS translation, s.text AS sourceText ' +
     'FROM translation_results tr JOIN source_segments s ' +
     'ON s.source_revision_id = tr.source_revision_id AND s.segment_id = tr.segment_id ' +
-    'WHERE tr.source_revision_id = ? AND tr.accepted = 1 AND tr.source_hash = s.source_hash'
+    'WHERE tr.source_revision_id = ? AND tr.accepted = 1 AND tr.source_hash = s.source_hash ' +
+    'ORDER BY COALESCE(tr.accepted_at, tr.created_at) DESC, tr.created_at DESC, tr.rowid DESC'
   ).all(sourceRevisionId) as Array<{ segmentId: string; translation: string; sourceText: string }>;
-  const accepted = new Map(acceptedRows.map((row) => [row.segmentId, row]));
+  const accepted = new Map<string, { segmentId: string; translation: string; sourceText: string }>();
+  for (const row of acceptedRows) {
+    if (!accepted.has(row.segmentId)) accepted.set(row.segmentId, row);
+  }
   const hasAcceptedEvidence = (evidence: any[]) => (Array.isArray(evidence) ? evidence : [])
     .some((item) => accepted.has(String(item?.segmentId || '')) &&
       String(accepted.get(String(item?.segmentId || ''))?.sourceText || '')
