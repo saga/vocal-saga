@@ -57,7 +57,7 @@ test('B style prompt records only evidence-backed observations and permits empty
   const prompt = buildContextGraphWorkflowPrompt('style', 'SAMPLED SOURCE TEXT', {}, false);
   assert.match(prompt, /允许返回空字符串/);
   assert.match(prompt, /没有就返回空数组/);
-  assert.match(prompt, /不得为了填满字段/);
+  assert.match(prompt, /不要为了填满字段/);
   assert.doesNotMatch(prompt, /必须分别填写/);
   assert.doesNotMatch(prompt, /styleRules 至少给出一条/);
 });
