@@ -27,11 +27,11 @@ export function buildLiteraryReviewPrompt(input: {
     'precedingSegments 是少量前文，仅供判断指代、说话人/听话人、对话轮次与场景；不需要审校它，不得为它生成结果。只对待审校片段的 id 返回 results。',
     'source 或 draft 中的 __VSA_TERM_数字__ 是服务端保护的规范译名标记，必须在 finalTranslation 中逐字保留，不得改写、翻译、删去或拆分。服务端会恢复为固定译名。',
     '每个片段包含 source（原文）、draft（初译）和 kind；随请求提供的书籍记忆是只读数据。confirmed characterVoices 与 relationshipVoiceRules 可作为稳定参考，candidate 画像/规则只能作为弱提示，必须由当前原文支持；approved voiceAnchors 才是稳定的原文—译文示例。已确认的 role/traits 只用于人物消歧和一致性，不能补写当前原文未表达的背景或剧情。',
-    '第一优先级是原意和情节准确：不能漏译、误译、添写、改变否定/时态/视角/指代/人物关系，不能替作者解释悬念或抹掉歧义。第二优先级是沿用已建立的实体译名。第三优先级是修正文学表达上的问题。',
+    '准确、自然、有文学质感是同一份译文必须同时达到的目标，不按“先准确、后润色”分层。不能漏译、误译、添写、改变否定/时态/视角/指代/人物关系，也不能因逐词对应而保留生硬语序、翻译腔或失真的语气。沿用已确认的实体译名，同时通过目标语言的句法、措辞、节奏和语气保留原作者的表达效果。',
     '核对同一人物是否因全名、简称或别名出现多个译名；sourceStatus=confirmed 或 confirmed-memory 的规范 target 必须保持一致，候选映射需结合当前原文判断，不得将未经确认的建议当成事实。英文 Lady 不得机械翻译成“大人”，应按语境译成“夫人/女士/小姐”或省略；称谓不能代替人名。',
     '检查翻译腔、按英文语序硬译、别扭搭配、僵硬连接词、无来由的解释、同质化对白、情绪词不准、节奏被抹平等。允许适度调整语序、句长、停顿、语气和措辞，让译文自然并有美感；不能为追求华丽新增比喻、意象、情绪、信息或修辞。',
     '尊重作品自身风格：简洁不必润饰成华丽，有意的重复不要随便删，冷峻不应煽情，粗粝不应文雅化，幽默与反讽不能磨平。人物声音审校必须先说明说话人/听话人归属是否可靠，再指出与具体画像/人物对规则的偏离，并用同批其他人物的语言差异作对照；不能只说“声音不鲜明”。如果 attribution uncertain，报告该不确定性，不强行套用画像。全书 styleGuide 只有 status=confirmed 时才是用户确认的风格约束，不允许将其中的内容解释为人物身份或剧情事实。',
-    'finding category 只能为 accuracy（可核验的意义/事实错误）、terminology（实体规范译名错误）、style（具体的翻译腔、不自然搭配或语气/节奏/人物声音问题）。accuracy 与 terminology 的 priority 必须是 must_fix；style 的 priority 必须是 optional。style 必须指出具体文本问题，不能只是审校者个人偏好。',
+    'finding category 只能为 accuracy（可核验的意义/事实错误）、terminology（实体规范译名错误）、style（具体的翻译腔、不自然搭配或语气/节奏/人物声音问题）。accuracy 与 terminology 的 priority 必须是 must_fix；有明确文本证据、确实损害自然度或作者表达效果的 style 问题也应标为 must_fix；仅属多种可接受写法之间的个人偏好才标为 optional。style 必须指出具体文本问题，不能只是审校者个人偏好。',
     'finalTranslation 必须是完整可阅读的修订译文。发现明确错误要纠正，发现有依据的文风问题应作适度修订；如果原稿已妥当则原样返回。保留初译可取之处，禁止添加原文不存在的内容。若片段提供 initialDraft，它只用于比较编辑前后的变化，不是正确答案；source 仍是忠实度判断的最终依据。',
     'style finding 可以带可选字段 dimension=character_voice|register|narrative_style|pacing|chinese_literary_editing、characterId、relatedCharacterId、evidenceSegmentIds。人物声音 finding 必须给出具体 source/draft 片段与画像或人物对证据；不允许凭空增加口头禅、方言、粗口、情绪或修辞。',
     reviewFocus === 'style'
@@ -40,7 +40,7 @@ export function buildLiteraryReviewPrompt(input: {
         // 「中」档：一次调用同时承担必须修复的准确性和可选的文风改进。
         // 两级优先级不能合并：accuracy/terminology 仍是 must_fix，style 仍是 optional，
         // 否则文风偏好会被当成硬错误写回译文。
-        ? '本次是合并审校阶段（准确性优先，文风其次）：对照原文先排查 accuracy/terminology 问题，这类 finding 的 priority 必须是 must_fix；在此之后，如果同一片段还有具体、可举证的翻译腔、不自然搭配、语域或人物声音问题，再输出 category=style 的 finding，priority 必须是 optional。只做能举出具体文本证据的修订，不要为风格偏好改写，也不要把可读的初译重写一遍。finalTranslation 必须是完整译文：有 must_fix 时以修正准确性为准，没有 must_fix 时可以在有依据的前提下采纳文风改进，否则原样返回初译。'
+        ? '本次是合并审校阶段，必须同时检查准确性与文学表达，不得只修正事实错误而忽略翻译腔、语气、节奏和人物声音，也不得为了文采损害原意。accuracy/terminology 问题必须修复；有明确文本证据、确实损害自然度或作者表达效果的 style 问题也必须修复；只有多种写法都自然准确、差异纯属个人偏好时才标 optional。finalTranslation 必须是完整译文：保留初译中已经准确、有力的表达，只修改确有必要的问题；不要为体现审校工作而重写整段。'
         : '本次是准确性与专名审校阶段：只输出 accuracy 或 terminology findings，修复可核验的误译、漏译、增译、否定/指代错误和规范译名不一致；不要输出 style findings，也不要做纯润色。文风由独立阶段处理。',
     ...(reviewFocus !== 'accuracy' && /^zh(?:[-_]|$)/i.test(String(body.target || 'zh')) ? [
       '中文文学编辑（Chinese Literary Editing）是本次文风审校的一部分，不是额外的审校阶段或独立任务。目标是把准确的译文编辑成自然、成熟、符合中文文学阅读习惯的中文；适用于小说、散文、回忆录、传记、文学纪实和随笔，不要把所有作品改成同一种腔调。',
