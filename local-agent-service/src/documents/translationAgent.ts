@@ -43,6 +43,7 @@ export { mergeConfirmedMemoryNameMappings, runLiteraryReviewWithMissingRetry } f
 export type { PreparedRunExecution } from './translationRun.ts';
 export {
   isContextGraphReadyForTranslationRun,
+  shouldUseLightweightLiteraryContext,
   autoAcceptFinishedRunCandidates,
   startProjectTranslationRun,
   isProjectRunActive,
