@@ -100,7 +100,7 @@ export function saveLiteraryMemory(store: DocumentProjectStore, projectId: strin
     evidenceVerifiedCharacterCount: memory.characterVoices.filter((profile: any) =>
       profile.status === 'confirmed' && profile.confirmationSource === 'evidence-verified').length,
     userConfirmedCharacterCount: memory.characterVoices.filter((profile: any) =>
-      profile.status === 'confirmed' && profile.confirmationSource === 'user-confirmed').length,
+      profile.status === 'confirmed' && ['user-confirmed', 'user-modified'].includes(String(profile.confirmationSource || ''))).length,
     candidateCharacterCount: statusCount('candidate'),
     rejectedCharacterCount: statusCount('rejected'),
     relationshipCount: memory.relationships.length,
@@ -245,9 +245,10 @@ export function validateLiteraryMemoryAgainstProject(store: DocumentProjectStore
   const normalize = (value: string) => value.normalize('NFKC').replace(/\s+/g, ' ').trim().toLocaleLowerCase();
   const latestAccepted = new Map<string, { translation: string; sourceHash: string }>();
   const acceptedRows = db.prepare(
-    'SELECT segment_id, translation_text, source_hash FROM translation_results WHERE accepted = 1 ' +
+    'SELECT segment_id, translation_text, source_hash FROM translation_results ' +
+    'WHERE accepted = 1 AND source_revision_id = ? ' +
     'ORDER BY COALESCE(accepted_at, created_at) DESC, created_at DESC, rowid DESC'
-  ).all() as Array<{ segment_id: string; translation_text: string; source_hash: string }>;
+  ).all(currentSourceRevisionId) as Array<{ segment_id: string; translation_text: string; source_hash: string }>;
   for (const row of acceptedRows) {
     if (!latestAccepted.has(row.segment_id)) {
       latestAccepted.set(row.segment_id, { translation: row.translation_text, sourceHash: row.source_hash });
@@ -275,7 +276,7 @@ export function validateLiteraryMemoryAgainstProject(store: DocumentProjectStore
       evidenceDimensionCount >= 2 &&
       hasSubstantiveVoiceCore;
     const userConfirmed = profile.status === 'confirmed' &&
-      profile.confirmationSource === 'user-confirmed';
+      ['user-confirmed', 'user-modified'].includes(String(profile.confirmationSource || ''));
     const legacyConfirmed = profile.status === 'confirmed' &&
       profile.confirmationSource === 'legacy-unknown' &&
       evidence.length > 0;
@@ -293,7 +294,7 @@ export function validateLiteraryMemoryAgainstProject(store: DocumentProjectStore
       ...(status === 'confirmed' && evidenceVerified
         ? { confirmationSource: 'evidence-verified' }
         : status === 'confirmed' && userConfirmed
-          ? { confirmationSource: 'user-confirmed' }
+          ? { confirmationSource: profile.confirmationSource === 'user-modified' ? 'user-modified' : 'user-confirmed' }
           : status === 'confirmed' && modelDefault
             ? { confirmationSource: 'model-default' }
             : status === 'confirmed' && legacyConfirmed
@@ -324,15 +325,23 @@ export function validateLiteraryMemoryAgainstProject(store: DocumentProjectStore
     const evidenceRefs = (Array.isArray(entity.evidenceRefs) ? entity.evidenceRefs : [])
       .filter((ref: any) => validEvidence(ref.segmentId, ref.sourceQuote));
     const targetEvidenceRefs = (Array.isArray(entity.targetEvidenceRefs) ? entity.targetEvidenceRefs : [])
-      .filter((ref: any) => validEvidence(ref.segmentId, ref.sourceQuote) && typeof ref.targetSurface === 'string' && ref.targetSurface.trim());
+      .filter((ref: any) => {
+        const segmentId = String(ref?.segmentId || '');
+        const source = sources.get(segmentId);
+        const accepted = latestAccepted.get(segmentId);
+        const targetSurface = typeof ref?.targetSurface === 'string' ? ref.targetSurface.trim() : '';
+        return !!targetSurface && validEvidence(segmentId, ref?.sourceQuote) && !!source && !!accepted &&
+          accepted.sourceHash === source.source_hash && normalize(accepted.translation).includes(normalize(targetSurface));
+      });
     const targetEvidenceCount = new Set(targetEvidenceRefs
       .filter((ref: any) => normalize(String(ref.targetSurface || '')) === normalize(String(entity.target || '')))
       .map((ref: any) => String(ref.segmentId || '')).filter(Boolean)).size;
-    const invalidMachineConfirmation = ['evidence-verified', 'model-default'].includes(String(entity.confirmationSource || '')) && evidenceRefs.length === 0;
+    const invalidMachineConfirmation = ['evidence-verified', 'model-default', 'consolidated'].includes(String(entity.confirmationSource || '')) && evidenceRefs.length === 0;
     const reviewStatus = invalidMachineConfirmation ? 'suggested' : entity.reviewStatus;
-    const targetConfidence = reviewStatus === 'confirmed'
-      ? (targetEvidenceCount >= 2 ? 'corroborated' : (targetEvidenceCount >= 1 ? 'corroborated' : 'candidate'))
-      : 'candidate';
+    // 只有至少两个不同片段的已采纳译文实际包含该译名，才算 corroborated。
+    // 模型自己提交的 targetEvidenceRefs 不能单独把一个译名升级成强映射。
+    const targetConfidence = reviewStatus === 'confirmed' && targetEvidenceCount >= 2
+      ? 'corroborated' : 'candidate';
     return {
       ...entity, evidenceRefs, targetEvidenceRefs, targetConfidence, reviewStatus,
       ...(invalidMachineConfirmation ? { confirmationSource: undefined } : {}),

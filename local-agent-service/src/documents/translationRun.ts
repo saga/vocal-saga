@@ -33,6 +33,7 @@ import { type TranslationItem } from './translationSchema.ts';
 import { buildBatches } from './translationBatchPlan.ts';
 import { takeRunUsage } from './translationRunUsage.ts';
 import { processBatch, type RunBatchScope } from './translationRunBatch.ts';
+import { consolidateAcceptedRunNames, prepareRunNameDecisions } from './translationNameDecisions.ts';
 /**
  * 就绪状态绑定到 Run 的不可变原文版本、分析版本与语言对。
  */
@@ -164,6 +165,10 @@ export async function prepareRunExecution(
   if (!items.length) {
     store.finishRun(projectId, runId);
     return null;
+  }
+  // 同一 Run 在发出第一批翻译请求前固定规范译名决议；并行批次只读这份快照。
+  if (context.run.translationMode === 'literary') {
+    context.runNameDecisions = prepareRunNameDecisions(store, projectId, runId, context);
   }
   const strategy = normalizeDocumentTranslationStrategy(context.prompt?.config?.translationStrategy);
   const batches = buildBatches(items, context.run.translationMode === 'literary', strategy);
@@ -333,7 +338,18 @@ export function finalizeRunExecution(
     }
   }
 
-
+  // 只在候选已采纳后回校命名记忆；审计/记忆失败不能撤销已经落盘的译文。
+  if (context.run.translationMode === 'literary' && ['completed', 'partial'].includes(String(finishedRun.status))) {
+    try {
+      consolidateAcceptedRunNames(store, projectId, runId, context);
+    } catch (consolidationError) {
+      store.appendEvent(projectId, runId, 'stage.warning', {
+        stage: 'translation-naming-consolidation',
+        warning: '译文已完成，但规范译名记忆回校失败：' +
+          (consolidationError instanceof Error ? consolidationError.message : String(consolidationError)),
+      });
+    }
+  }
 
   const finishedUsage = summarizeTurnUsage(takeRunUsage(runId));
   store.appendEvent(projectId, runId, 'run.finished', {

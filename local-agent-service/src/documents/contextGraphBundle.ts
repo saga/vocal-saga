@@ -432,6 +432,7 @@ function buildNameMappings(ctx: BundleContext): {
   const graphNameRows = (db.prepare(
     `SELECT * FROM context_graph_nodes WHERE source_revision_id = ? AND status IN ('candidate', 'confirmed') ORDER BY kind, name`
   ).all(revisionId) as any[]).filter((row) => !ctx.isRejectedGraphNode(row));
+  const acceptedTargetCandidatesByName = loadAcceptedTargetCandidates(db, revisionId);
   const nameMappingDiagnostics: Record<string, number> = {
     graphNameMappingCandidates: graphNameRows.length,
     graphNameMappingExcludedNameNotVisible: 0,
@@ -439,6 +440,7 @@ function buildNameMappings(ctx: BundleContext): {
     graphNameMappingExcludedEvidenceNotVisible: 0,
     graphNameMappingExcludedInvalidTarget: 0,
     graphNameMappingExcludedTargetNotPreviouslyAccepted: 0,
+    graphNameMappingsResolvedFromAcceptedTranslation: 0,
     graphNameMappingsActivatedRunCanonical: 0,
     graphNameMappingExcludedTargetLanguage: 0,
     graphNameMappingExcludedLowValue: 0,
@@ -456,7 +458,7 @@ function buildNameMappings(ctx: BundleContext): {
     }
     let attributes: any = {};
     try { attributes = JSON.parse(row.attributes_json); } catch { attributes = {}; }
-    const target = safeText(attributes.suggestedTranslation, 120);
+    let target = safeText(attributes.suggestedTranslation, 120);
     if (!target) {
       nameMappingDiagnostics.graphNameMappingExcludedInvalidTarget++;
       return [];
@@ -472,14 +474,6 @@ function buildNameMappings(ctx: BundleContext): {
       nameMappingDiagnostics.graphNameMappingExcludedLowValue++;
       return [];
     }
-    const targetQuality = validateCanonicalTarget({
-      source: row.name, target, targetLang: String(targetLang || attributes.targetLang || 'zh'),
-      kind: entityKindForPolicy,
-    });
-    if (!explicitUserConfirmation && !targetQuality.valid) {
-      nameMappingDiagnostics.graphNameMappingExcludedInvalidTarget++;
-      return [];
-    }
     if (targetLang && attributes.targetLang !== targetLang) {
       nameMappingDiagnostics.graphNameMappingExcludedTargetLanguage++;
       return [];
@@ -491,12 +485,30 @@ function buildNameMappings(ctx: BundleContext): {
     const characterLike = row.kind === 'character' ||
       ['person', 'character', 'character_epithet', 'nickname'].includes(entityKind);
     if (!explicitUserConfirmation && characterLike) {
-      const targetWasPreviouslyUsed = priorAcceptedTranslations.some((entry) =>
-        ctx.quoteMentions(entry.source, row.name) && normalize(entry.target).includes(normalize(target)));
+      const matchingPrior = priorAcceptedTranslations.filter((entry) => ctx.quoteMentions(entry.source, row.name));
+      const targetWasPreviouslyUsed = matchingPrior.some((entry) => normalize(entry.target).includes(normalize(target)));
       if (!targetWasPreviouslyUsed) {
-        nameMappingDiagnostics.graphNameMappingExcludedTargetNotPreviouslyAccepted++;
-        return [];
+        // 图谱提议可能落后于已采纳译文（甚至从未被用过）。从 LiteraryMemory / 历史批次提议
+        // 收集候选目标表面，再只用知识边界之前的已采纳译文投票；无真实命中仍失败关闭。
+        const fallback = choosePreviouslyAcceptedTarget(
+          acceptedTargetCandidatesByName.get(normalize(row.name)) || [], matchingPrior,
+          row.name, targetLang || attributes.targetLang || 'zh', entityKindForPolicy,
+        );
+        if (!fallback) {
+          nameMappingDiagnostics.graphNameMappingExcludedTargetNotPreviouslyAccepted++;
+          return [];
+        }
+        target = fallback;
+        nameMappingDiagnostics.graphNameMappingsResolvedFromAcceptedTranslation++;
       }
+    }
+    const targetQuality = validateCanonicalTarget({
+      source: row.name, target, targetLang: String(targetLang || attributes.targetLang || 'zh'),
+      kind: entityKindForPolicy,
+    });
+    if (!explicitUserConfirmation && !targetQuality.valid) {
+      nameMappingDiagnostics.graphNameMappingExcludedInvalidTarget++;
+      return [];
     }
     // 不读后续批次的证据，也绝不引入未来的别名或情节事实。
     const visibleEvidence = db.prepare(
@@ -531,6 +543,86 @@ function buildNameMappings(ctx: BundleContext): {
     }];
   });
   return { nameMappings, nameMappingDiagnostics, graphNameMappingCount: graphNameRows.length };
+}
+
+/**
+ * 收集已存在的规范译名候选。候选来源本身不构成证据；后续必须在边界前的已采纳译文里命中。
+ */
+function loadAcceptedTargetCandidates(db: any, revisionId: string): Map<string, string[]> {
+  const byName = new Map<string, Set<string>>();
+  const add = (source: unknown, target: unknown, aliases: unknown = []) => {
+    const targetText = safeText(target, 120);
+    if (!targetText) return;
+    const names = [source, ...(Array.isArray(aliases) ? aliases : [])]
+      .map((item) => normalize(item)).filter(Boolean);
+    for (const name of names) {
+      const values = byName.get(name) || new Set<string>();
+      values.add(targetText);
+      byName.set(name, values);
+    }
+  };
+  const memoryRevision = db.prepare(
+    "SELECT value FROM project_meta WHERE key = 'current_literary_memory_revision_id'"
+  ).get() as { value?: string } | undefined;
+  if (memoryRevision?.value) {
+    const memoryRow = db.prepare(
+      'SELECT memory_json FROM literary_memory_revisions WHERE memory_revision_id = ?'
+    ).get(memoryRevision.value) as { memory_json?: string } | undefined;
+    let memory: any = {};
+    try { memory = JSON.parse(memoryRow?.memory_json || '{}'); } catch { memory = {}; }
+    for (const entity of Array.isArray(memory.entities) ? memory.entities : []) {
+      if (entity?.reviewStatus === 'rejected') continue;
+      add(entity.source, entity.target, entity.aliases);
+      for (const ref of Array.isArray(entity.targetEvidenceRefs) ? entity.targetEvidenceRefs : []) {
+        add(entity.source, ref?.targetSurface, entity.aliases);
+      }
+    }
+  }
+  const deltaRows = db.prepare(
+    'SELECT d.delta_json FROM translation_context_deltas d ' +
+    'JOIN translation_runs r ON r.run_id = d.run_id WHERE r.source_revision_id = ?'
+  ).all(revisionId) as Array<{ delta_json: string }>;
+  for (const row of deltaRows) {
+    let delta: any = {};
+    try { delta = JSON.parse(row.delta_json || '{}'); } catch { delta = {}; }
+    for (const candidate of Array.isArray(delta.entityCandidates) ? delta.entityCandidates : []) {
+      add(candidate.canonicalSource, candidate.targetProposal, candidate.aliases);
+    }
+  }
+  return new Map(Array.from(byName.entries()).map(([name, values]) => [name, Array.from(values)]));
+}
+
+/**
+ * 从更早的已采纳译文中选择实际使用最多的候选目标；票数相同取最早出现者。
+ * 模型建议不会单独通过此门槛。
+ */
+function choosePreviouslyAcceptedTarget(
+  candidates: string[],
+  accepted: Array<{ ordinal: number; target: string }>,
+  sourceName: string,
+  targetLang: string,
+  kind: string,
+): string | null {
+  const votes = new Map<string, { count: number; firstOrdinal: number }>();
+  for (const candidate of Array.from(new Set(candidates))) {
+    const quality = validateCanonicalTarget({ source: sourceName, target: candidate, targetLang, kind });
+    if (quality.valid) votes.set(candidate, { count: 0, firstOrdinal: Number.POSITIVE_INFINITY });
+  }
+  for (const entry of accepted) {
+    const hits = Array.from(votes.keys()).filter((candidate) => normalize(entry.target).includes(normalize(candidate)));
+    const mostSpecific = hits.filter((candidate) => !hits.some((other) =>
+      other !== candidate && normalize(other).includes(normalize(candidate)) && other.length > candidate.length));
+    // 同一段译文同时命中多个互不包含的译名候选时，证据本身有歧义，不投给任何一方。
+    if (mostSpecific.length !== 1) continue;
+    for (const candidate of mostSpecific) {
+      const vote = votes.get(candidate)!;
+      vote.count++;
+      vote.firstOrdinal = Math.min(vote.firstOrdinal, Number(entry.ordinal));
+    }
+  }
+  const selected = Array.from(votes.entries()).filter(([, vote]) => vote.count > 0)
+    .sort((a, b) => b[1].count - a[1].count || a[1].firstOrdinal - b[1].firstOrdinal)[0];
+  return selected?.[0] || null;
 }
 
 /** 名字是否作为独立词出现在给定文本里；拉丁字母按词边界比较，其余按子串。 */

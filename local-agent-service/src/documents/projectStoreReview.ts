@@ -238,11 +238,14 @@ export function setReviewFindingDisposition(store: DocumentProjectStore, project
       'WHERE rf.finding_id = ? AND rf.run_id = ?',
     ).get(findingId, runId) as any;
     if (!row) throw Object.assign(new Error('找不到这条审校建议'), { status: 404 });
-    if (row.category !== 'style') throw Object.assign(new Error('只有文风建议支持手动采纳或保留'), { status: 400 });
+    const finding = parseJson<any>(row.finding_json, {});
+    const isNamingConsolidation = row.category === 'terminology' && finding.generatedBy === 'translation-name-consolidation';
+    if (row.category !== 'style' && !isNamingConsolidation) {
+      throw Object.assign(new Error('只有文风建议或服务端生成的规范译名修复建议支持手动采纳'), { status: 400 });
+    }
     if (row.source_revision_id !== currentSourceRevisionId) {
       throw Object.assign(new Error('这条审校建议属于旧原文版本，不能应用到当前文档'), { status: 409 });
     }
-    const finding = parseJson<any>(row.finding_json, {});
     if (action === 'apply' && finding.editorialMode === 'chinese-monolingual' &&
         !['verified', 'corrected'].includes(String(finding.bilingualReviewStatus || ''))) {
       throw Object.assign(new Error('中文编辑建议尚未完成双语忠实度复核，暂时不能采纳。'), { status: 409 });
@@ -265,7 +268,7 @@ export function setReviewFindingDisposition(store: DocumentProjectStore, project
       return { findingId, segmentId: row.segment_id, applicationStatus: 'dismissed', alreadyDismissed: true };
     }
     if (action === 'dismiss' && (row.finding_status === 'applied' || finding.applicationStatus === 'applied')) {
-      throw Object.assign(new Error('文风建议已经应用为人工译文，不能直接撤销；请在正文中手工编辑。'), { status: 409 });
+      throw Object.assign(new Error('这条审校建议已经应用为人工译文，不能直接撤销；请在正文中手工编辑。'), { status: 409 });
     }
     if (row.finding_status !== 'pending' && !(action === 'apply' && finding.applicationStatus === 'applied')) {
       throw Object.assign(new Error('这条文风建议已被处理，不能再次修改状态。'), { status: 409 });

@@ -30,6 +30,7 @@ import {
   validateTranslationContextDelta,
 } from './translationContextDelta.ts';
 import { buildDocumentBatchSessionScope } from './translationConcurrency.ts';
+import { sourceNameMatches } from './briefSourceContext.ts';
 import { buildUserPrompt, type TranslationParseDiagnostics, parseTranslations } from './translationPrompt.ts';
 import { addRunUsage } from './translationRunUsage.ts';
 import { LITERARY_TRANSLATION_CONTRACT, MANDATORY_TRANSLATION_CONTRACT, TRANSLATION_SCHEMA, type TranslationItem } from './translationSchema.ts';
@@ -61,7 +62,7 @@ export async function translateBatch(context: any, items: TranslationItem[], req
 
   const value = await requestTranslation(store, context, request, items, requestId, batchIndex, requestStartedAt);
   const parsed = parseTranslations(value, new Set(items.map((item) => item.id)));
-  const translations = acceptCanonicalTranslations(store, context, request, parsed.translations, batchIndex, requestId);
+  const translations = acceptCanonicalTranslations(store, context, request, parsed.translations, batchIndex, requestId, items);
   appendOutputAudit(store, context, request, items, translations, value, parsed.diagnostics, requestId, batchIndex, requestStartedAt);
 
   const delta = parseBatchContextDelta(context, items, translations, value, request, requestId, batchIndex);
@@ -178,7 +179,7 @@ function appendPromptAudit(
     // 又不把完整源文或完整提示词写进事件流。
     contextGraphNameMappingPreview: (Array.isArray((contextGraph as any)?.nameMappings)
       ? (contextGraph as any).nameMappings : []).slice(0, 12).map((item: any) => ({
-        source: typeof item?.source === 'string' ? item.source.slice(0, 120) : '',
+        source: typeof item?.source === 'string' ? item.sourceForm.slice(0, 120) : '',
         target: typeof item?.target === 'string' ? item.target.slice(0, 120) : '',
       })),
     contextGraphRelationships: count((contextGraph as any)?.relationships),
@@ -264,6 +265,7 @@ function acceptCanonicalTranslations(
   parsedTranslations: Map<string, string>,
   batchIndex: number,
   requestId: string,
+  items: TranslationItem[],
 ): Map<string, string> {
   const { termProtections, maskedSourceById } = request;
   const translations = new Map<string, string>();
@@ -282,10 +284,22 @@ function acceptCanonicalTranslations(
     }
     translations.set(id, restoreCanonicalTermMarkers(rawTranslation, termProtections, 'target'));
   }
-  if (termProtections.length) {
+  const protectedSourceKeys = new Set(termProtections.map((item) =>
+    String(item.sourceForm || '').normalize('NFKC').toLocaleLowerCase().replace(/\s+/g, ' ').trim()));
+  const visibleMappings = Array.isArray((request.contextGraph as any)?.nameMappings)
+    ? (request.contextGraph as any).nameMappings.filter((mapping: any) =>
+        typeof mapping?.source === 'string' && items.some((item) => sourceNameMatches(item.text, mapping.source)))
+    : [];
+  const visibleButUnprotectedNames = visibleMappings.filter((mapping: any) => {
+    const key = String(mapping.source).normalize('NFKC').toLocaleLowerCase().replace(/\s+/g, ' ').trim();
+    return !protectedSourceKeys.has(key);
+  }).map((mapping: any) => ({ source: String(mapping.source).slice(0, 120), target: String(mapping.target || '').slice(0, 120) })).slice(0, 20);
+  if (termProtections.length || visibleMappings.length) {
     store.appendEvent(context.project.projectId, context.run.runId, 'canonical-terms.protected', {
       stage: 'translate', batchIndex, requestId,
       mappingCount: termProtections.length,
+      protectedSources: termProtections.map((item) => ({ source: item.sourceForm, target: item.target })),
+      visibleButUnprotectedNames,
       protectedSegmentCount: Array.from(maskedSourceById.values()).filter((text) =>
         termProtections.some((item) => text.includes(item.marker))).length,
       missingMarkerSegmentIds: Array.from(missingProtectedMarkers).slice(0, 20),

@@ -40,13 +40,13 @@ export function status(value: unknown, allowed: string[], fallback = 'candidate'
  * 一条记忆的确认来源，决定它在后续翻译里的话语权：
  * model-default 最弱（仅暂定），user-confirmed 最强；legacy-unknown 是旧数据的兜底。
  */
-export type ConfirmationSource = 'model-default' | 'user-modified' | 'evidence-verified' | 'user-confirmed' | 'legacy-unknown';
+export type ConfirmationSource = 'model-default' | 'user-modified' | 'evidence-verified' | 'consolidated' | 'user-confirmed' | 'legacy-unknown';
 /**
  * 仅当 active 为 true 时返回确认来源（白名单校验，未知回退 legacy-unknown）；否则 undefined。
  */
 export function confirmationSource(value: unknown, active: boolean): ConfirmationSource | undefined {
   if (!active) return undefined;
-  return value === 'model-default' || value === 'user-modified' || value === 'evidence-verified' || value === 'user-confirmed' || value === 'legacy-unknown'
+  return value === 'model-default' || value === 'user-modified' || value === 'evidence-verified' || value === 'consolidated' || value === 'user-confirmed' || value === 'legacy-unknown'
     ? value : 'legacy-unknown';
 }
 /**
@@ -69,8 +69,9 @@ export function safeHash(value: string): string {
  * 仅在 incoming 优先级更高时采用 incoming，避免降级。
  */
 export function mergeConfirmationSource(prior: unknown, incoming: unknown): unknown {
-  const rank = (value: unknown) => value === 'user-confirmed' ? 4 :
-    value === 'model-default' ? 3 : value === 'evidence-verified' ? 2 : value === 'legacy-unknown' ? 1 : 0;
+  const rank = (value: unknown) => value === 'user-confirmed' ? 6 :
+    value === 'user-modified' ? 5 : value === 'consolidated' ? 4 :
+      value === 'model-default' ? 3 : value === 'evidence-verified' ? 2 : value === 'legacy-unknown' ? 1 : 0;
   return rank(incoming) > rank(prior) ? incoming : prior;
 }
 
