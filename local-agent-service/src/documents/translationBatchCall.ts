@@ -30,6 +30,7 @@ import {
   validateTranslationContextDelta,
 } from './translationContextDelta.ts';
 import { buildDocumentBatchSessionScope } from './translationConcurrency.ts';
+import { sourceNameMatches } from './briefSourceContext.ts';
 import { buildUserPrompt, type TranslationParseDiagnostics, parseTranslations } from './translationPrompt.ts';
 import { addRunUsage } from './translationRunUsage.ts';
 import { LITERARY_TRANSLATION_CONTRACT, MANDATORY_TRANSLATION_CONTRACT, TRANSLATION_SCHEMA, type TranslationItem } from './translationSchema.ts';
@@ -282,10 +283,22 @@ function acceptCanonicalTranslations(
     }
     translations.set(id, restoreCanonicalTermMarkers(rawTranslation, termProtections, 'target'));
   }
-  if (termProtections.length) {
+  const protectedSourceKeys = new Set(termProtections.map((item) =>
+    String(item.sourceForm || '').normalize('NFKC').toLocaleLowerCase().replace(/\\s+/g, ' ').trim()));
+  const visibleMappings = Array.isArray((request.contextGraph as any)?.nameMappings)
+    ? (request.contextGraph as any).nameMappings.filter((mapping: any) =>
+        typeof mapping?.source === 'string' && items.some((item) => sourceNameMatches(item.text, mapping.source)))
+    : [];
+  const visibleButUnprotectedNames = visibleMappings.filter((mapping: any) => {
+    const key = String(mapping.source).normalize('NFKC').toLocaleLowerCase().replace(/\\s+/g, ' ').trim();
+    return !protectedSourceKeys.has(key);
+  }).map((mapping: any) => ({ source: String(mapping.source).slice(0, 120), target: String(mapping.target || '').slice(0, 120) })).slice(0, 20);
+  if (termProtections.length || visibleMappings.length) {
     store.appendEvent(context.project.projectId, context.run.runId, 'canonical-terms.protected', {
       stage: 'translate', batchIndex, requestId,
       mappingCount: termProtections.length,
+      protectedSources: termProtections.map((item) => ({ source: item.sourceForm, target: item.target })),
+      visibleButUnprotectedNames,
       protectedSegmentCount: Array.from(maskedSourceById.values()).filter((text) =>
         termProtections.some((item) => text.includes(item.marker))).length,
       missingMarkerSegmentIds: Array.from(missingProtectedMarkers).slice(0, 20),
