@@ -208,12 +208,12 @@ export function buildTranslationBrief(
     contextChars: 0,
     contextHash: '',
   };
-  finalizeBriefDiagnostics(brief, temporalMemory, componentDiagnostics);
-  // contextBudgetChars 是「建议预算」，不是硬约束：上下文证据不因提示词体积被删除。
-  // 但它必须可见——否则用户改了配置、看到日志里写着 18000，却不知道实际发了 18750。
-  const budgetExcess = strategy.contextBudgetChars > 0
-    ? brief.contextChars - strategy.contextBudgetChars : 0;
-  (brief.contextDiagnostics as any).contextBudgetExcessChars = budgetExcess > 0 ? budgetExcess : 0;
+  const budgetDiagnostics = enforceBriefContextBudget(brief, strategy.contextBudgetChars);
+  const finalComponents = measureBriefComponents(brief.glossary, brief.precedingSegments, brief.contextGraph, brief.voiceContext);
+  finalizeBriefDiagnostics(brief, temporalMemory, finalComponents.componentDiagnostics);
+  Object.assign(brief.contextDiagnostics, budgetDiagnostics);
+  const budgetExcess = Math.max(0, brief.contextChars - strategy.contextBudgetChars);
+  (brief.contextDiagnostics as any).contextBudgetExcessChars = budgetExcess;
   logInfo('translation-brief', 'assembled · segments=' + brief.sourceSegmentIds.length +
     ' · chars=' + brief.contextChars +
     ' · graphMappings=' + (Array.isArray((brief.contextGraph as any)?.nameMappings) ? (brief.contextGraph as any).nameMappings.length : 0) +
@@ -221,8 +221,8 @@ export function buildTranslationBrief(
     ' · voiceEntities=' + (Array.isArray((brief.voiceContext as any)?.entities) ? (brief.voiceContext as any).entities.length : 0) +
     ' · voiceCharacters=' + (Array.isArray((brief.voiceContext as any)?.characterVoices) ? (brief.voiceContext as any).characterVoices.length : 0) +
     ' · preceding=' + brief.precedingSegments.length +
-    ' · componentChars=' + componentLargest +
-    (budgetExcess > 0 ? ' · 超建议预算=' + budgetExcess + '（未裁剪）' : ''));
+    ' · componentChars=' + finalComponents.componentLargest +
+    (budgetExcess > 0 ? ' · 核心上下文超预算=' + budgetExcess : ''));
   return brief;
 }
 
@@ -884,21 +884,96 @@ function measureBriefComponents(
 }
 
 /**
- * 填充预算相关诊断：全部为 0 是刻意的——检索到的证据不会为了满足建议预算被裁剪。
+ * 对预加载记忆执行相关性优先的真实预算控制。
+ * 先裁剪可选历史材料，再裁剪低优先级连续性提示；用户确认的规范译名永不因预算被丢弃。
+ */
+function enforceBriefContextBudget(brief: TranslationBrief, configuredBudget: number): Record<string, number | string> {
+  const budget = Math.max(6_000, Math.min(MAX_TRANSLATION_BRIEF_CHARS, Math.floor(configuredBudget || 24_000)));
+  const beforeChars = serializedContext(brief).length;
+  const trimmed: Record<string, number> = {};
+  const count = (key: string, values: any[]) => { trimmed[key] = (trimmed[key] || 0) + values.length; };
+  const trimTail = (owner: any, key: string, diagnosticKey = key) => {
+    if (!Array.isArray(owner?.[key]) || !owner[key].length) return;
+    const values = owner[key];
+    owner[key] = [];
+    count(diagnosticKey, values);
+  };
+  const trimUntilBudget = (owner: any, key: string, diagnosticKey = key, minimum = 0) => {
+    if (!Array.isArray(owner?.[key])) return;
+    while (owner[key].length > minimum && serializedContext(brief).length > budget) {
+      owner[key].pop();
+      trimmed[diagnosticKey] = (trimmed[diagnosticKey] || 0) + 1;
+    }
+  };
+
+  const voice = brief.voiceContext as any;
+  const graph = brief.contextGraph as any;
+  // 历史示例最容易替代；章节摘要可由原文和图谱按需查回。
+  trimUntilBudget(voice, 'recentExamples', 'recentExamples');
+  trimUntilBudget(voice, 'chapterSummaries', 'voiceChapterSummaries');
+  trimUntilBudget(voice, 'voiceAnchors', 'voiceAnchors');
+  trimUntilBudget(voice, 'dialogueParticipants', 'dialogueParticipants');
+  trimUntilBudget(voice, 'relationshipVoiceRules', 'relationshipVoiceRules');
+  trimUntilBudget(voice, 'relationships', 'voiceRelationships');
+  trimUntilBudget(voice, 'entities', 'voiceEntities');
+  // 人物画像按当前片段相关性排序，末尾是低相关项；先缩减证据，再移除低相关画像。
+  if (Array.isArray(voice?.characterVoices)) {
+    for (const profile of voice.characterVoices) {
+      if (serializedContext(brief).length <= budget) break;
+      if (Array.isArray(profile.evidence) && profile.evidence.length > 2) {
+        const removed = profile.evidence.splice(2);
+        count('characterVoiceEvidence', removed);
+      }
+      if (Array.isArray(profile.contrastRules) && profile.contrastRules.length > 1) {
+        const removed = profile.contrastRules.splice(1);
+        count('characterVoiceContrastRules', removed);
+      }
+    }
+    trimUntilBudget(voice, 'characterVoices', 'characterVoices', 1);
+  }
+  trimUntilBudget(graph, 'chapterSummaries', 'graphChapterSummaries');
+  trimUntilBudget(graph, 'relationships', 'graphRelationships');
+  trimUntilBudget(graph, 'entities', 'graphEntities');
+  trimUntilBudget(graph, 'characters', 'graphCharacters');
+  // 仅低优先级 candidate 映射可裁剪；用户确认、已采纳和 Run 内决议保留。
+  if (Array.isArray(graph?.nameMappings)) {
+    while (graph.nameMappings.some((item: any) => !['confirmed', 'confirmed-memory', 'auto', 'run-canonical'].includes(String(item?.sourceStatus))) &&
+        serializedContext(brief).length > budget) {
+      const index = graph.nameMappings.map((item: any, i: number) => ({ item, i }))
+        .reverse().find(({ item }) => !['confirmed', 'confirmed-memory', 'auto', 'run-canonical'].includes(String(item?.sourceStatus)))?.i;
+      if (index === undefined) break;
+      graph.nameMappings.splice(index, 1);
+      trimmed.candidateNameMappings = (trimmed.candidateNameMappings || 0) + 1;
+    }
+  }
+  // 前文只保留最近片段；它是辅助消歧，不应挤掉当前批次相关记忆。
+  trimUntilBudget(brief, 'precedingSegments', 'precedingSegments', 1);
+  const afterChars = serializedContext(brief).length;
+  if (afterChars > MAX_TRANSLATION_BRIEF_CHARS) {
+    throw new Error('TranslationBrief 核心上下文超过绝对安全上限：' + afterChars + ' > ' + MAX_TRANSLATION_BRIEF_CHARS);
+  }
+  return {
+    contextBudgetChars: budget,
+    contextCharsBeforeBudget: beforeChars,
+    contextCharsAfterBudget: afterChars,
+    contextBudgetTrimCount: Object.values(trimmed).reduce((sum, value) => sum + value, 0),
+    contextBudgetPolicy: 'relevance-ranked; preserve-canonical-names; trim-optional-memory-first',
+  };
+}
+
+/**
+ * 填充预算相关诊断：记录裁剪结果，不再把软预算伪装成硬上限。
  */
 function finalizeBriefDiagnostics(
   brief: TranslationBrief,
   temporalMemory: Record<string, any>,
   componentDiagnostics: Record<string, any>,
 ): void {
-  // 不要为了凑配置的字符预算去裁剪已检索的上下文。尤其不能因为某个提示词体积启发式，
-  // 间接抹掉术语表词条、声音档案、已采纳示例、前文对白或已确认的译名映射。
-  // 真正的模型上下文窗口检查归运行时和提供方负责：它应当直接暴露真实的超限错误，
-  // 而不是让上游回头改数据。
+  // 可选记忆已在此函数之前按相关性裁剪；这里仅计算最终快照的大小与哈希。
   const serialized = serializedContext(brief);
   (brief.contextDiagnostics as any).budgetTrimCount = Number((temporalMemory as any)?.__translationBriefDiagnostics?.acceptedExamplesTrimmedByBudget || 0);
   (brief.contextDiagnostics as any).budgetFallbackUsed = false;
-  (brief.contextDiagnostics as any).contextBudgetPolicy = 'bounded-ranked-accepted-examples';
+  (brief.contextDiagnostics as any).contextBudgetPolicy = 'relevance-ranked; preserve-canonical-names';
   const finalGraph = brief.contextGraph as any;
   const finalVoice = brief.voiceContext as any;
   const finalMappings = Array.isArray(finalGraph?.nameMappings) ? finalGraph.nameMappings : [];
