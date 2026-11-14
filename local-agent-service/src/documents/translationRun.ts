@@ -65,7 +65,9 @@ export function isContextGraphReadyForTranslationRun(
  */
 export function shouldUseLightweightLiteraryContext(
   segments: Array<{ text?: unknown }> | null | undefined,
+  scopeType: unknown,
 ): boolean {
+  if (scopeType !== 'ids') return false;
   const valid = (Array.isArray(segments) ? segments : [])
     .filter((segment) => typeof segment?.text === 'string' && segment.text.trim().length > 0);
   if (!valid.length || valid.length > 12) return false;
@@ -113,18 +115,28 @@ export async function ensureLiteraryPreprocessingBeforeRun(
     // 已经有全书分析在跑时不与它争用项目图谱；否则，小选段无需为等待完整
     // 全书人物/关系/风格提取而阻塞。当前片段、前文与已确认译名仍会进入 Brief。
     if (!['queued', 'running'].includes(status)) {
-      const selectedSegments = store.getRunSegmentsForExecution(projectId, runId) as TranslationItem[];
       const currentSourceRevisionId = store.getProjectContext(projectId).currentSourceRevisionId;
       if (String(currentSourceRevisionId || '') !== String(run.sourceRevisionId || '')) {
         throw new Error('翻译 Run 绑定的原文版本已不是项目当前版本；为避免上下文与原文错配，本轮不会启动。请基于当前原文新建 Run。');
       }
-      if (shouldUseLightweightLiteraryContext(selectedSegments)) {
-        const sourceChars = selectedSegments.reduce((total, item) => total + String(item.text || '').length, 0);
-        store.appendEvent(projectId, runId, 'context-graph.gate.skipped', {
-          reason: 'small-selected-scope-uses-local-context',
-          sourceRevisionId: run.sourceRevisionId,
-          segmentCount: selectedSegments.length,
-          sourceChars,
+      const runScopeType = (run.scope && typeof run.scope === 'object') ? run.scope.type : undefined;
+      const selectedIds = store.getRunSegmentIds(projectId, runId);
+      // 只允许用户明确传入的 ids 小选段；all/failed/stale/chapter 即使剩余待译片段很少，
+      // 也不能因为 pending 数量偶然变小而绕过全书上下文。
+      if (runScopeType === 'ids' && selectedIds.length > 0 && selectedIds.length <= 12) {
+        const db = store.getProjectContext(projectId).db;
+        const placeholders = selectedIds.map(() => '?').join(',');
+        const selectedSource = db.prepare(
+          'SELECT text FROM source_segments WHERE source_revision_id = ? AND segment_id IN (' + placeholders + ')',
+        ).all(run.sourceRevisionId, ...selectedIds) as Array<{ text: string }>;
+        if (selectedSource.length === selectedIds.length &&
+            shouldUseLightweightLiteraryContext(selectedSource, runScopeType)) {
+          const sourceChars = selectedSource.reduce((total, item) => total + String(item.text || '').length, 0);
+          store.appendEvent(projectId, runId, 'context-graph.gate.skipped', {
+            reason: 'small-selected-scope-uses-local-context',
+            sourceRevisionId: run.sourceRevisionId,
+            segmentCount: selectedSource.length,
+            sourceChars,
           limits: { maxSegments: 12, maxSourceChars: 6000 },
           note: 'No full-book graph was ready; translation continues with current segments, preceding context and confirmed memory only.',
         });
