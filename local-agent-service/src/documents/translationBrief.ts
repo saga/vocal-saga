@@ -209,6 +209,20 @@ export function buildTranslationBrief(
   const finalComponents = measureBriefComponents(brief.glossary, brief.precedingSegments, brief.contextGraph, brief.voiceContext);
   finalizeBriefDiagnostics(brief, temporalMemory, finalComponents.componentDiagnostics);
   Object.assign(brief.contextDiagnostics, budgetDiagnostics);
+  const trimCounts = budgetDiagnostics as Record<string, any>;
+  Object.assign(brief.contextDiagnostics, {
+    graphNameMappingsTrimmedByBudget: Number(trimCounts.candidateNameMappings || 0),
+    candidateNameMappingsTrimmedByBudget: Number(trimCounts.candidateNameMappings || 0),
+    voiceEntitiesTrimmedByBudget: Number(trimCounts.voiceEntities || 0),
+    voiceRelationshipsTrimmedByBudget: Number(trimCounts.voiceRelationships || 0),
+    characterVoicesTrimmedByBudget: Number(trimCounts.characterVoices || 0),
+    relationshipVoiceRulesTrimmedByBudget: Number(trimCounts.relationshipVoiceRules || 0),
+    voiceAnchorsTrimmedByBudget: Number(trimCounts.voiceAnchors || 0),
+    dialogueParticipantsTrimmedByBudget: Number(trimCounts.dialogueParticipants || 0),
+    chapterSummariesTrimmedByBudget: Number(trimCounts.voiceChapterSummaries || 0) + Number(trimCounts.graphChapterSummaries || 0),
+    precedingSegmentsTrimmedByBudget: Number(trimCounts.precedingSegments || 0),
+    acceptedExamplesTrimmedByBudget: Number((temporalMemory as any)?.__translationBriefDiagnostics?.acceptedExamplesTrimmedByBudget || 0) + Number(trimCounts.recentExamples || 0),
+  });
   const budgetExcess = Math.max(0, brief.contextChars - strategy.contextBudgetChars);
   (brief.contextDiagnostics as any).contextBudgetExcessChars = budgetExcess;
   logInfo('translation-brief', 'assembled · segments=' + brief.sourceSegmentIds.length +
