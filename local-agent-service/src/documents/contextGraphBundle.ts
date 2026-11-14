@@ -612,6 +612,8 @@ function choosePreviouslyAcceptedTarget(
     const hits = Array.from(votes.keys()).filter((candidate) => normalize(entry.target).includes(normalize(candidate)));
     const mostSpecific = hits.filter((candidate) => !hits.some((other) =>
       other !== candidate && normalize(other).includes(normalize(candidate)) && other.length > candidate.length));
+    // 同一段译文同时命中多个互不包含的译名候选时，证据本身有歧义，不投给任何一方。
+    if (mostSpecific.length !== 1) continue;
     for (const candidate of mostSpecific) {
       const vote = votes.get(candidate)!;
       vote.count++;
