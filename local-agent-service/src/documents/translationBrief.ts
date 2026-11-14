@@ -499,7 +499,8 @@ function decideMemoryMapping(
   // 目标译名的交叉佐证也必须早于当前批次；不能拿后文已采纳译文反向决定前文译名。
   const priorTargetEvidence = targetRefs.filter((ref: any) => {
     const row = visibility.sourceRowFor(ref?.segmentId);
-    return !!row && row.ordinal < visibility.firstOrdinal;
+    // 同片段此前 Run 已采纳的译文可以作为先例；只有严格位于当前片段之后的证据才属于未来。
+    return !!row && row.ordinal <= visibility.firstOrdinal;
   });
   const corroboratedTarget = entity.targetConfidence === 'corroborated' &&
     new Set(priorTargetEvidence.map((ref: any) => ref?.segmentId).filter(Boolean)).size >= 2;
@@ -742,7 +743,7 @@ function applyRunNameDecisionsToGraph(
       return false;
     }
     const userConfirmed = ['confirmed-memory', 'confirmed'].includes(String(decision.sourceStatus));
-    if (!userConfirmed && Number(decision.decidedOrdinal) >= firstOrdinal) {
+    if (!userConfirmed && Number(decision.decidedOrdinal) > firstOrdinal) {
       diagnostics.runNameDecisionsSkippedNotYetDecided++;
       return false;
     }
