@@ -284,7 +284,7 @@ function acceptCanonicalTranslations(
     translations.set(id, restoreCanonicalTermMarkers(rawTranslation, termProtections, 'target'));
   }
   const protectedSourceKeys = new Set(termProtections.map((item) =>
-    String(item.sourceForm || '').normalize('NFKC').toLocaleLowerCase().replace(/\\s+/g, ' ').trim()));
+    String(item.source || '').normalize('NFKC').toLocaleLowerCase().replace(/\\s+/g, ' ').trim()));
   const visibleMappings = Array.isArray((request.contextGraph as any)?.nameMappings)
     ? (request.contextGraph as any).nameMappings.filter((mapping: any) =>
         typeof mapping?.source === 'string' && items.some((item) => sourceNameMatches(item.text, mapping.source)))
@@ -297,7 +297,7 @@ function acceptCanonicalTranslations(
     store.appendEvent(context.project.projectId, context.run.runId, 'canonical-terms.protected', {
       stage: 'translate', batchIndex, requestId,
       mappingCount: termProtections.length,
-      protectedSources: termProtections.map((item) => ({ source: item.sourceForm, target: item.target })),
+      protectedSources: termProtections.map((item) => ({ source: item.source, target: item.target })),
       visibleButUnprotectedNames,
       protectedSegmentCount: Array.from(maskedSourceById.values()).filter((text) =>
         termProtections.some((item) => text.includes(item.marker))).length,
