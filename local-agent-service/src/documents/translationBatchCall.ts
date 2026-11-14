@@ -284,13 +284,13 @@ function acceptCanonicalTranslations(
     translations.set(id, restoreCanonicalTermMarkers(rawTranslation, termProtections, 'target'));
   }
   const protectedSourceKeys = new Set(termProtections.map((item) =>
-    String(item.sourceForm || '').normalize('NFKC').toLocaleLowerCase().replace(/\\s+/g, ' ').trim()));
+    String(item.sourceForm || '').normalize('NFKC').toLocaleLowerCase().replace(/\s+/g, ' ').trim()));
   const visibleMappings = Array.isArray((request.contextGraph as any)?.nameMappings)
     ? (request.contextGraph as any).nameMappings.filter((mapping: any) =>
         typeof mapping?.source === 'string' && items.some((item) => sourceNameMatches(item.text, mapping.source)))
     : [];
   const visibleButUnprotectedNames = visibleMappings.filter((mapping: any) => {
-    const key = String(mapping.source).normalize('NFKC').toLocaleLowerCase().replace(/\\s+/g, ' ').trim();
+    const key = String(mapping.source).normalize('NFKC').toLocaleLowerCase().replace(/\s+/g, ' ').trim();
     return !protectedSourceKeys.has(key);
   }).map((mapping: any) => ({ source: String(mapping.source).slice(0, 120), target: String(mapping.target || '').slice(0, 120) })).slice(0, 20);
   if (termProtections.length || visibleMappings.length) {
