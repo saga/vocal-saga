@@ -36,7 +36,7 @@ interface NameGroup {
   explicitTargets: Array<{ target: string; source: 'memory' | 'context-graph' }>;
 }
 
-interface TargetVote {
+export interface TargetVote {
   target: string;
   count: number;
   firstOrdinal: number;
@@ -185,6 +185,8 @@ export function chooseAcceptedTranslationTarget(
     const hits = uniqueTargets.filter((target) => hasText(row.translation, target));
     const mostSpecific = hits.filter((target) => !hits.some((other) =>
       other !== target && hasText(other, target) && other.length > target.length));
+    // 一段译文里同时出现多个候选译名时属于歧义证据，不让同一片段给两个方案投票。
+    if (mostSpecific.length !== 1) continue;
     for (const target of mostSpecific) {
       const vote = votes.get(target)!;
       if (vote.rows.some((item) => item.segmentId === row.segmentId)) continue;
