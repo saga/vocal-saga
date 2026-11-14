@@ -47,6 +47,18 @@ test('long-term literary memory only receives deltas backed by accepted translat
         targetSurface: '错误译名',
       },
       {
+        segmentId: 'accepted-1',
+        sourceQuote: '',
+        entityRef: 'entity-1',
+        targetSurface: '坦嫩特',
+      },
+      {
+        segmentId: 'accepted-1',
+        sourceQuote: 'A completely unrelated source quote.',
+        entityRef: 'entity-1',
+        targetSurface: '坦嫩特',
+      },
+      {
         segmentId: 'not-accepted',
         sourceQuote: 'FutureName appeared later.',
         entityRef: 'entity-2',
