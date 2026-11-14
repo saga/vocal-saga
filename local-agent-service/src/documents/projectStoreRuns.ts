@@ -181,7 +181,7 @@ export function makeRunFingerprint(store: DocumentProjectStore, projectId: strin
     model: config.model || 'auto',
     translationMode: config.translationMode || 'technical',
     literaryReview: Boolean(config.literaryReview),
-    pipelineVersion: config.translationMode === 'literary' ? 'document-agent-v6-temporal-glossary-review-evidence' : 'document-agent-v2-voice',
+    pipelineVersion: config.translationMode === 'literary' ? 'document-agent-v7-run-name-decisions-memory-consolidation' : 'document-agent-v2-voice',
   }));
 }
 
