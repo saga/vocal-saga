@@ -12,14 +12,14 @@
   ],
   "x-contract-coverage": {
     "status": "partial",
-    "routeCount": 59,
+    "routeCount": 62,
     "detailedPaths": [
       "/api/documents/projects/{projectId}/runs",
       "/api/documents/projects/{projectId}/runs/{runId}/resume",
       "/api/documents/projects/{projectId}/runs/{runId}/cancel"
     ],
     "inventory": "api-route-manifest.json",
-    "followUp": "All manifest routes are listed. Only the durable Run lifecycle endpoints currently have endpoint-specific request/response schemas. Project identity, segment editing, Prompt revision, Context Graph review, and other inventory-only operations remain follow-up work."
+    "followUp": "All manifest routes are listed. Only the durable Run lifecycle endpoints currently have endpoint-specific request/response schemas. Project identity, segment editing, Prompt revision, Context Graph review, and other inventory-only operations remain follow-up work. Dual-model comparison endpoints are included as inventory-only entries."
   },
   "paths": {
     "/api/documents/projects/{projectId}/runs": {
@@ -2424,6 +2424,70 @@
             }
           }
         }
+      }
+    },
+    "/api/documents/projects/{projectId}/model-comparisons": {
+      "get": {
+        "summary": "List saved model comparisons",
+        "responses": {
+          "200": {
+            "description": "Comparison data or history"
+          },
+          "202": {
+            "description": "Comparison accepted and running"
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "404": {
+            "description": "Project or comparison not found"
+          }
+        },
+        "x-route-contract-level": "inventory-only",
+        "x-implementation-source": "src/documents/documentModelComparison.ts",
+        "x-implementation-signature": "pathParts.length === 5 && method === 'GET'"
+      },
+      "post": {
+        "summary": "Create a dual-model initial translation comparison",
+        "responses": {
+          "200": {
+            "description": "Comparison data or history"
+          },
+          "202": {
+            "description": "Comparison accepted and running"
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "404": {
+            "description": "Project or comparison not found"
+          }
+        },
+        "x-route-contract-level": "inventory-only",
+        "x-implementation-source": "src/documents/documentModelComparison.ts",
+        "x-implementation-signature": "pathParts.length === 5 && method === 'POST'"
+      }
+    },
+    "/api/documents/projects/{projectId}/model-comparisons/{comparisonId}": {
+      "get": {
+        "summary": "Get a saved model comparison",
+        "responses": {
+          "200": {
+            "description": "Comparison data or history"
+          },
+          "202": {
+            "description": "Comparison accepted and running"
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "404": {
+            "description": "Project or comparison not found"
+          }
+        },
+        "x-route-contract-level": "inventory-only",
+        "x-implementation-source": "src/documents/documentModelComparison.ts",
+        "x-implementation-signature": "pathParts.length === 6 && method === 'GET'"
       }
     }
   },
