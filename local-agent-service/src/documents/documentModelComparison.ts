@@ -239,11 +239,6 @@ export async function handleDocumentModelComparisonRoute(context: ComparisonCont
       language.sourceLang, language.targetLang, language.translationMode, JSON.stringify(ids), JSON.stringify(source), null, 0,
       JSON.stringify(initial(choices[0])), JSON.stringify(initial(choices[1])), now);
     void runComparison(projectId, comparisonId, choices as [ModelChoice, ModelChoice], sourceRows, preceding, sourceRevisionId, prompt, memory, language, db)
-      .then(() => {
-        const row = readRecord(db, comparisonId);
-        if (row) db.prepare('UPDATE document_translation_comparisons SET context_hash = ?, context_chars = ? WHERE comparison_id = ?')
-          .run(row.modelA?.contextHash || null, Number(row.modelA?.contextChars || 0), comparisonId);
-      })
       .catch((error) => logError('document-comparison', comparisonId + ' background failure · ' + String(error)));
     sendJson(res, 202, { comparison: readRecord(db, comparisonId) });
     return true;
