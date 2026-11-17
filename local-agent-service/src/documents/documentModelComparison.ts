@@ -143,11 +143,18 @@ async function runComparison(projectId: string, comparisonId: string, choices: [
   };
   try {
     const context = { project, prompt, run, memory: memoryResult.memory || {}, memoryRevisionId: memoryResult.memoryRevisionId || null };
+    if (language.translationMode === 'literary') {
+      store.assertLiteraryPreprocessingReady(projectId, sourceRevisionId, language.sourceLang, language.targetLang);
+    }
     const brief = language.translationMode === 'literary'
       ? buildTranslationBrief(context, items, preceding)
       : null;
     if (brief && (brief.sourceRevisionId !== sourceRevisionId || brief.sourceSegmentIds.length !== items.length)) {
       throw new Error('预处理上下文与当前原文范围不一致，已停止对比翻译。');
+    }
+    if (brief) {
+      db.prepare('UPDATE document_translation_comparisons SET context_hash = ?, context_chars = ? WHERE comparison_id = ?')
+        .run(brief.contextHash, brief.contextChars, comparisonId);
     }
     const base = { project, prompt, run, memory: memoryResult.memory || {}, memoryRevisionId: memoryResult.memoryRevisionId || null, items, preceding, brief, comparisonId };
     await Promise.all(choices.map(async (choice, index) => {
