@@ -79,7 +79,8 @@ async function translateForModel(input: {
   const { project, prompt, run, items, preceding, brief, choice, comparisonId, slot } = input;
   const context = { project, prompt, run: { ...run, provider: choice.provider, model: choice.model } , memory: input.memory, memoryRevisionId: input.memoryRevisionId };
   const agent = parseAgentModel(choice.model, choice.provider);
-  const profile = getCodeBuddyTaskProfile(prompt.config || {}, 'translation');
+  // 用户在对比面板里明确选择模型；继承 thinking / prompt profile，但不允许项目默认模型覆盖选择。
+  const profile = { ...getCodeBuddyTaskProfile(prompt.config || {}, 'translation'), model: '' };
   const protections = run.translationMode === 'literary'
     ? buildCanonicalTermProtections(items, brief?.contextGraph ?? null, run.targetLang)
     : [];
@@ -116,6 +117,8 @@ async function translateForModel(input: {
     requestedModel: choice.model,
     effectiveModel: agent.model,
     status: Object.keys(translations).length === items.length ? 'completed' : 'partial',
+    contextHash: brief?.contextHash || null,
+    contextChars: brief?.contextChars || 0,
     translations,
     missingSegmentIds: items.filter((item) => !translations[item.id]).map((item) => item.id),
     rejectedCanonicalMarkerSegmentIds: rejected,
