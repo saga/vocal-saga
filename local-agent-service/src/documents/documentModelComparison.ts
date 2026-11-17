@@ -80,7 +80,7 @@ async function translateForModel(input: {
   const context = { project, prompt, run: { ...run, provider: choice.provider, model: choice.model } , memory: input.memory, memoryRevisionId: input.memoryRevisionId };
   const agent = parseAgentModel(choice.model, choice.provider);
   // 用户在对比面板里明确选择模型；继承 thinking / prompt profile，但不允许项目默认模型覆盖选择。
-  const profile = { ...getCodeBuddyTaskProfile(prompt.config || {}, 'translation'), model: '' };
+  const profile = { ...getCodeBuddyTaskProfile(prompt.config || {}, 'translation'), model: '', fallbackModel: '' };
   const protections = run.translationMode === 'literary'
     ? buildCanonicalTermProtections(items, brief?.contextGraph ?? null, run.targetLang)
     : [];
