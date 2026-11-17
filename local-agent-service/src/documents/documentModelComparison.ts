@@ -95,7 +95,7 @@ async function translateForModel(input: {
   const requestId = comparisonId + ':' + slot;
   const sessionScope = buildDocumentBatchSessionScope({
     projectId: project.projectId,
-    runId: comparisonId,
+    runId: comparisonId + ':' + slot,
     promptRevisionId: run.promptRevisionId || 'comparison',
     role: 'translation',
     batchIndex: 0,
@@ -201,9 +201,10 @@ export async function handleDocumentModelComparisonRoute(context: ComparisonCont
   }
   if (pathParts.length === 5 && method === 'POST') {
     const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body as any : {};
-    const ids = Array.isArray(body.segmentIds) ? Array.from(new Set(body.segmentIds.map(String))).slice(0, 80) : [];
+    const ids = Array.isArray(body.segmentIds) ? Array.from(new Set(body.segmentIds.map(String))) : [];
     const choices = Array.isArray(body.models) ? body.models : [];
     if (!ids.length) { sendApiError(res, 400, '请先选择当前阅读页的原文片段'); return true; }
+    if (ids.length > 80) { sendApiError(res, 413, '当前页超过单次对比上限（80 段），请缩小阅读页范围后重试'); return true; }
     if (choices.length !== 2 || choices.some((item: any) => !['workbuddy', 'opencode'].includes(item?.provider) || typeof item?.model !== 'string' || !item.model.trim())) {
       sendApiError(res, 400, '必须提供两个有效的模型配置'); return true;
     }
