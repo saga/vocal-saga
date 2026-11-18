@@ -380,6 +380,8 @@ type MemoryVisibility = {
   db: any;
   revisionId: string;
   firstOrdinal: number;
+  /** 当前批次最后一个源段的 ordinal；批次内证据对本批可见。 */
+  lastOrdinal: number;
   sourceText: string;
   /** 名字在批次开始时已经出现，或出现在本批原文里。 */
   sourceVisible(name: unknown): boolean;
@@ -455,6 +457,7 @@ function createMemoryVisibility(
   ).all(sourceRevisionId, ...items.map((item) => item.id)) as Array<{ ordinal: number }>;
   const ordinals = batchRows.map((row) => Number(row.ordinal)).filter(Number.isFinite);
   const firstOrdinal = ordinals.length ? Math.min(...ordinals) : Number.POSITIVE_INFINITY;
+  const lastOrdinal = ordinals.length ? Math.max(...ordinals) : Number.NEGATIVE_INFINITY;
   const sourceRowCache = new Map<string, { ordinal: number; text: string } | null>();
   const appearsBefore = (name: unknown) =>
     firstMatchingSourceOrdinal(projectContext.db, sourceRevisionId, name, 'name') < firstOrdinal;
@@ -462,6 +465,7 @@ function createMemoryVisibility(
     db: projectContext.db,
     revisionId: sourceRevisionId,
     firstOrdinal,
+    lastOrdinal,
     sourceText,
     sourceVisible: (name) => appearsBefore(name) || sourceNameMatches(sourceText, name),
     aliasVisible: (alias) => appearsBefore(alias) || sourceNameMatches(sourceText, alias),
@@ -648,12 +652,12 @@ function mergePinnedProfileMappings(
       const evidence = Array.isArray(profile.evidence) ? profile.evidence : [];
       const evidenceTruncated = profile.evidenceTruncated === true ||
         (profile.evidencePolicyVersion !== 'character-evidence-v2-complete' && evidence.length >= 8);
-      const evidenceIsPriorAndValid = !evidenceTruncated && evidence.length > 0 && evidence.every((item: any) => {
+      const evidenceIsVisibleAndValid = !evidenceTruncated && evidence.length > 0 && evidence.every((item: any) => {
         const row = visibility.sourceRowFor(item?.segmentId);
-        return !!row && row.ordinal < visibility.firstOrdinal &&
+        return !!row && row.ordinal <= visibility.lastOrdinal &&
           sourceQuoteMatches(row.text, item?.sourceQuote);
       });
-      if (!userConfirmed && !evidenceIsPriorAndValid) continue;
+      if (!userConfirmed && !evidenceIsVisibleAndValid) continue;
       const aliases = safeCanonicalSourceAliases(source, profile.aliases).filter(isVisibleHere);
       // 规范源名、或至少一个安全的、在源文里可见的别名，必须与本批次相关。
       // 只是存在于书里别处的名字，不会注入提示词。
@@ -661,9 +665,9 @@ function mergePinnedProfileMappings(
       const incoming = {
         source, target, aliases, kind: 'character',
         // 只有用户明确确认的映射才获得强规范地位；模型默认采纳保留为候选。
-        evidenceBacked: userConfirmed || evidenceIsPriorAndValid,
-        targetConfidence: userConfirmed ? 'confirmed' : 'candidate',
-        sourceStatus: userConfirmed ? 'confirmed-memory' : 'candidate',
+        evidenceBacked: status === 'confirmed',
+        targetConfidence: status === 'confirmed' ? 'confirmed' : 'candidate',
+        sourceStatus: status === 'confirmed' ? 'confirmed-memory' : 'candidate',
         confirmationSource: profile.confirmationSource || 'legacy-unknown',
       };
       const names = new Set([source, ...aliases].map(normalizedSourceText));
@@ -673,7 +677,7 @@ function mergePinnedProfileMappings(
       const conflicting = graph.nameMappings.filter((mapping: any) =>
         matches(mapping) && ['confirmed', 'confirmed-memory'].includes(String(mapping?.sourceStatus || '')) &&
         normalizedSourceText(mapping?.target) !== normalizedSourceText(target));
-      if (userConfirmed && conflicting.length) {
+      if (status === 'confirmed' && conflicting.length) {
         // 两个已确认来源互相矛盾。删掉重叠名字上的硬映射，把冲突作为约束暴露出去；
         // 绝不能让数组顺序悄悄决定谁赢。
         graph.nameMappings = graph.nameMappings.filter((mapping: any) => !matches(mapping));
