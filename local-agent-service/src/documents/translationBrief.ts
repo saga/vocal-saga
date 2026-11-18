@@ -185,6 +185,7 @@ export function buildTranslationBrief(
       ...graphRetrievalDiagnostics,
       ...runNameDecisionDiagnostics.diagnostics,
       characterProfileMappingConflictCount: pinnedMappings.conflictCount,
+      characterProfileMappingsExcludedTemporalEvidence: pinnedMappings.excludedByTemporalEvidence,
       graphMappingCandidatesBeforeBatchFilter: pinnedMappings.candidatesBeforeBatchFilter,
       graphMappingsExcludedNotMentioned: pinnedMappings.excludedNotMentioned,
       precedingContextAvailable: precedingSegments.length,
@@ -630,8 +631,9 @@ function mergePinnedProfileMappings(
   visiblePrecedingSegments: BriefSegment[],
   projectId: string,
   sourceRevisionId: string,
-): { conflictCount: number; candidatesBeforeBatchFilter: number; excludedNotMentioned: number } {
+): { conflictCount: number; candidatesBeforeBatchFilter: number; excludedNotMentioned: number; excludedByTemporalEvidence: number } {
   let characterProfileMappingConflictCount = 0;
+  let characterProfileMappingsExcludedTemporalEvidence = 0;
   let graphMappingCandidatesBeforeBatchFilter = 0;
   let graphMappingsExcludedNotMentioned = 0;
   if (graph) {
@@ -656,7 +658,10 @@ function mergePinnedProfileMappings(
           sourceQuoteMatches(row.text, item?.sourceQuote) &&
           sourceNameMatches(row.text, source);
       });
-      if (!userConfirmed && !evidenceIsVisibleAndValid) continue;
+      if (!userConfirmed && !evidenceIsVisibleAndValid) {
+        characterProfileMappingsExcludedTemporalEvidence++;
+        continue;
+      }
       const aliases = safeCanonicalSourceAliases(source, profile.aliases).filter(isVisibleHere);
       // 规范源名、或至少一个安全的、在源文里可见的别名，必须与本批次相关。
       // 只是存在于书里别处的名字，不会注入提示词。
@@ -733,6 +738,7 @@ function mergePinnedProfileMappings(
   }
   return {
     conflictCount: characterProfileMappingConflictCount,
+    excludedByTemporalEvidence: characterProfileMappingsExcludedTemporalEvidence,
     candidatesBeforeBatchFilter: graphMappingCandidatesBeforeBatchFilter,
     excludedNotMentioned: graphMappingsExcludedNotMentioned,
   };
