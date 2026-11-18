@@ -361,6 +361,24 @@
       "path": "/api/agent/chat",
       "source": "src/agentChatRoutes.ts",
       "signature": "url.pathname !== '/api/agent/chat'"
+    },
+    {
+      "method": "GET",
+      "path": "/api/documents/projects/{projectId}/model-comparisons",
+      "source": "src/documents/documentModelComparison.ts",
+      "signature": "pathParts.length === 5 && method === 'GET'"
+    },
+    {
+      "method": "POST",
+      "path": "/api/documents/projects/{projectId}/model-comparisons",
+      "source": "src/documents/documentModelComparison.ts",
+      "signature": "pathParts.length === 5 && method === 'POST'"
+    },
+    {
+      "method": "GET",
+      "path": "/api/documents/projects/{projectId}/model-comparisons/{comparisonId}",
+      "source": "src/documents/documentModelComparison.ts",
+      "signature": "pathParts.length === 6 && method === 'GET'"
     }
   ]
 }

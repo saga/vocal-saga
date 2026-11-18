@@ -9,6 +9,7 @@ import { MAX_DOCUMENT_SOURCE_BYTES } from './documentStrategy.ts';
 import { startProjectTranslationRun, isProjectRunActive } from './translationAgent.ts';
 import { applyChineseEditorialProfileReview, scheduleChineseEditorialProfileRefresh } from './chineseEditorialProfile.ts';
 import { sendApiError, sendJson } from '../middleware.ts';
+import { handleDocumentModelComparisonRoute } from './documentModelComparison.ts';
 import { logError, logWarn } from '../log.ts';
 import { parseDocumentFile } from './ingest.ts';
 import { startContextGraphAnalysis, getContextGraph, getContextGraphStatus, reviewContextGraphItem, reviewContextGraphItems } from './contextGraph.ts';
@@ -144,6 +145,9 @@ export async function handleDocumentProjectRequest(req: Request, res: Response, 
           break;
         case 'runs':
           if (await handleRunRoutes(context)) return true;
+          break;
+        case 'model-comparisons':
+          if (await handleDocumentModelComparisonRoute(context)) return true;
           break;
         case 'quality-audit':
         case 'quality-evaluations':
