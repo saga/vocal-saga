@@ -655,7 +655,8 @@ function mergePinnedProfileMappings(
       const evidenceIsVisibleAndValid = !evidenceTruncated && evidence.length > 0 && evidence.every((item: any) => {
         const row = visibility.sourceRowFor(item?.segmentId);
         return !!row && row.ordinal <= visibility.lastOrdinal &&
-          sourceQuoteMatches(row.text, item?.sourceQuote);
+          sourceQuoteMatches(row.text, item?.sourceQuote) &&
+          sourceNameMatches(row.text, source);
       });
       if (!userConfirmed && !evidenceIsVisibleAndValid) continue;
       const aliases = safeCanonicalSourceAliases(source, profile.aliases).filter(isVisibleHere);
