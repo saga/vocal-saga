@@ -393,6 +393,16 @@ test('later identity never enters an earlier brief', () => {
         ],
       },
       {
+        characterId: 'mara-target-contaminated', canonicalSourceName: 'Mara Voss', targetName: '灰后',
+        aliases: ['Mara'], status: 'confirmed', confirmationSource: 'model-default',
+        voiceCore: { register: 'future identity reveal' },
+        contrastRules: [],
+        evidence: [{
+          segmentId: 'late-a', sourceQuote: 'Mara Voss was secretly Queen Ash.',
+          observation: 'identity reveal', dimension: 'register', confidence: 0.99,
+        }],
+      },
+      {
         characterId: 'mara-legacy-capped', canonicalSourceName: 'Mara Voss', targetName: '玛拉·沃斯',
         aliases: ['Mara'], status: 'confirmed',
         voiceCore: { register: 'possibly contaminated by omitted later evidence' },
@@ -415,6 +425,8 @@ test('later identity never enters an earlier brief', () => {
   assert.ok(injected.includes('Mara Voss'));
   assert.ok(!injected.includes('Queen Ash'));
   assert.ok(!injected.includes('灰后'));
+  assert.ok(!brief.contextGraph.nameMappings.some((mapping) => mapping.target === '灰后'),
+    'a model-default pinned profile must not bypass temporal evidence checks for canonical mappings');
   assert.ok(!JSON.stringify(brief.voiceContext).includes('Queen Ash'));
   assert.deepEqual(brief.glossary.document_terms.map((term) => term.source), ['Mara Voss']);
   assert.ok(!JSON.stringify(brief.glossary).includes('Queen Ash'));
