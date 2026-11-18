@@ -646,7 +646,9 @@ function mergePinnedProfileMappings(
       const userConfirmed = status === 'confirmed' &&
         ['user-confirmed', 'user-modified'].includes(String(profile.confirmationSource || ''));
       const evidence = Array.isArray(profile.evidence) ? profile.evidence : [];
-      const evidenceIsPriorAndValid = evidence.length > 0 && evidence.every((item: any) => {
+      const evidenceTruncated = profile.evidenceTruncated === true ||
+        (profile.evidencePolicyVersion !== 'character-evidence-v2-complete' && evidence.length >= 8);
+      const evidenceIsPriorAndValid = !evidenceTruncated && evidence.length > 0 && evidence.every((item: any) => {
         const row = visibility.sourceRowFor(item?.segmentId);
         return !!row && row.ordinal < visibility.firstOrdinal &&
           sourceQuoteMatches(row.text, item?.sourceQuote);
