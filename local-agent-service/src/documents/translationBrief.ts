@@ -664,7 +664,7 @@ function mergePinnedProfileMappings(
       if (!isVisibleHere(source) && !aliases.length) continue;
       const incoming = {
         source, target, aliases, kind: 'character',
-        // 只有用户明确确认的映射才获得强规范地位；模型默认采纳保留为候选。
+        // 只有通过时间证据校验且已采纳的画像才进入强映射；来源仍保留 model-default 等 provenance。
         evidenceBacked: status === 'confirmed',
         targetConfidence: status === 'confirmed' ? 'confirmed' : 'candidate',
         sourceStatus: status === 'confirmed' ? 'confirmed-memory' : 'candidate',
