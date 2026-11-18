@@ -744,8 +744,13 @@ function filterVisibleRelationships(
       return !!source && sourceQuoteMatches(source.text, ref.sourceQuote) &&
         sourceNameMatches(ref.sourceQuote, relation.subject) && sourceNameMatches(ref.sourceQuote, relation.object);
     });
-    // 关系分析默认采纳。只保留本批次之前已经可见的名字；
-    // 证据质量作为元数据保留，绝不要求读者去批准它。
+    // 名称在前文出现过，不代表关系本身也已被读者知道。
+    // 新版关系若带证据引用，至少要有一条有效的前序证据；不能把后文才成立的关系提前注入。
+    if (evidenceRefs.length && !priorEvidenceRefs.length) {
+      exclusionDiagnostics.memoryRelationshipExcludedEvidenceNotVisible++;
+      return [];
+    }
+    // 旧版无 evidenceRefs 的关系仍兼容已有行为；有证据的关系必须通过时间边界校验。
     return [{
       ...relation,
       reviewStatus: relation.reviewStatus === 'rejected' ? 'rejected' : 'confirmed',
