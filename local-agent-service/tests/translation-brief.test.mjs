@@ -1459,3 +1459,57 @@ test('TranslationBrief enforces the configured memory budget while preserving ca
   assert.ok(diagnostics.contextBudgetTrimCount > 0);
   assert.equal(diagnostics.contextBudgetPolicy, 'relevance-ranked; preserve-canonical-names; trim-optional-memory-first');
 });
+
+test('TranslationBrief does not expose a relationship before its first source evidence', () => {
+  const store = getDocumentProjectStore();
+  const segments = [
+    { id: 'relation-early', text: 'Alice met Bob at the station.', kind: 'paragraph', contextPath: 'Chapter 1' },
+    { id: 'relation-current', text: 'Alice greeted Bob again.', kind: 'paragraph', contextPath: 'Chapter 1' },
+    { id: 'relation-future', text: 'Alice betrayed Bob after midnight.', kind: 'paragraph', contextPath: 'Chapter 2' },
+  ];
+  const project = store.createProject({
+    title: 'Temporal Relationship Evidence',
+    format: 'txt',
+    sourceFileName: 'temporal-relationship-evidence.txt',
+    prompt: { translationMode: 'literary', sourceLang: 'en', targetLang: 'zh' },
+    segments,
+  });
+  ensureTestContextGraph(store, project);
+  store.saveLiteraryMemory(project.projectId, {
+    entities: [],
+    relationships: [{
+      subject: 'Alice',
+      predicate: 'betrayed',
+      object: 'Bob',
+      reviewStatus: 'confirmed',
+      confirmationSource: 'model-default',
+      evidenceRefs: [{
+        segmentId: 'relation-future',
+        sourceQuote: 'Alice betrayed Bob after midnight.',
+      }],
+    }],
+    styleGuide: {}, chapterSummaries: [], recentExamples: [],
+    characterVoices: [], relationshipVoiceRules: [], voiceAnchors: [],
+  });
+
+  const run = store.createRun(project.projectId, { scope: { type: 'ids', ids: ['relation-current'] } });
+  const context = store.getRunContext(project.projectId, run.runId);
+  const source = store.getSegments(project.projectId, { limit: 10 })
+    .find((item) => item.id === 'relation-current');
+  const brief = buildTranslationBrief(context, [source], [{
+    id: 'relation-early',
+    text: 'Alice met Bob at the station.',
+    contextPath: 'Chapter 1',
+  }]);
+
+  expectRelationshipAbsent(brief);
+  assert.ok(brief.contextDiagnostics.memoryRelationshipExcludedEvidenceNotVisible >= 1);
+});
+
+function expectRelationshipAbsent(brief) {
+  assert.equal(
+    (brief.voiceContext.relationships || []).some((item) => item.predicate === 'betrayed'),
+    false,
+    'a relationship supported only by a future segment must not be injected into an earlier batch',
+  );
+}
