@@ -641,8 +641,8 @@ function mergePinnedProfileMappings(
     const visibility = createMemoryVisibility(projectId, sourceRevisionId, items, visiblePrecedingSegments);
     const isVisibleHere = (name: unknown) => typeof name === 'string' && name.trim() &&
       visibleSourceSegments.some((item) => sourceNameMatches(item.text, name));
-    // 用户明确确认的映射是权威数据；模型默认采纳的档案仍须证明其聚合证据全部早于当前批次。
-    // 否则，一个源名虽已出现、但译名由后文身份揭示推导出的画像，会绕过 temporalMemory 过滤。
+    // 用户明确确认的映射是权威数据；模型默认采纳的档案仍须证明其聚合证据全部不晚于当前批次末尾。
+    // 否则，一个源名虽已出现、但译名由后续身份揭示推导出的画像，会绕过 temporalMemory 过滤。
     for (const profile of pinnedProfiles) {
       const source = typeof profile?.canonicalSourceName === 'string' ? profile.canonicalSourceName.trim() : '';
       const target = typeof profile?.targetName === 'string' ? profile.targetName.trim() : '';
