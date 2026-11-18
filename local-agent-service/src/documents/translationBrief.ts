@@ -152,7 +152,7 @@ export function buildTranslationBrief(
     : {};
   const pinnedMappings = mergePinnedProfileMappings(graph,
     Array.isArray((context as any)?.memory?.characterVoices) ? (context as any).memory.characterVoices : [],
-    items, visiblePrecedingSegments);
+    items, visiblePrecedingSegments, projectId, sourceRevisionId);
   const runNameDecisionDiagnostics = applyRunNameDecisionsToGraph(
     graph, context?.runNameDecisions, items, visiblePrecedingSegments, projectId, sourceRevisionId,
   );
@@ -624,33 +624,44 @@ function mergePinnedProfileMappings(
   pinnedProfiles: Array<Record<string, any>>,
   items: BriefSegment[],
   visiblePrecedingSegments: BriefSegment[],
+  projectId: string,
+  sourceRevisionId: string,
 ): { conflictCount: number; candidatesBeforeBatchFilter: number; excludedNotMentioned: number } {
   let characterProfileMappingConflictCount = 0;
   let graphMappingCandidatesBeforeBatchFilter = 0;
   let graphMappingsExcludedNotMentioned = 0;
   if (graph) {
     const visibleSourceSegments = [...visiblePrecedingSegments, ...items];
+    const visibility = createMemoryVisibility(projectId, sourceRevisionId, items, visiblePrecedingSegments);
     const isVisibleHere = (name: unknown) => typeof name === 'string' && name.trim() &&
       visibleSourceSegments.some((item) => sourceNameMatches(item.text, name));
-    // 规范名取自本 Run 锁定、并经 Store 校验过的档案快照。声音上下文检索刻意只认更早的证据，
-    // 若只用它选出的档案，一个已确认的译名就会因为它对应的引文落在本批次里而消失。
+    // 用户明确确认的映射是权威数据；模型默认采纳的档案仍须证明其聚合证据全部早于当前批次。
+    // 否则，一个源名虽已出现、但译名由后文身份揭示推导出的画像，会绕过 temporalMemory 过滤。
     for (const profile of pinnedProfiles) {
       const source = typeof profile?.canonicalSourceName === 'string' ? profile.canonicalSourceName.trim() : '';
       const target = typeof profile?.targetName === 'string' ? profile.targetName.trim() : '';
       const status = String(profile?.status || '');
       if (!source || !target || profile.useForTranslation === false ||
           !['confirmed', 'candidate'].includes(status) || isGenericCanonicalSourceName(source)) continue;
+      const userConfirmed = status === 'confirmed' &&
+        ['user-confirmed', 'user-modified'].includes(String(profile.confirmationSource || ''));
+      const evidence = Array.isArray(profile.evidence) ? profile.evidence : [];
+      const evidenceIsPriorAndValid = evidence.length > 0 && evidence.every((item: any) => {
+        const row = visibility.sourceRowFor(item?.segmentId);
+        return !!row && row.ordinal < visibility.firstOrdinal &&
+          sourceQuoteMatches(row.text, item?.sourceQuote);
+      });
+      if (!userConfirmed && !evidenceIsPriorAndValid) continue;
       const aliases = safeCanonicalSourceAliases(source, profile.aliases).filter(isVisibleHere);
       // 规范源名、或至少一个安全的、在源文里可见的别名，必须与本批次相关。
       // 只是存在于书里别处的名字，不会注入提示词。
       if (!isVisibleHere(source) && !aliases.length) continue;
-      const userConfirmed = status === 'confirmed' && ['user-confirmed', 'user-modified'].includes(String(profile.confirmationSource || ''));
       const incoming = {
         source, target, aliases, kind: 'character',
-        // 维持已验证人物画像的既有映射行为，但保留 provenance；Run 级已采纳译名可覆盖非用户确认画像。
-        evidenceBacked: status === 'confirmed',
-        targetConfidence: status === 'confirmed' ? 'confirmed' : 'candidate',
-        sourceStatus: status === 'confirmed' ? 'confirmed-memory' : 'candidate',
+        // 只有用户明确确认的映射才获得强规范地位；模型默认采纳保留为候选。
+        evidenceBacked: userConfirmed || evidenceIsPriorAndValid,
+        targetConfidence: userConfirmed ? 'confirmed' : 'candidate',
+        sourceStatus: userConfirmed ? 'confirmed-memory' : 'candidate',
         confirmationSource: profile.confirmationSource || 'legacy-unknown',
       };
       const names = new Set([source, ...aliases].map(normalizedSourceText));
@@ -660,7 +671,7 @@ function mergePinnedProfileMappings(
       const conflicting = graph.nameMappings.filter((mapping: any) =>
         matches(mapping) && ['confirmed', 'confirmed-memory'].includes(String(mapping?.sourceStatus || '')) &&
         normalizedSourceText(mapping?.target) !== normalizedSourceText(target));
-      if (status === 'confirmed' && conflicting.length) {
+      if (userConfirmed && conflicting.length) {
         // 两个已确认来源互相矛盾。删掉重叠名字上的硬映射，把冲突作为约束暴露出去；
         // 绝不能让数组顺序悄悄决定谁赢。
         graph.nameMappings = graph.nameMappings.filter((mapping: any) => !matches(mapping));
