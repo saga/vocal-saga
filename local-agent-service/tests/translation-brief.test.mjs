@@ -435,6 +435,8 @@ test('later identity never enters an earlier brief', () => {
   assert.deepEqual(brief.voiceContext.recentExamples, []);
   assert.deepEqual(brief.voiceContext.characterVoices.map((profile) => profile.characterId), ['mara-early'],
     'a profile that combines early and future evidence must not be partially filtered and injected');
+  assert.ok(brief.contextDiagnostics.characterProfileMappingsExcludedTemporalEvidence >= 2,
+    'the brief should report pinned mappings excluded because their aggregate evidence crosses the current boundary');
   assert.ok(brief.contextChars <= MAX_TRANSLATION_BRIEF_CHARS);
 });
 
