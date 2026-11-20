@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { DocumentProjectStore } from '../src/documents/projectStore.ts';
+import { CONTEXT_GRAPH_ANALYSIS_VERSION } from '../src/documents/contextGraphSchema.ts';
 
 async function withStore(run) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'vocal-doc-project-'));
@@ -825,7 +826,7 @@ test('literary preprocessing readiness guard also rejects stale-running preproce
     db.prepare(
       "UPDATE context_graph_runs SET status = 'running', phase = 'model-analysis', progress_json = ? WHERE source_revision_id = ?",
     ).run(JSON.stringify({
-      analysisVersion: 'context-graph-v5-language-pinned',
+      analysisVersion: CONTEXT_GRAPH_ANALYSIS_VERSION,
       sourceLang: 'en',
       targetLang: 'zh',
     }), currentSourceRevisionId);
@@ -838,7 +839,7 @@ test('literary preprocessing readiness guard also rejects stale-running preproce
     db.prepare(
       "UPDATE context_graph_runs SET status = 'completed', phase = 'completed', progress_json = ? WHERE source_revision_id = ?",
     ).run(JSON.stringify({
-      analysisVersion: 'context-graph-v5-language-pinned',
+      analysisVersion: CONTEXT_GRAPH_ANALYSIS_VERSION,
       sourceLang: 'en',
       targetLang: 'ja',
     }), currentSourceRevisionId);
@@ -846,6 +847,47 @@ test('literary preprocessing readiness guard also rejects stale-running preproce
       () => store.assertLiteraryPreprocessingReady(project.projectId, run.sourceRevisionId, 'en', 'zh'),
       /全书预处理语言与当前翻译配置不一致/,
     );
+  });
+});
+
+
+test('preprocessing readiness accepts freshly re-analyzed current version and rejects legacy versions', async () => {
+  await withStore((store) => {
+    const project = store.createProject({
+      title: 'Current Analysis Version Guard',
+      format: 'txt',
+      sourceFileName: 'current-analysis-version.txt',
+      segments,
+      prompt: { translationMode: 'literary', sourceLang: 'en', targetLang: 'zh' },
+    });
+    ensureTestContextGraph(store, project);
+    const { db, currentSourceRevisionId } = store.getProjectContext(project.projectId);
+
+    // 重新分析后写入的当前版本必须通过门禁，否则用户反复重跑也永远失败。
+    assert.doesNotThrow(() =>
+      store.assertLiteraryPreprocessingReady(project.projectId, currentSourceRevisionId, 'en', 'zh'));
+
+    db.prepare(
+      "UPDATE context_graph_runs SET status = 'completed', progress_json = ? WHERE source_revision_id = ?",
+    ).run(JSON.stringify({
+      analysisVersion: 'context-graph-v5-language-pinned', sourceLang: 'en', targetLang: 'zh',
+    }), currentSourceRevisionId);
+    assert.throws(
+      () => store.assertLiteraryPreprocessingReady(project.projectId, currentSourceRevisionId, 'en', 'zh'),
+      /全书预处理版本过旧/,
+    );
+
+    // 完成事件已落盘但运行状态卡住时，同样按当前版本恢复，而不是按写死的旧版本。
+    const runId = db.prepare('SELECT run_id FROM context_graph_runs WHERE source_revision_id = ?').get(currentSourceRevisionId).run_id;
+    db.prepare("UPDATE context_graph_runs SET status = 'running', progress_json = ? WHERE run_id = ?").run(JSON.stringify({
+      analysisVersion: CONTEXT_GRAPH_ANALYSIS_VERSION, sourceLang: 'en', targetLang: 'zh',
+    }), runId);
+    store.addEvent(project.projectId, runId, 'context-graph.completed', {
+      analysisVersion: CONTEXT_GRAPH_ANALYSIS_VERSION, sourceLang: 'en', targetLang: 'zh',
+    });
+    assert.doesNotThrow(() =>
+      store.assertLiteraryPreprocessingReady(project.projectId, currentSourceRevisionId, 'en', 'zh'));
+    assert.equal(db.prepare('SELECT status FROM context_graph_runs WHERE run_id = ?').get(runId).status, 'completed');
   });
 });
 

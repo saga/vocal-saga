@@ -7,6 +7,7 @@
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { hash, isoNow, parseJson } from './documentStoreUtils.ts';
+import { CONTEXT_GRAPH_ANALYSIS_VERSION } from './contextGraphSchema.ts';
 import { type ProjectPrompt } from './documentStrategy.ts';
 import { sourceLanguageMatches } from './languageMatch.ts';
 import { type DocumentProjectStore } from './projectStore.ts';
@@ -190,7 +191,7 @@ export function assertLiteraryPreprocessingReady(store: DocumentProjectStore, pr
     try { completionPayload = JSON.parse(completion?.payload_json || '{}'); } catch { completionPayload = {}; }
     const expectedSourceLang = sourceLang || 'auto';
     const expectedTargetLang = targetLang || 'zh';
-    if (completionPayload.analysisVersion === 'context-graph-v5-language-pinned' &&
+    if (completionPayload.analysisVersion === CONTEXT_GRAPH_ANALYSIS_VERSION &&
         completionPayload.sourceLang === expectedSourceLang &&
         completionPayload.targetLang === expectedTargetLang) {
       const completedAt = isoNow();
@@ -216,7 +217,7 @@ export function assertLiteraryPreprocessingReady(store: DocumentProjectStore, pr
     throw Object.assign(new Error('全书预处理未成功：' + (preprocessing.error || preprocessing.status) + '。请在 UI 的“人物与预处理”中重新分析，或执行 npm run doc -- context-analyze ' + projectId + '。'), { status: 409 });
   }
   const preprocessingProgress = parseJson<any>(preprocessing.progress_json, {});
-  if (preprocessingProgress.analysisVersion !== 'context-graph-v5-language-pinned') {
+  if (preprocessingProgress.analysisVersion !== CONTEXT_GRAPH_ANALYSIS_VERSION) {
     throw Object.assign(new Error('全书预处理版本过旧，请重新分析后再翻译：UI 中点击“重新分析全书”，或执行 npm run doc -- context-analyze ' + projectId + '。'), { status: 409 });
   }
   const expectedSourceLang = sourceLang || 'auto';

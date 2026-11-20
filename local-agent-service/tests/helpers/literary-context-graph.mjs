@@ -1,8 +1,11 @@
 /**
  * Literary-run tests must model the same preprocessing precondition as production.
- * This creates a completed, empty v5 graph for the current source/language; tests that
- * exercise graph contents should continue to build their own nodes/evidence explicitly.
+ * This creates a completed, empty graph for the current source/language at the same
+ * analysis version as production; tests that exercise graph contents should continue
+ * to build their own nodes/evidence explicitly.
  */
+import { CONTEXT_GRAPH_ANALYSIS_VERSION } from '../../src/documents/contextGraphSchema.ts';
+
 export function ensureTestContextGraph(store, project) {
   const { db, currentSourceRevisionId } = store.getProjectContext(project.projectId);
   const prompt = db.prepare('SELECT config_json FROM prompt_revisions ORDER BY created_at DESC LIMIT 1').get();
@@ -20,7 +23,7 @@ export function ensureTestContextGraph(store, project) {
   if (existing) {
     let progress = {};
     try { progress = JSON.parse(existing.progress_json); } catch { /* replace invalid test fixture */ }
-    if (progress.analysisVersion === 'context-graph-v5-language-pinned' &&
+    if (progress.analysisVersion === CONTEXT_GRAPH_ANALYSIS_VERSION &&
         progress.sourceLang === (config.sourceLang || 'auto') &&
         progress.targetLang === (config.targetLang || 'zh')) return;
   }
@@ -33,7 +36,7 @@ export function ensureTestContextGraph(store, project) {
     'completed',
     'completed',
     JSON.stringify({
-      analysisVersion: 'context-graph-v5-language-pinned',
+      analysisVersion: CONTEXT_GRAPH_ANALYSIS_VERSION,
       sourceLang: config.sourceLang || 'auto',
       targetLang: config.targetLang || 'zh',
       segmentCount: Number(db.prepare('SELECT COUNT(*) AS count FROM source_segments WHERE source_revision_id = ?').get(currentSourceRevisionId)?.count || 0),
