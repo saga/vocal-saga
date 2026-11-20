@@ -243,7 +243,9 @@ export function createApp(env?: Record<string, unknown>, storage?: StorageAdapte
   }
 
   const app = new Hono();
-  app.use('*', cors());
+  // The extension reads this allow-listed response header to distinguish a translated page
+  // from a page whose D1 history write failed. Do not expose the full response-header set.
+  app.use('*', cors({ exposeHeaders: ['X-Translate-Warning'] }));
 
   // Instapaper v2 SDK 在服务端/Workers 运行；Access Token 和 OAuth Client Secret 绝不返回浏览器。
   const INSTAPAPER_CALLBACK_URL = 'https://s.sunxiunan.com/instapaper';
