@@ -1,8 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
   detectLanguage,
-  shouldUseJapaneseSource,
-  type DetectedLanguage,
 } from '../lib/translate/languageDetector';
 
 /**
@@ -147,37 +145,4 @@ describe('detectLanguage — htmlLang 仅作辅助信号', () => {
     const r = detectLanguage('日本経済新聞', { htmlLang: 'ja' });
     expect(r.language).toBe('unknown');
   });
-});
-
-describe('shouldUseJapaneseSource — 真值表', () => {
-  const cases: Array<{
-    name: string;
-    style: string | undefined;
-    detected: DetectedLanguage;
-    target: string;
-    expected: boolean;
-  }> = [
-    { name: '未配置 + ja + zh → 升级', style: undefined, detected: 'ja', target: 'zh', expected: true },
-    { name: 'default + ja + zh → 升级', style: 'default', detected: 'ja', target: 'zh', expected: true },
-    { name: 'default + ja + en → 升级', style: 'default', detected: 'ja', target: 'en', expected: true },
-    { name: 'default + ja + ZH（大小写不敏感）→ 升级', style: 'default', detected: 'ja', target: 'ZH', expected: true },
-    { name: 'default + ja + ja → 不升级（目标就是日语）', style: 'default', detected: 'ja', target: 'ja', expected: false },
-    { name: 'default + ja + ja-JP → 不升级', style: 'default', detected: 'ja', target: 'ja-JP', expected: false },
-    { name: 'default + ja + JA → 不升级', style: 'default', detected: 'ja', target: 'JA', expected: false },
-    { name: 'default + zh + zh → 不升级', style: 'default', detected: 'zh', target: 'zh', expected: false },
-    { name: 'default + unknown + zh → 不升级', style: 'default', detected: 'unknown', target: 'zh', expected: false },
-    { name: 'default + ko + zh → 不升级', style: 'default', detected: 'ko', target: 'zh', expected: false },
-    { name: 'default + en + zh → 不升级', style: 'default', detected: 'en', target: 'zh', expected: false },
-    // 用户手工选择的文风永远优先，自动检测不得覆盖
-    { name: 'jinyong + ja + zh → 不升级', style: 'jinyong', detected: 'ja', target: 'zh', expected: false },
-    { name: 'acheng + ja + zh → 不升级', style: 'acheng', detected: 'ja', target: 'zh', expected: false },
-    { name: 'wangxiaobo + ja + zh → 不升级', style: 'wangxiaobo', detected: 'ja', target: 'zh', expected: false },
-    { name: 'ja-source-natural + ja + zh → 不升级（已是该风格）', style: 'ja-source-natural', detected: 'ja', target: 'zh', expected: false },
-  ];
-
-  for (const c of cases) {
-    it(c.name, () => {
-      expect(shouldUseJapaneseSource(c.style, c.detected, c.target)).toBe(c.expected);
-    });
-  }
 });

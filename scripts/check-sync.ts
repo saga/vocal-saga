@@ -42,7 +42,6 @@ const SYNC_PAIRS: Array<{ name: string; server: string; extension: string }> = [
   { name: 'service/jinyong-prompt', server: 'lib/translate/service/jinyong-prompt.ts', extension: 'src/entrypoints/service/jinyong-prompt.ts' },
   { name: 'service/acheng-prompt', server: 'lib/translate/service/acheng-prompt.ts', extension: 'src/entrypoints/service/acheng-prompt.ts' },
   { name: 'service/wangxiaobo-prompt', server: 'lib/translate/service/wangxiaobo-prompt.ts', extension: 'src/entrypoints/service/wangxiaobo-prompt.ts' },
-  { name: 'service/japanese-natural-zh-prompt', server: 'lib/translate/service/japanese-natural-zh-prompt.ts', extension: 'src/entrypoints/service/japanese-natural-zh-prompt.ts' },
   { name: 'glossaryExtractor', server: 'lib/translate/glossaryExtractor.ts', extension: 'src/entrypoints/utils/glossaryExtractor.ts' },
   { name: 'languageDetector', server: 'lib/translate/languageDetector.ts', extension: 'src/entrypoints/utils/languageDetector.ts' },
   { name: 'tech-products.json', server: 'lib/translate/tech-products.json', extension: 'src/entrypoints/utils/tech-products.json' },

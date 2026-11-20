@@ -19,13 +19,12 @@ import type { Glossary } from '../lib/translate/service/_service';
 
 const SOURCE = 'en';
 const TARGET = 'zh';
-/** 全部文风，含 ja-source-natural —— 每个文风都必须对术语做同样的净化。 */
+/** 所有可选文风都必须对术语做同样的净化。 */
 const STYLES: PromptStyle[] = [
   'default',
   'jinyong',
   'acheng',
   'wangxiaobo',
-  'ja-source-natural',
 ];
 
 describe('sanitizeDocumentTerms — 基本行为', () => {

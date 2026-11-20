@@ -1,10 +1,8 @@
 /**
  * 语言检测（纯本地：零 token、零网络、零依赖）。
  *
- * ## 用途
- *
- * 判断「正文是不是日语」，用于把 `default` 文风自动升级为 `ja-source-natural`
- * （日语原文 → 中文时，保留原文的克制、论述顺序与限定语气）。
+ * 用于 PDF 阅读器在源语言设为 auto 时，从已提取的正文中推断语言。
+ * 检测结果只用于语言选择，不改变翻译文风；文风始终由用户配置决定。
  *
  * ## 为什么不需要 LLM
  *
@@ -139,24 +137,4 @@ export function detectLanguage(
   }
 
   return { language: 'unknown', confidence: 0, kanaRatio, kanjiRatio, evidence };
-}
-
-/**
- * 是否应把 `default` 自动升级为 `ja-source-natural`。
- *
- * 规则（**用户手工选择的风格永远优先，自动检测不得覆盖**）：
- *   - 配置非 `default`（jinyong / acheng / wangxiaobo / ja-source-natural）→ 不切换
- *   - 检测到源语言为日语，且目标语言不是日语 → 切换
- *   - 其余 → 不切换
- *
- * 目标语言为日语时（zh → ja）不适用：那是「日语自然化」方向，与本模式无关。
- */
-export function shouldUseJapaneseSource(
-  configuredStyle: string | undefined,
-  detected: DetectedLanguage,
-  targetLang: string
-): boolean {
-  const isDefault = !configuredStyle || configuredStyle === 'default';
-  const targetIsJapanese = targetLang.toLowerCase().startsWith('ja');
-  return isDefault && detected === 'ja' && !targetIsJapanese;
 }

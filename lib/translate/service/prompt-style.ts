@@ -17,7 +17,6 @@ import { buildDefaultSystemContent } from './default-prompt';
 import { buildJinyongSystemContent } from './jinyong-prompt';
 import { buildAchengSystemContent } from './acheng-prompt';
 import { buildWangxiaoboSystemContent } from './wangxiaobo-prompt';
-import { buildJapaneseNaturalZhSystemContent } from './japanese-natural-zh-prompt';
 
 /** Top-level translation profile. Default is technical to preserve existing behavior. */
 export type TranslationMode = 'technical' | 'literary';
@@ -26,7 +25,7 @@ export type TranslationMode = 'technical' | 'literary';
  * Style refines expression but does not select technical/literary workflow.
  * Literary mode uses the same style traits without the technical glossary.
  */
-export type PromptStyle = 'default' | 'jinyong' | 'acheng' | 'wangxiaobo' | 'ja-source-natural';
+export type PromptStyle = 'default' | 'jinyong' | 'acheng' | 'wangxiaobo';
 
 function literaryStyleGuidance(style?: PromptStyle): string {
   switch (style) {
@@ -46,8 +45,6 @@ function literaryStyleGuidance(style?: PromptStyle): string {
         '风格校准：采用清晰、理性、略带口语节奏的现代散文表达。论证关系要明白，长短句随思路自然变化；措辞坦率，不故作高深，也不把内容磨成刻板的公文腔。',
         '讽刺、幽默、荒诞感和比喻只有在原文已有时才予以保留并自然转译。不得自行加入笑话、反转、科学隐喻、挑衅语气、金句或价值判断。',
       ].join('\n');
-    case 'ja-source-natural':
-      return '风格校准：若原文为日语，保留其克制、论述顺序与细微限定，但用目标语言自然表达，不照搬日语句法，也不擅自删去重复或补足隐含结论。';
     default:
       return '风格校准：根据原文体裁、语域、叙述视角和语气选择表达。自然不等于自由改写；不得预设华丽、古典、口语化或带有某种情绪的腔调。';
   }
@@ -126,12 +123,6 @@ export function buildStyledSystemContent(
       return buildAchengSystemContent(sourceLang, targetLang, glossary);
     case 'wangxiaobo':
       return buildWangxiaoboSystemContent(sourceLang, targetLang, glossary);
-    case 'ja-source-natural': {
-      if ((targetLang || '').toLowerCase().startsWith('ja')) {
-        return buildDefaultSystemContent(sourceLang, targetLang, glossary);
-      }
-      return buildJapaneseNaturalZhSystemContent(sourceLang, targetLang, glossary);
-    }
     default:
       return buildDefaultSystemContent(sourceLang, targetLang, glossary);
   }

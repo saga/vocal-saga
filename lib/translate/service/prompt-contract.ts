@@ -3,7 +3,7 @@
  *
  * ## 设计目标
  *
- * 五种文风（default / jinyong / acheng / wangxiaobo / ja-source-natural）
+ * 四种文风（default / jinyong / acheng / wangxiaobo）
  * **只有 `<文风>` 段落不同**，其余全部共用本文件：
  *
  *   1. `<翻译契约>`     —— 什么绝对不能动（事实、逻辑、块结构）

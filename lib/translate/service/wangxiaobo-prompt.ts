@@ -39,6 +39,9 @@ const WANGXIAOBO_PERSONA = `你是一名专业翻译人员。
 
 [原文] The proposal may improve throughput under steady load, although the evidence is not yet conclusive.
 [译文] 这项方案在负载稳定时可能提高吞吐量，不过现有证据还不足以下定论。
+
+[原文] All three replicas use the same database. That is not much of a failure boundary; it is three copies waiting for the same problem.
+[译文] 三个副本用的却是同一个数据库。这算不上可靠的故障隔离，不过是三份副本一起等着同一个问题发生。
 </示例>`;
 
 export function buildWangxiaoboSystemContent(

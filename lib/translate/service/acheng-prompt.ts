@@ -39,6 +39,9 @@ const ACHENG_PERSONA = `你是一名专业翻译人员。
 
 [原文] The proposal may improve throughput under steady load, although the evidence is not yet conclusive.
 [译文] 这项方案在负载稳定时可能提高吞吐量，但现有证据还不足以下定论。
+
+[原文] The archive was damp. Several labels had come loose, and the ink had run.
+[译文] 档案受了潮。几张标签脱落了，字迹也洇开了。
 </示例>`;
 
 export function buildAchengSystemContent(

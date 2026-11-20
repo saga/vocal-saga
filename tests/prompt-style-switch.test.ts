@@ -32,7 +32,6 @@ const STYLE_MARKER: Record<PromptStyle, string> = {
   jinyong: '<文风>',
   acheng: '<文风>',
   wangxiaobo: '<文风>',
-  'ja-source-natural': '<日语原文特点>',
 };
 
 const ALL_STYLES = Object.keys(STYLE_MARKER) as PromptStyle[];
@@ -50,7 +49,6 @@ describe('buildSystemContent 文风切换', () => {
   it('不传 style 时走 default', () => {
     const content = buildSystemContent(sourceLang, targetLang, undefined);
     expect(content).toContain(STYLE_MARKER.default);
-    expect(content).not.toContain('<日语原文特点>');
   });
 
   it('非法 style 也回退 default（不抛错、不产出空 prompt）', () => {
@@ -106,8 +104,7 @@ describe('buildSystemContent 文风切换', () => {
   });
 
   it('源语言为 auto 时不得假定为英语', () => {
-    // ja-source-natural 例外：这个文风本身就限定源语言是日语。
-    for (const style of ALL_STYLES.filter((item) => item !== 'ja-source-natural')) {
+    for (const style of ALL_STYLES) {
       const content = buildSystemContent('auto', 'zh', undefined, style);
       expect(content, `${style} 把 auto 当成了具体语言`).not.toContain('输入语言：英语');
       expect(content, `${style} 应明确写出自动检测`).toContain('自动检测');
@@ -169,29 +166,4 @@ describe('literary webpage reviewer prompt', () => {
     expect(prompt).toContain('不能增加原文没有的情节');
     expect(prompt).toContain('style 必须是 optional');
   });
-});
-
-describe('ja-source-natural 文风', () => {
-  it('ja → zh 时生效，包含日语原文特点与判断强度清单', () => {
-    const content = buildSystemContent('ja', targetLang, undefined, 'ja-source-natural');
-    expect(content).toContain('<日语原文特点>');
-    expect(content).toContain('<中文表达原则>');
-    expect(content).toContain('<判断强度>');
-    expect(content).toContain('保留日本文章的味道');
-    // 判断强度清单：日语的"推测"不能被译成"结论"
-    expect(content).toContain('〜と考えられる');
-    expect(content).toContain('〜かもしれない');
-    // 不能串到文学风格
-    expect(content).not.toContain('金庸');
-    expect(content).not.toContain('阿城');
-    expect(content).not.toContain('王小波');
-  });
-
-  it('目标语言为英语 / 韩语时同样生效（不止中文）', () => {
-    for (const target of ['en', 'ko']) {
-      const content = buildSystemContent('ja', target, undefined, 'ja-source-natural');
-      expect(content).toContain('<日语原文特点>');
-    }
-  });
-
 });
