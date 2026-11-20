@@ -110,6 +110,41 @@ describe('GET /article/:id — D1 translation history', () => {
   });
 
 
+  it('serves legacy PDF.js text snapshots directly from translation history', async () => {
+    const app = buildApp();
+    const db = createMockDb();
+    const pdfHtml = `<!doctype html>
+<html><head><meta charset="utf-8"><title>arXiv:2611.23253</title>
+<style id="fanyi-bilingual-styles">/* 双语对照样式 */ .fanyi-translation{display:block}</style>
+</head><body><main>
+<p data-fanyi-block-id="pdfjs-p0" class="fanyi-translated"><span class="fanyi-original">Original PDF abstract text.</span><span class="fanyi-translation">PDF 摘要原文。</span></p>
+<h2 data-fanyi-block-id="pdfjs-h1" class="fanyi-translated"><span class="fanyi-original">Introduction</span><span class="fanyi-translation">引言</span></h2>
+</main></body></html>`;
+    db._rows.push({
+      id: 17,
+      url: 'https://arxiv.org/pdf/2611.23253',
+      title: 'arXiv:2611.23253',
+      source_lang: 'en',
+      target_lang: 'zh',
+      html: pdfHtml,
+      created_at: new Date().toISOString(),
+    });
+
+    const res = await app.request(req('/article/17'), {}, envWithDb(db));
+
+    // 旧版 PDF 快照没有原站 CSS，但其内容由安全的 data-fanyi-block-id 块组成；
+    // 详情页应直接返回缓存，而不是重定向到 /translate 再抓取 PDF。
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Location')).toBeNull();
+    const html = await res.text();
+    expect(html).toContain('Original PDF abstract text.');
+    expect(html).toContain('PDF 摘要原文。');
+    expect(html).toContain('data-fanyi-block-id="pdfjs-p0"');
+
+    const { translateUrl } = await import('../lib/translate/pipeline');
+    expect(translateUrl).not.toHaveBeenCalled();
+  });
+
   it('saves url and html to D1 after /translate/* and retrieves via /article/:id', async () => {
     const app = buildApp();
     const db = createMockDb();
