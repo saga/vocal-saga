@@ -63,6 +63,7 @@ export function injectTranslationCss(html: string): string {
  */
 
 import { Hono } from 'hono';
+import { parseHTML } from 'linkedom';
 import { Instapaper, OAuth } from 'instapaper-api';
 import { cors } from 'hono/cors';
 import { translateText, translateUrl, translateHtml, translateBlocks } from './translate/pipeline';
@@ -122,6 +123,51 @@ import {
  * 导致页面 CSS 全部丢失。某些损坏缓存虽保留 <html>，但原页面内联
  * 样式被清空，只剩 OneTrust / fanyi 样式，也要视为 miss 重新翻译。
  */
+/**
+ * PDF.js / arXiv translations are persisted as a self-contained text snapshot:
+ * one <main> containing only the block elements extracted by the extension.
+ * These documents intentionally have no original website stylesheet. Older
+ * snapshots predate the explicit marker, so recognize the strict legacy shape
+ * as well instead of redirecting their history links back to /translate/*.
+ */
+function isSelfContainedPdfTextSnapshot(html: string): boolean {
+  try {
+    const { document } = parseHTML(html);
+    const body = document.body;
+    if (!body || body.children.length !== 1) return false;
+
+    const main = body.children[0];
+    if (main.tagName.toUpperCase() !== 'MAIN') return false;
+
+    const blocks = Array.from(main.children);
+    const safeTags = new Set(['P', 'DIV', 'LI', 'BLOCKQUOTE', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6']);
+    if (
+      blocks.length === 0 ||
+      blocks.some((block) =>
+        !safeTags.has(block.tagName.toUpperCase()) ||
+        !block.hasAttribute('data-fanyi-block-id')
+      )
+    ) {
+      return false;
+    }
+
+    // PDF text extraction produces escaped text blocks, not embedded page assets
+    // or interactive controls. Keep this exception narrow for legacy snapshots.
+    if (main.querySelector('a,img,video,audio,iframe,object,embed,canvas,svg,form,input,button,script,style,link,table')) {
+      return false;
+    }
+    if (Array.from(main.childNodes).some((node) =>
+      node.nodeType === 3 && Boolean(node.textContent?.trim())
+    )) {
+      return false;
+    }
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function isHealthyCachedHtml(html: string): boolean {
   // Structural completeness is not enough: a registrar parking page can have
   // valid HTML, CSS, and translated spans. Never serve it as a healthy translation.
@@ -161,7 +207,9 @@ export function isHealthyCachedHtml(html: string): boolean {
       );
     });
   }
-  if (!structurallyHealthy) return false;
+  // PDF text snapshots are readable without the source site's CSS. This also
+  // recognizes pre-marker records already stored by the first PDF D1 integration.
+  if (!structurallyHealthy && !isSelfContainedPdfTextSnapshot(html)) return false;
 
   // ── <base> 位置检查 ──
   // 旧缓存里 <base> 可能位于相对 CSS 之后，浏览器会用代理域解析这些资源，
