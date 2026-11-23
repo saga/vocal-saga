@@ -357,10 +357,11 @@ export function hasUnstagedRunNameCandidates(
     ...readRunDecisions(db, runId),
     ...readRunFirstUseDecisionsFromDb(db, runId),
   ].map((item) => normalizeEntityName(item.source)));
-  const placeholders = batchIndexes.map(() => '?').join(',');
+  const persistedBatchIndexes = batchIndexes.map((index) => index + 1);
+  const placeholders = persistedBatchIndexes.map(() => '?').join(',');
   const rows = db.prepare(
     'SELECT delta_json FROM translation_context_deltas WHERE run_id = ? AND batch_index IN (' + placeholders + ')'
-  ).all(runId, ...batchIndexes) as Array<{ delta_json: string }>;
+  ).all(runId, ...persistedBatchIndexes) as Array<{ delta_json: string }>;
   for (const row of rows) {
     const delta = parseJson(row.delta_json, {});
     for (const candidate of Array.isArray(delta.entityCandidates) ? delta.entityCandidates : []) {
@@ -394,11 +395,12 @@ export function prepareRunFirstUseDecisions(
   if (!run || run.status !== 'running' || run.source_revision_id !== revisionId) return [];
 
   const leaderSegmentIds = new Set(batchIndexes.flatMap((index) => (batches[index] || []).map((item) => item.id)));
-  const placeholders = batchIndexes.map(() => '?').join(',');
+  const persistedBatchIndexes = batchIndexes.map((index) => index + 1);
+  const placeholders = persistedBatchIndexes.map(() => '?').join(',');
   const deltaRows = db.prepare(
     'SELECT batch_index, delta_json FROM translation_context_deltas ' +
     'WHERE run_id = ? AND batch_index IN (' + placeholders + ')'
-  ).all(runId, ...batchIndexes) as Array<{ batch_index: number; delta_json: string }>;
+  ).all(runId, ...persistedBatchIndexes) as Array<{ batch_index: number; delta_json: string }>;
   const candidateRows = db.prepare(
     'SELECT rs.segment_id AS segmentId, rs.source_hash AS sourceHash, s.text AS sourceText, ' +
     's.ordinal AS ordinal, tr.translation_text AS translation ' +
@@ -492,8 +494,6 @@ export function prepareRunFirstUseDecisions(
       kind: group.kind,
     });
     if (!target.valid) continue;
-    const firstOrdinal = firstMentions.get(key);
-    if (firstOrdinal === undefined) continue;
     const firstMention = db.prepare(
       'SELECT rs.segment_id AS segmentId FROM run_segments rs ' +
       'JOIN source_segments s ON s.segment_id = rs.segment_id AND s.source_revision_id = ? ' +

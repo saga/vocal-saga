@@ -297,6 +297,25 @@ describe('POST /api/v1/chat/completions backend config', () => {
 });
 
 describe('public translation rate limiting', () => {
+  it('does not charge CORS preflight requests against the public allowance', async () => {
+    const limiter = { limit: vi.fn(async () => ({ success: true })) };
+    const app = buildApp();
+    const res = await app.request(
+      req('/api/translate/text', {
+        method: 'OPTIONS',
+        headers: {
+          Origin: 'https://extension.example',
+          'Access-Control-Request-Method': 'POST',
+          'Access-Control-Request-Headers': 'content-type',
+        },
+      }),
+      {},
+      { PUBLIC_TRANSLATION_LIMITER: limiter },
+    );
+    expect(res.status).toBe(204);
+    expect(limiter.limit).not.toHaveBeenCalled();
+  });
+
   it('returns 429 when the public translation allowance is exhausted', async () => {
     const limiter = { limit: vi.fn(async () => ({ success: false })) };
     const app = buildApp();

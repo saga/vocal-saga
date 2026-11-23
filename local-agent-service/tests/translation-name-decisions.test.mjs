@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   chooseAcceptedTranslationTarget,
   chooseFirstUseRunNameDecision,
+  mergeRunNameDecisions,
 } from '../src/documents/translationNameDecisions.ts';
 
 function row(segmentId, translation, ordinal) {
@@ -129,4 +130,33 @@ test('first-use mapping does not preserve an untranslated source name as a Chine
   });
 
   assert.equal(decision, null);
+});
+
+test('immutable user-confirmed snapshot overrides a provisional first-use mapping', () => {
+  const merged = mergeRunNameDecisions(
+    [{
+      source: 'Tennent',
+      aliases: [],
+      target: '坦嫩特',
+      kind: 'person',
+      sourceStatus: 'confirmed-memory',
+      decisionSource: 'user-confirmed-memory',
+      decidedOrdinal: -1,
+      evidenceSegmentIds: [],
+    }],
+    [{
+      source: 'Tennent',
+      aliases: [],
+      target: '坦南特',
+      kind: 'person',
+      sourceStatus: 'run-canonical',
+      decisionSource: 'first-use-provisional',
+      decidedOrdinal: 7,
+      evidenceSegmentIds: ['s7'],
+    }],
+  );
+
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].target, '坦嫩特');
+  assert.equal(merged[0].decisionSource, 'user-confirmed-memory');
 });

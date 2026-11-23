@@ -337,6 +337,10 @@ export function createApp(env?: Record<string, unknown>, storage?: StorageAdapte
     await next();
   };
 
+  // CORS must run before route-specific limiters: OPTIONS preflight requests do
+  // not consume translation quota, and rate-limit responses retain CORS headers.
+  app.use('*', cors({ exposeHeaders: ['X-Translate-Warning'] }));
+
   const publicTranslationRateLimit = rateLimitMiddleware('PUBLIC_TRANSLATION_LIMITER');
   const forceTranslationRateLimit = rateLimitMiddleware('FORCE_TRANSLATION_LIMITER');
 
@@ -352,9 +356,6 @@ export function createApp(env?: Record<string, unknown>, storage?: StorageAdapte
   }
   app.use('/force/*', publicTranslationRateLimit);
   app.use('/force/*', forceTranslationRateLimit);
-  // The extension reads this allow-listed response header to distinguish a translated page
-  // from a page whose D1 history write failed. Do not expose the full response-header set.
-  app.use('*', cors({ exposeHeaders: ['X-Translate-Warning'] }));
 
   // Instapaper v2 SDK 在服务端/Workers 运行；Access Token 和 OAuth Client Secret 绝不返回浏览器。
   const INSTAPAPER_CALLBACK_URL = 'https://s.sunxiunan.com/instapaper';
