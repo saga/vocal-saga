@@ -237,7 +237,7 @@ function readRunDecisions(db: any, runId: string): RunNameDecision[] {
 }
 
 
-function readRunFirstUseDecisions(db: any, runId: string): RunNameDecision[] {
+function readRunFirstUseDecisionsFromDb(db: any, runId: string): RunNameDecision[] {
   if (!tableExists(db, 'run_name_provisional_decisions')) return [];
   const rows = db.prepare(
     'SELECT source, aliases_json, target, kind, source_status, decision_source, decided_ordinal, evidence_segment_ids_json ' +
@@ -272,7 +272,7 @@ export function readRunFirstUseDecisions(
   projectId: string,
   runId: string,
 ): RunNameDecision[] {
-  return readRunFirstUseDecisions(store.getProjectContext(projectId).db, runId);
+  return readRunFirstUseDecisionsFromDb(store.getProjectContext(projectId).db, runId);
 }
 
 /**
@@ -297,7 +297,7 @@ export function buildRunNameDependencyWaves(
   const groups = loadNameGroups(db, revisionId, memory, runId);
   const decided = new Set([
     ...readRunDecisions(db, runId),
-    ...readRunFirstUseDecisions(db, runId),
+    ...readRunFirstUseDecisionsFromDb(db, runId),
   ].map((item) => normalizeEntityName(item.source)));
   const firstMentions = firstRunMentionOrdinals(db, runId, revisionId, groups);
   const runRows = db.prepare(
@@ -348,7 +348,6 @@ export function hasUnstagedRunNameCandidates(
   store: DocumentProjectStore,
   projectId: string,
   runId: string,
-  context: any,
   batchIndexes: number[],
 ): boolean {
   if (!batchIndexes.length) return false;
@@ -356,7 +355,7 @@ export function hasUnstagedRunNameCandidates(
   if (!tableExists(db, 'translation_context_deltas')) return false;
   const decided = new Set([
     ...readRunDecisions(db, runId),
-    ...readRunFirstUseDecisions(db, runId),
+    ...readRunFirstUseDecisionsFromDb(db, runId),
   ].map((item) => normalizeEntityName(item.source)));
   const placeholders = batchIndexes.map(() => '?').join(',');
   const rows = db.prepare(
@@ -416,7 +415,7 @@ export function prepareRunFirstUseDecisions(
   const firstMentions = firstRunMentionOrdinals(db, runId, revisionId, groups);
   const decided = new Set([
     ...readRunDecisions(db, runId),
-    ...readRunFirstUseDecisions(db, runId),
+    ...readRunFirstUseDecisionsFromDb(db, runId),
   ].map((item) => normalizeEntityName(item.source)));
 
   type ProposalGroup = {
@@ -441,6 +440,12 @@ export function prepareRunFirstUseDecisions(
       if (nameGroup?.explicitTargets.length) continue;
       const firstOrdinal = firstMentions.get(key);
       if (firstOrdinal === undefined) continue;
+      const firstMention = db.prepare(
+        'SELECT rs.segment_id AS segmentId FROM run_segments rs ' +
+        'JOIN source_segments s ON s.segment_id = rs.segment_id AND s.source_revision_id = ? ' +
+        'WHERE rs.run_id = ? AND s.ordinal = ? LIMIT 1'
+      ).get(revisionId, runId, firstOrdinal) as { segmentId?: string } | undefined;
+      if (!firstMention?.segmentId || !leaderSegmentIds.has(firstMention.segmentId)) continue;
 
       const group = proposals.get(key) || {
         source: nameGroup?.source || source,
@@ -487,8 +492,16 @@ export function prepareRunFirstUseDecisions(
       kind: group.kind,
     });
     if (!target.valid) continue;
+    const firstOrdinal = firstMentions.get(key);
+    if (firstOrdinal === undefined) continue;
+    const firstMention = db.prepare(
+      'SELECT rs.segment_id AS segmentId FROM run_segments rs ' +
+      'JOIN source_segments s ON s.segment_id = rs.segment_id AND s.source_revision_id = ? ' +
+      'WHERE rs.run_id = ? AND s.ordinal = ? LIMIT 1'
+    ).get(revisionId, runId, firstOrdinal) as { segmentId?: string } | undefined;
+    if (!firstMention?.segmentId || !leaderSegmentIds.has(firstMention.segmentId)) continue;
     const leaderBatchIndex = batchIndexes.find((index) =>
-      (batches[index] || []).some((item) => vote.rows.some((row) => row.segmentId === item.id)));
+      (batches[index] || []).some((item) => item.id === firstMention.segmentId));
     if (leaderBatchIndex === undefined) continue;
     decisions.push({
       key,
@@ -500,7 +513,7 @@ export function prepareRunFirstUseDecisions(
         kind: group.kind,
         sourceStatus: 'run-canonical',
         decisionSource: 'first-use-provisional',
-        decidedOrdinal: vote.firstOrdinal || firstOrdinal,
+        decidedOrdinal: vote.firstOrdinal,
         evidenceSegmentIds: vote.rows.map((row) => row.segmentId).slice(0, 24),
       },
     });
@@ -530,7 +543,7 @@ export function prepareRunFirstUseDecisions(
   }
 
   const stagedKeys = new Set(decisions.map((item) => item.key));
-  const persisted = readRunFirstUseDecisions(db, runId)
+  const persisted = readRunFirstUseDecisionsFromDb(db, runId)
     .filter((item) => stagedKeys.has(normalizeEntityName(item.source)));
   store.appendEvent(projectId, runId, 'translation.naming.first-use.decisions.prepared', {
     decisionCount: persisted.length,

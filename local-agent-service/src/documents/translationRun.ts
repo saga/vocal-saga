@@ -630,14 +630,22 @@ async function scheduleTranslationWaves(
     // 人名第一次出现的批次与同波中重复提到它的批次不能并发：
     // 前者必须先完成，才能把经过当前 Reviewer 结果回校的临时译名注入后者。
     // 只有确实存在这种依赖时才切分波次；其余批次仍保持原有并发宽度。
-    const waves = context.run.translationMode === 'literary'
-      ? buildRunNameDependencyWaves(store, projectId, runId, context, batches, translationConcurrency)
-      : Array.from({ length: Math.ceil(batches.length / translationConcurrency) }, (_, index) =>
-          Array.from({ length: Math.min(translationConcurrency, batches.length - index * translationConcurrency) },
-            (_unused, offset) => index * translationConcurrency + offset));
-
-    for (let waveIndex = 0; waveIndex < waves.length; waveIndex++) {
-      const batchIndexes = waves[waveIndex]!;
+    let pendingBatchIndexes = batches.map((_batch, index) => index);
+    let waveIndex = 0;
+    while (pendingBatchIndexes.length > 0) {
+      // Recompute after each wave: a new character may only become discoverable
+      // once its first-use batch has returned a validated context delta.
+      const remainingBatches = pendingBatchIndexes.map((index) => batches[index]!);
+      const localWaves = context.run.translationMode === 'literary'
+        ? buildRunNameDependencyWaves(
+            store, projectId, runId, context, remainingBatches, translationConcurrency,
+          )
+        : [remainingBatches.slice(0, translationConcurrency).map((_batch, index) => index)];
+      const localWave = localWaves[0] || [0];
+      const batchIndexes = localWave.map((index) => pendingBatchIndexes[index]!).filter(Number.isInteger);
+      if (!batchIndexes.length) throw new Error('命名依赖调度器没有产生可执行批次');
+      const completedThisWave = new Set(batchIndexes);
+      pendingBatchIndexes = pendingBatchIndexes.filter((index) => !completedThisWave.has(index));
       const wave = batchIndexes.map((index) => batches[index]!).filter(Boolean);
       if (!wave.length) continue;
       const waveFirstOrdinal = Math.min(...wave.map((batch) =>
@@ -680,11 +688,12 @@ async function scheduleTranslationWaves(
       );
       const status = store.getRunStatus(projectId, runId);
       if (status === 'cancelled' || status === 'paused') break;
+      waveIndex++;
 
       // A first-use decision is derived only after all reviews scheduled by its
       // leader wave settle. This is a targeted barrier, not a global serial review.
       if (context.run.translationMode === 'literary' &&
-          hasUnstagedRunNameCandidates(store, projectId, runId, context, batchIndexes)) {
+          hasUnstagedRunNameCandidates(store, projectId, runId, batchIndexes)) {
         await Promise.allSettled(scope.reviewTasks.slice(reviewTaskStart));
         const staged = prepareRunFirstUseDecisions(
           store, projectId, runId, context, batches, batchIndexes,
