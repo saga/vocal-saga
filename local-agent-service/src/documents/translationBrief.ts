@@ -748,7 +748,7 @@ function mergePinnedProfileMappings(
 
 /**
  * 把 Run 在启动时锁定的命名决议投影到本批 TranslationBrief。
- * 用户确认优先；accepted-translation 决议必须早于当前批次，别名必须已在前文/本批可见。
+ * 用户确认优先；accepted-translation / first-use-provisional 决议必须早于当前批次，别名必须已在前文/本批可见。
  */
 function applyRunNameDecisionsToGraph(
   graphInput: Record<string, any> | null,
@@ -848,7 +848,7 @@ function applyRunNameDecisionsToGraph(
     diagnostics.runNameDecisionsInjected++;
   }
   graph.nameMappings = mappings;
-  graph.runNameDecisionPolicy = 'run-snapshot; accepted-evidence-only; user-confirmed-first';
+  graph.runNameDecisionPolicy = 'run-snapshot-and-first-use-barriers; run-only-provisional; user-confirmed-first';
   return { graph, diagnostics };
 }
 

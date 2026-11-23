@@ -291,6 +291,67 @@ export function createApp(env?: Record<string, unknown>, storage?: StorageAdapte
   }
 
   const app = new Hono();
+
+  type WorkerRateLimitBinding = {
+    limit(input: { key: string; delta?: number }): Promise<{ success: boolean }>;
+  };
+
+  /**
+   * Public translation routes have no authenticated actor. Use Cloudflare's
+   * client IP as the anonymous abuse-control key; authenticated APIs should
+   * use a verified account identifier instead. Worker bindings are configured
+   * in wrangler.toml and are intentionally fail-closed outside unit tests.
+   */
+  const rateLimitMiddleware = (
+    bindingName: 'PUBLIC_TRANSLATION_LIMITER' | 'FORCE_TRANSLATION_LIMITER',
+    periodSeconds = 60,
+  ) => async (c: any, next: () => Promise<void>) => {
+    const binding = (c.env as Record<string, unknown> | undefined)?.[bindingName] as
+      WorkerRateLimitBinding | undefined;
+    if (!binding || typeof binding.limit !== 'function') {
+      if (process.env.NODE_ENV === 'test') return next();
+      console.error('[rate-limit] missing Worker binding: ' + bindingName);
+      return c.json({ error: 'Rate limiting is temporarily unavailable' }, 503, {
+        'Cache-Control': 'no-store',
+      });
+    }
+
+    const clientIp = c.req.header('cf-connecting-ip')?.trim() || 'unknown';
+    try {
+      const result = await binding.limit({ key: 'ip:' + clientIp });
+      if (!result.success) {
+        return c.json({
+          error: 'Too many requests',
+          retryAfterSeconds: periodSeconds,
+        }, 429, {
+          'Retry-After': String(periodSeconds),
+          'Cache-Control': 'no-store',
+        });
+      }
+    } catch (error) {
+      console.error('[rate-limit] Worker binding failed:', error);
+      return c.json({ error: 'Rate limiting is temporarily unavailable' }, 503, {
+        'Cache-Control': 'no-store',
+      });
+    }
+    await next();
+  };
+
+  const publicTranslationRateLimit = rateLimitMiddleware('PUBLIC_TRANSLATION_LIMITER');
+  const forceTranslationRateLimit = rateLimitMiddleware('FORCE_TRANSLATION_LIMITER');
+
+  // Every anonymous route capable of invoking a model or fetching a page shares
+  // one per-IP allowance. /force has an additional, lower allowance because it
+  // deliberately bypasses D1 cache.
+  for (const route of [
+    '/translate/*', '/s/*', '/openrt/*', '/nvd/*', '/mimo/*',
+    '/gemini/*', '/oc/*', '/cf/*', '/fanyi/page', '/fanyi/page/check',
+    '/api/translate/*',
+  ]) {
+    app.use(route, publicTranslationRateLimit);
+  }
+  app.use('/force/*', publicTranslationRateLimit);
+  app.use('/force/*', forceTranslationRateLimit);
   // The extension reads this allow-listed response header to distinguish a translated page
   // from a page whose D1 history write failed. Do not expose the full response-header set.
   app.use('*', cors({ exposeHeaders: ['X-Translate-Warning'] }));
@@ -996,9 +1057,35 @@ ${pager}
       const latency = Date.now() - startedAt;
 
       if (!upstream.ok) {
-        const errData = await upstream.json();
-        console.error(`[resp] status=${upstream.status} latency=${latency}ms error=${JSON.stringify(errData)}`);
-        return c.json(errData, upstream.status as 400 | 401 | 403 | 404 | 429 | 500 | 502 | 503);
+        const rawError = await upstream.text().catch(() => '');
+        const contentType = upstream.headers.get('content-type') || '';
+        let parsedError: unknown;
+        try {
+          parsedError = rawError ? JSON.parse(rawError) : undefined;
+        } catch {
+          parsedError = undefined;
+        }
+
+        const errData = parsedError && typeof parsedError === 'object' && !Array.isArray(parsedError)
+          ? parsedError
+          : {
+              error: 'Upstream request failed',
+              upstreamStatus: upstream.status,
+              detail: 'The upstream service returned a non-JSON error response.',
+            };
+        const retryAfter = upstream.headers.get('retry-after');
+        console.error(
+          `[resp] status=${upstream.status} latency=${latency}ms contentType=${contentType} ` +
+          `error=${JSON.stringify(errData)} bodyPreview=${rawError.slice(0, 300)}`,
+        );
+        return new Response(JSON.stringify(errData), {
+          status: upstream.status,
+          headers: {
+            'Content-Type': 'application/json; charset=utf-8',
+            'Cache-Control': 'no-store',
+            ...(retryAfter ? { 'Retry-After': retryAfter } : {}),
+          },
+        });
       }
 
       if (stream && upstream.body) {
@@ -1788,25 +1875,8 @@ ${pager}
   });
 
   // ── 强制翻译：跳过 D1 缓存，强制重新抓取+翻译 ──────────
-  // 流量限制：每 IP 每分钟最多 1 次（防滥用）
-  const forceRateLimit = new Map<string, number>();
-  const FORCE_RATE_LIMIT_MS = 30_000; //
-
+  // 每 IP 每分钟限 2 次；另受所有公开翻译入口的通用限额约束。
   app.get('/force/*', (c) => {
-    const ip = c.req.header('cf-connecting-ip') || c.req.header('x-forwarded-for') || 'unknown';
-    const now = Date.now();
-    const last = forceRateLimit.get(ip) || 0;
-    if (now - last < FORCE_RATE_LIMIT_MS) {
-      const retryAfter = Math.ceil((FORCE_RATE_LIMIT_MS - (now - last)) / 1000);
-      return c.json({ error: `Rate limit: 1 request per 30s. Retry after ${retryAfter}s` }, 429);
-    }
-    forceRateLimit.set(ip, now);
-    // 清理过期条目（防止内存泄漏）
-    if (forceRateLimit.size > 1000) {
-      for (const [key, ts] of forceRateLimit) {
-        if (now - ts > FORCE_RATE_LIMIT_MS) forceRateLimit.delete(key);
-      }
-    }
     const raw = decodeURIComponent(c.req.path.slice('/force/'.length));
     return handleTranslateRequest(c, raw, /* force */ true);
   });

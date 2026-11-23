@@ -66,7 +66,7 @@ export function resolveLanguageName(code: string | undefined, fallback: string):
   if (!code) return fallback;
   const key = code.trim().toLowerCase();
   if (!key) return fallback;
-  return LANGUAGE_NAMES[key] ?? LANGUAGE_NAMES[key.split('-')[0]] ?? code;
+  return LANGUAGE_NAMES[key] ?? LANGUAGE_NAMES[key.split('-')[0] ?? key] ?? code;
 }
 
 // ── 共用段落 ────────────────────────────────────────────────

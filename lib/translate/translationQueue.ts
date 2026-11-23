@@ -74,7 +74,9 @@ export class TranslationQueue {
 
     // Run first N serially (warmup)
     for (let i = 0; i < Math.min(warmupCount, tasks.length); i++) {
-      results.push(await this.add(tasks[i]));
+      const task = tasks[i];
+      if (!task) continue;
+      results.push(await this.add(task));
     }
 
     // If there are remaining tasks, bump concurrency and start them in parallel

@@ -65,6 +65,12 @@ export function createProjectSchema(db: DatabaseSync): void {
     'CREATE INDEX IF NOT EXISTS idx_run_name_decisions_order ON run_name_decisions(run_id, decided_ordinal);' +
     'CREATE TABLE IF NOT EXISTS run_name_decision_snapshots (' +
     'run_id TEXT PRIMARY KEY, source_revision_id TEXT NOT NULL, decision_count INTEGER NOT NULL, created_at TEXT NOT NULL);' +
+    'CREATE TABLE IF NOT EXISTS run_name_provisional_decisions (' +
+    'run_id TEXT NOT NULL, normalized_source TEXT NOT NULL, source TEXT NOT NULL, aliases_json TEXT NOT NULL, ' +
+    'target TEXT NOT NULL, kind TEXT NOT NULL, source_status TEXT NOT NULL, decision_source TEXT NOT NULL, ' +
+    'decided_ordinal INTEGER NOT NULL, evidence_segment_ids_json TEXT NOT NULL, leader_batch_index INTEGER NOT NULL, ' +
+    'created_at TEXT NOT NULL, PRIMARY KEY(run_id, normalized_source));' +
+    'CREATE INDEX IF NOT EXISTS idx_run_name_provisional_order ON run_name_provisional_decisions(run_id, decided_ordinal);' +
     'CREATE TABLE IF NOT EXISTS quality_audits (' +
     'audit_id TEXT PRIMARY KEY, source_revision_id TEXT NOT NULL, run_id TEXT, report_json TEXT NOT NULL, created_at TEXT NOT NULL);' +
     'CREATE INDEX IF NOT EXISTS idx_quality_audits_created ON quality_audits(created_at DESC);' +

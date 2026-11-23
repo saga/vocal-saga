@@ -67,3 +67,21 @@ database_id = "58a00769-d518-40cd-a7d0-b123030a4dc2"
 # INSTAPAPER_CLIENT_ID（可选，OAuth 连接）
 # INSTAPAPER_CLIENT_SECRET（可选，OAuth 连接）
 # 设：wrangler secret put DEEPSEEK_API_KEY
+
+# Anonymous translation traffic; namespace IDs must be unique in this Cloudflare account.
+[[ratelimits]]
+name = "PUBLIC_TRANSLATION_LIMITER"
+namespace_id = "926112301"
+
+[ratelimits.simple]
+limit = 12
+period = 60
+
+# Force translation bypasses cache, so apply a lower independent allowance.
+[[ratelimits]]
+name = "FORCE_TRANSLATION_LIMITER"
+namespace_id = "926112302"
+
+[ratelimits.simple]
+limit = 2
+period = 60

@@ -264,7 +264,72 @@ describe('POST /api/v1/chat/completions backend config', () => {
     expect(init.headers.Authorization).toBe('Bearer nv-token');
   });
 
+  it('preserves JSON upstream errors and Retry-After on 429', async () => {
+    globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({
+      error: { message: 'rate limited' },
+    }), {
+      status: 429,
+      headers: { 'Content-Type': 'application/json', 'Retry-After': '17' },
+    })) as any;
+    const app = buildApp();
+    const res = await app.request(chatReq({ _backend: 'nvidia', model: 'nvidia/test-model' }));
+    expect(res.status).toBe(429);
+    expect(res.headers.get('Retry-After')).toBe('17');
+    expect(await res.json()).toEqual({ error: { message: 'rate limited' } });
+  });
 
+  it('preserves upstream 502 when the body is HTML instead of JSON', async () => {
+    globalThis.fetch = vi.fn(async () => new Response('<html>bad gateway</html>', {
+      status: 502,
+      headers: { 'Content-Type': 'text/html' },
+    })) as any;
+    const app = buildApp();
+    const res = await app.request(chatReq({ _backend: 'nvidia', model: 'nvidia/test-model' }));
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({
+      error: 'Upstream request failed',
+      upstreamStatus: 502,
+      detail: 'The upstream service returned a non-JSON error response.',
+    });
+  });
+
+
+});
+
+describe('public translation rate limiting', () => {
+  it('returns 429 when the public translation allowance is exhausted', async () => {
+    const limiter = { limit: vi.fn(async () => ({ success: false })) };
+    const app = buildApp();
+    const res = await app.request(
+      req('/translate/example.com/article', {
+        headers: { 'cf-connecting-ip': '203.0.113.10' },
+      }),
+      {},
+      { PUBLIC_TRANSLATION_LIMITER: limiter },
+    );
+    expect(res.status).toBe(429);
+    expect(res.headers.get('Retry-After')).toBe('60');
+    expect(limiter.limit).toHaveBeenCalledWith({ key: 'ip:203.0.113.10' });
+  });
+
+  it('applies a separate lower allowance to cache-bypassing force translation', async () => {
+    const publicLimiter = { limit: vi.fn(async () => ({ success: true })) };
+    const forceLimiter = { limit: vi.fn(async () => ({ success: false })) };
+    const app = buildApp();
+    const res = await app.request(
+      req('/force/example.com/article', {
+        headers: { 'cf-connecting-ip': '203.0.113.11' },
+      }),
+      {},
+      {
+        PUBLIC_TRANSLATION_LIMITER: publicLimiter,
+        FORCE_TRANSLATION_LIMITER: forceLimiter,
+      },
+    );
+    expect(res.status).toBe(429);
+    expect(publicLimiter.limit).toHaveBeenCalledTimes(1);
+    expect(forceLimiter.limit).toHaveBeenCalledWith({ key: 'ip:203.0.113.11' });
+  });
 });
 
 // ─── POST /api/translate/text ─────────────────────────────────

@@ -115,11 +115,14 @@ const ACRONYM_EXCLUSIONS = new Set([
 const ACRONYM_PATTERN = /\b(?:[A-Z]{2,}|[a-z]+[A-Z]{2,}[A-Za-z0-9]*|[A-Z][a-z]+[A-Z][A-Za-z0-9]*)\b/g;
 
 function cleanTerm(term: string): string {
-  return term
+  // split() always yields at least one element, but guard the indexed slot for the checker
+  // before continuing the chain (a bare `?? ''` mid-chain would capture the following calls).
+  const head = term
     .replace(/^[,;:.!?'"“”‘’()\[\]{}\-–—#*_/\\|<>~`\s]+/, '')
     .replace(/[,;:.!?'"“”‘’()\[\]{}\-–—#*_/\\|<>~`\s]+$/, '')
     .replace(/['’]s$/i, '')
-    .split(/\.[A-Z]/)[0]
+    .split(/\.[A-Z]/)[0] ?? '';
+  return head
     .replace(/['’]/g, '')
     .trim();
 }
@@ -492,16 +495,18 @@ function extractFrequentTerms(doc: ReturnType<typeof nlp>): string[] {
       }
       const finalCleaned = finalWords.join(' ');
 
-      if (isStopword(finalWords[0])) continue;
-      if (finalWords.length === 1 && isCommonNoun(finalWords[0])) continue;
+      const firstWord = finalWords[0];
+      if (firstWord === undefined || isStopword(firstWord)) continue;
+      if (finalWords.length === 1 && isCommonNoun(firstWord)) continue;
       if (finalWords.length === 1) {
-        const w = finalWords[0];
+        const w = firstWord;
         if (/^[A-Z][a-z]+(?:er|est|ing)$/.test(w) && !/^[A-Z]{2,}$/.test(w)) continue;
       }
 
       if (/['']s\b/.test(finalCleaned)) continue;
       if (finalWords.every((w) => isCommonNoun(w))) continue;
-      if (finalWords.length >= 2 && BLOCKED_TAIL_NOUNS.has(finalWords[finalWords.length - 1].toLowerCase())) continue;
+      const lastWord = finalWords[finalWords.length - 1];
+      if (finalWords.length >= 2 && lastWord !== undefined && BLOCKED_TAIL_NOUNS.has(lastWord.toLowerCase())) continue;
       if (finalWords.length === 1 && finalCleaned.length < 4 && !/[A-Z]/.test(finalCleaned)) continue;
 
       const key = finalCleaned.toLowerCase();
@@ -520,7 +525,9 @@ function extractFrequentTerms(doc: ReturnType<typeof nlp>): string[] {
   for (const phrase of phraseCounts.keys()) {
     const ws = phrase.split(/\s+/);
     if (ws.length === 1) {
-      tokenWordCount.set(ws[0], (tokenWordCount.get(ws[0]) || 0) + 1);
+      const word = ws[0];
+      if (word === undefined) continue;
+      tokenWordCount.set(word, (tokenWordCount.get(word) || 0) + 1);
     }
   }
 

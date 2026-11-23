@@ -33,7 +33,15 @@ import { type TranslationItem } from './translationSchema.ts';
 import { buildBatches } from './translationBatchPlan.ts';
 import { takeRunUsage } from './translationRunUsage.ts';
 import { processBatch, type RunBatchScope } from './translationRunBatch.ts';
-import { consolidateAcceptedRunNames, prepareRunNameDecisions } from './translationNameDecisions.ts';
+import {
+  buildRunNameDependencyWaves,
+  consolidateAcceptedRunNames,
+  hasUnstagedRunNameCandidates,
+  mergeRunNameDecisions,
+  prepareRunFirstUseDecisions,
+  prepareRunNameDecisions,
+  readRunFirstUseDecisions,
+} from './translationNameDecisions.ts';
 /**
  * 就绪状态绑定到 Run 的不可变原文版本、分析版本与语言对。
  */
@@ -217,7 +225,10 @@ export async function prepareRunExecution(
   }
   // 同一 Run 在发出第一批翻译请求前固定规范译名决议；并行批次只读这份快照。
   if (context.run.translationMode === 'literary') {
-    context.runNameDecisions = prepareRunNameDecisions(store, projectId, runId, context);
+    context.runNameDecisions = mergeRunNameDecisions(
+      prepareRunNameDecisions(store, projectId, runId, context),
+      readRunFirstUseDecisions(store, projectId, runId),
+    );
   }
   const strategy = normalizeDocumentTranslationStrategy(context.prompt?.config?.translationStrategy);
   const batches = buildBatches(items, context.run.translationMode === 'literary', strategy);
@@ -616,10 +627,21 @@ async function scheduleTranslationWaves(
     ).all(context.run.sourceRevisionId) as Array<{ segment_id: string; ordinal: number }>;
     for (const row of sourceOrdinals) ordinalById.set(row.segment_id, Number(row.ordinal));
 
-    // 每一波最多 translationConcurrency 个批次并行。
-    for (let offset = 0, waveIndex = 0; offset < batches.length; offset += translationConcurrency, waveIndex++) {
-      const wave = batches.slice(offset, offset + translationConcurrency);
-      const waveFirstOrdinal = Math.min(...wave.map((batch) => ordinalById.get(batch[0]?.id || '') ?? Number.MAX_SAFE_INTEGER));
+    // 人名第一次出现的批次与同波中重复提到它的批次不能并发：
+    // 前者必须先完成，才能把经过当前 Reviewer 结果回校的临时译名注入后者。
+    // 只有确实存在这种依赖时才切分波次；其余批次仍保持原有并发宽度。
+    const waves = context.run.translationMode === 'literary'
+      ? buildRunNameDependencyWaves(store, projectId, runId, context, batches, translationConcurrency)
+      : Array.from({ length: Math.ceil(batches.length / translationConcurrency) }, (_, index) =>
+          Array.from({ length: Math.min(translationConcurrency, batches.length - index * translationConcurrency) },
+            (_unused, offset) => index * translationConcurrency + offset));
+
+    for (let waveIndex = 0; waveIndex < waves.length; waveIndex++) {
+      const batchIndexes = waves[waveIndex]!;
+      const wave = batchIndexes.map((index) => batches[index]!).filter(Boolean);
+      if (!wave.length) continue;
+      const waveFirstOrdinal = Math.min(...wave.map((batch) =>
+        ordinalById.get(batch[0]?.id || '') ?? Number.MAX_SAFE_INTEGER));
       const priorDeltas = store.listTranslationContextDeltas(projectId, runId)
         .filter((item: any) => Number(item.firstOrdinal) < waveFirstOrdinal)
         .map((item: any) => item.delta as ValidatedTranslationContextDelta);
@@ -629,20 +651,28 @@ async function scheduleTranslationWaves(
         memory: waveMemory.memory,
         contextDeltaCount: priorDeltas.reduce((count: number, delta: any) =>
           count + (Array.isArray(delta?.entityCandidates) ? delta.entityCandidates.length : 0), 0),
+        runNameDecisions: context.run.translationMode === 'literary'
+          ? mergeRunNameDecisions(
+              context.runNameDecisions || [],
+              readRunFirstUseDecisions(store, projectId, runId),
+            )
+          : context.runNameDecisions,
       };
       store.appendEvent(projectId, runId, 'translation.context-wave.ready', {
         waveIndex: waveIndex + 1,
+        batchIndexes: batchIndexes.map((index) => index + 1),
         batchCount: wave.length,
         firstSourceOrdinal: Number.isFinite(waveFirstOrdinal) ? waveFirstOrdinal : null,
         visiblePriorDeltaCount: priorDeltas.length,
         visibleCandidateCount: batchContext.contextDeltaCount,
         memoryEntityCount: Array.isArray(batchContext.memory?.entities) ? batchContext.memory.entities.length : 0,
-        policy: 'freeze-within-wave; merge-in-source-order-between-waves',
+        policy: 'freeze-within-wave; source-order-delta-visibility; first-use-name-dependencies',
       });
+      const reviewTaskStart = scope.reviewTasks.length;
       await runWithConcurrency(
         wave,
         translationConcurrency,
-        (batch, waveOffset) => processBatch(scope, batch, offset + waveOffset, batchContext),
+        (batch, waveOffset) => processBatch(scope, batch, batchIndexes[waveOffset]!, batchContext),
         () => {
           const status = store.getRunStatus(projectId, runId);
           return status === 'cancelled' || status === 'paused';
@@ -650,6 +680,29 @@ async function scheduleTranslationWaves(
       );
       const status = store.getRunStatus(projectId, runId);
       if (status === 'cancelled' || status === 'paused') break;
+
+      // A first-use decision is derived only after all reviews scheduled by its
+      // leader wave settle. This is a targeted barrier, not a global serial review.
+      if (context.run.translationMode === 'literary' &&
+          hasUnstagedRunNameCandidates(store, projectId, runId, context, batchIndexes)) {
+        await Promise.allSettled(scope.reviewTasks.slice(reviewTaskStart));
+        const staged = prepareRunFirstUseDecisions(
+          store, projectId, runId, context, batches, batchIndexes,
+        );
+        if (staged.length) {
+          context.runNameDecisions = mergeRunNameDecisions(
+            context.runNameDecisions || [],
+            staged,
+          );
+          store.appendEvent(projectId, runId, 'translation.naming.first-use.barrier.completed', {
+            waveIndex: waveIndex + 1,
+            batchIndexes: batchIndexes.map((index) => index + 1),
+            provisionalDecisionCount: staged.length,
+            availableToLaterWaves: true,
+            durableLiteraryMemory: false,
+          });
+        }
+      }
     }
     return null;
   } catch (error) {

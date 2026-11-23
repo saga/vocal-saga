@@ -1,7 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { chooseAcceptedTranslationTarget } from '../src/documents/translationNameDecisions.ts';
+import {
+  chooseAcceptedTranslationTarget,
+  chooseFirstUseRunNameDecision,
+} from '../src/documents/translationNameDecisions.ts';
 
 function row(segmentId, translation, ordinal) {
   return {
@@ -79,4 +82,51 @@ test('unaccepted model proposals without accepted target evidence cannot create 
   );
 
   assert.equal(vote, null);
+});
+
+test('first-use mapping is provisional and requires the target to survive in the reviewed candidate text', () => {
+  const decision = chooseFirstUseRunNameDecision({
+    source: 'Tennent',
+    aliases: ['Mr. Tennent'],
+    kind: 'person',
+    targetLang: 'zh',
+    targets: ['坦嫩特', '坦南特'],
+    rows: [
+      { ...row('s1', '坦嫩特走进房间。', 1), sourceHash: 'h1' },
+      { ...row('s2', '他看向门外。', 2), sourceHash: 'h2' },
+    ],
+  });
+
+  assert.equal(decision?.target, '坦嫩特');
+  assert.equal(decision?.sourceStatus, 'run-canonical');
+  assert.equal(decision?.decisionSource, 'first-use-provisional');
+  assert.deepEqual(decision?.evidenceSegmentIds, ['s1']);
+});
+
+test('first-use mapping fails closed when one translation contains competing target variants', () => {
+  const decision = chooseFirstUseRunNameDecision({
+    source: 'Tennent',
+    kind: 'person',
+    targetLang: 'zh',
+    targets: ['坦嫩特', '坦南特'],
+    rows: [
+      { ...row('s1', '坦嫩特与坦南特同时出现。', 1), sourceHash: 'h1' },
+    ],
+  });
+
+  assert.equal(decision, null);
+});
+
+test('first-use mapping does not preserve an untranslated source name as a Chinese canonical target', () => {
+  const decision = chooseFirstUseRunNameDecision({
+    source: 'Tennent',
+    kind: 'person',
+    targetLang: 'zh',
+    targets: ['Tennent'],
+    rows: [
+      { ...row('s1', 'Tennent 走进房间。', 1), sourceHash: 'h1' },
+    ],
+  });
+
+  assert.equal(decision, null);
 });
