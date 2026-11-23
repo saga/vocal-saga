@@ -6,7 +6,7 @@
  *
  * 覆盖：
  *   - 无 auth 也放行
- *   - 每 IP 30s 限流 → 429
+ *   - Worker Rate Limiting binding 达到阈值 → 429
  *   - force=true 时始终调用 translateUrl（不读 D1）
  *   - pipeline 元数据透传为响应头
  *   - 上游抛错 → 500
@@ -66,16 +66,33 @@ describe('GET /force/<target> — no auth required', () => {
 });
 
 describe('GET /force/<target> — rate limiting', () => {
-  it('429 on second request within 1 minute', async () => {
+  it('returns 429 after the force-specific Worker allowance is exhausted', async () => {
+    const publicLimiter = { limit: vi.fn(async () => ({ success: true })) };
+    let forceRequests = 0;
+    const forceLimiter = {
+      limit: vi.fn(async () => ({ success: ++forceRequests <= 2 })),
+    };
     const app = buildApp();
-    // 第一次请求成功
-    const res1 = await app.request(new Request('http://test/force/example.com'));
-    expect(res1.status).toBe(200);
-    // 第二次请求被限流
-    const res2 = await app.request(new Request('http://test/force/example.com'));
-    expect(res2.status).toBe(429);
-    const body = await res2.json() as { error: string };
-    expect(body.error).toMatch(/Rate limit/);
+    const env = {
+      PUBLIC_TRANSLATION_LIMITER: publicLimiter,
+      FORCE_TRANSLATION_LIMITER: forceLimiter,
+    };
+    const request = () => new Request('http://test/force/example.com', {
+      headers: { 'cf-connecting-ip': '203.0.113.12' },
+    });
+
+    const first = await app.request(request(), {}, env);
+    expect(first.status).toBe(200);
+    const second = await app.request(request(), {}, env);
+    expect(second.status).toBe(200);
+    const third = await app.request(request(), {}, env);
+    expect(third.status).toBe(429);
+    const body = await third.json() as { error: string };
+    expect(body.error).toBe('Too many requests');
+    expect(third.headers.get('Retry-After')).toBe('60');
+    expect(publicLimiter.limit).toHaveBeenCalledTimes(3);
+    expect(forceLimiter.limit).toHaveBeenCalledTimes(3);
+    expect(forceLimiter.limit).toHaveBeenCalledWith({ key: 'ip:203.0.113.12' });
   });
 
 });
