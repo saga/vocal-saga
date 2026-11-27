@@ -861,7 +861,7 @@ test('literary translation contract treats 信达雅 as simultaneous quality goa
     contextGraph: null,
   });
   assert.doesNotMatch(stylePrompt.systemPrompt, /尤其英语 you 在当前语境中的指向/,
-    'source-specific checks must not leak into the source-blind Chinese editing stage');
+    'style-only review should not be overloaded with the bilingual accuracy checklist');
 });
 
 test('medium and strong literary review include short lines, dialogue and title-like segments', async () => {
