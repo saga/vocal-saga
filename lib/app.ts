@@ -998,6 +998,10 @@ ${pager}
     if (resolved.error) {
       return c.json({ error: resolved.error }, 400);
     }
+    // Browser Agent tool calls are ordinary OpenAI-compatible message content.
+    // Preserve messages (including assistant agent_tool_call + user
+    // untrusted_extension_tool_result) byte-for-byte in structure and order;
+    // this Worker is a model proxy, never a browser-tool executor.
     const updated = { ...body, model: resolved.model };
     const backend = resolved.backend;
 
