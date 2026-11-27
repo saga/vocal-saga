@@ -15,6 +15,20 @@ const MAX_MESSAGES = 80;
 const MAX_MESSAGE_CHARS = 80_000;
 const MAX_TOTAL_CHARS = 180_000;
 
+/**
+ * Keep the extension's approval-mediated tool round trip as ordinary chat history.
+ * The assistant tool-call JSON must remain immediately before the user-role
+ * untrusted_extension_tool_result message; do not flatten, reorder, or drop either.
+ */
+export function buildAgentConversationPrompt(messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>): string {
+  const conversation = messages.filter((item) => item.role !== 'system');
+  const latest = conversation[conversation.length - 1];
+  if (!latest || latest.role !== 'user') throw new Error('最后一条消息必须是 user 消息');
+  const history = conversation.slice(0, -1);
+  const historyText = history.map((item) => item.role.toUpperCase() + ':\\n' + item.content).join('\\n\\n');
+  return (historyText ? 'Conversation history:\\n' + historyText + '\\n\\n' : '') + 'USER:\\n' + latest.content;
+}
+
 export function handleAgentChatRequest(req: Request, res: Response, url: URL): boolean {
   if (req.method === 'GET' && url.pathname === '/api/agent/capabilities') {
     const catalog = readModelCatalog({ projectRoot: WORK_DIR });
@@ -77,7 +91,6 @@ async function executeAgentChat(req: Request, res: Response): Promise<void> {
     userPromptTemplate: '',
   }, 'translation');
   const systemMessage = normalized.find((item) => item.role === 'system');
-  const conversation = normalized.filter((item) => item.role !== 'system');
   const skillInstructions = skills.map(({ skill, content }) =>
     '## Agent Skill: ' + skill.name + ' (' + skill.id + ')\n' + content,
   ).join('\n\n');
