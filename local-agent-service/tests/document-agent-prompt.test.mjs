@@ -834,6 +834,34 @@ test('literary translation contract treats 信达雅 as simultaneous quality goa
   });
   assert.match(prompt.systemPrompt, /必须同时检查准确性与文学表达/);
   assert.doesNotMatch(prompt.systemPrompt, /准确性优先，文风其次/);
+
+  assert.match(LITERARY_TRANSLATION_CONTRACT, /人称及单复数、指代对象、动作施事者和受事者/);
+  assert.match(LITERARY_TRANSLATION_CONTRACT, /具体语义类型、攻击对象、文化指涉和语气力度/);
+
+  const accuracyPrompt = buildLiteraryReviewPrompt({
+    body: { target: 'zh', chapterTitle: 'Chapter 1' },
+    segments: [{ id: 's1', source: 'Who did he stab?', draft: '他捅了谁？' }],
+    reviewFocus: 'accuracy',
+    translationBrief: null,
+    precedingSegments: [],
+    voiceContext: {},
+    contextGraph: null,
+  });
+  assert.match(accuracyPrompt.systemPrompt, /尤其英语 you 在当前语境中的指向/);
+  assert.match(accuracyPrompt.systemPrompt, /动作施事者与受事者/);
+  assert.match(accuracyPrompt.systemPrompt, /地域、族群和历史文化表达的指涉/);
+
+  const stylePrompt = buildLiteraryReviewPrompt({
+    body: { target: 'zh', chapterTitle: 'Chapter 1' },
+    segments: [{ id: 's1', source: 'Who did he stab?', draft: '他捅了谁？' }],
+    reviewFocus: 'style',
+    translationBrief: null,
+    precedingSegments: [],
+    voiceContext: {},
+    contextGraph: null,
+  });
+  assert.doesNotMatch(stylePrompt.systemPrompt, /尤其英语 you 在当前语境中的指向/,
+    'style-only review should not be overloaded with the bilingual accuracy checklist');
 });
 
 test('medium and strong literary review include short lines, dialogue and title-like segments', async () => {

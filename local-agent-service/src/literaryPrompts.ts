@@ -48,6 +48,9 @@ export function buildLiteraryReviewPrompt(input: {
       '编辑时先理解整句和上下文，再决定局部调整还是重组句子。不得为追求简洁、优美或所谓文学性而漏掉信息、增加解释、改变叙述视角、时间关系、人物关系、语气强度或原文的模糊性。避免把克制的文字润色成华丽辞藻，也不要擅自现代化、古典化或网络化作品语体。',
       '中文编辑类 finding 使用 dimension=chinese_literary_editing，可用 editingAspect=pronoun|particle|syntax|translationese|redundancy|diction|rhythm|register 标明具体问题；必须引用当前片段中可定位的原文和初译证据，说明为什么当前表达不自然以及建议的编辑方向。若只是个人偏好、无法证明改善，或原稿已经自然准确，不要创建 finding，也不要改写。',
     ] : []),
+    ...(reviewFocus === 'style' ? [] : [
+      '双语准确性审校应特别核对人称及单复数（尤其英语 you 在当前语境中的指向）、代词和称谓所指、动作施事者与受事者，以及推测、否定和刻意保留的歧义；同时核对粗口/辱骂/讽刺的具体语义类型、攻击对象与力度，习语/隐喻在上下文中的实际含义，以及地域、族群和历史文化表达的指涉。不能因为译文流畅就默认语义准确，也不能只按粗俗程度替换辱骂词、用带有额外感情色彩的成语替换习语，或擅自消除原文的不确定性。',
+    ]),
     'sourceExcerpt 必须是当前原文片段中的逐字连续引文，draftExcerpt 必须是本次传入初译中的逐字连续引文；两者缺失或不能核验时，该 finding 会被丢弃且不会触发自动修订。',
     '只返回严格 JSON：{ "results": [{ "id": "...", "finalTranslation": "...", "findings": [{ "category": "accuracy|terminology|style", "priority": "must_fix|optional", "dimension": "character_voice", "characterId": "...", "relatedCharacterId": "...", "evidenceSegmentIds": [], "sourceExcerpt": "...", "draftExcerpt": "...", "reason": "...", "suggestion": "..." }] }] }。',
   ].join('\n');
