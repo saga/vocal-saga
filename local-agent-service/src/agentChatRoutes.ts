@@ -25,8 +25,8 @@ export function buildAgentConversationPrompt(messages: Array<{ role: 'system' | 
   const latest = conversation[conversation.length - 1];
   if (!latest || latest.role !== 'user') throw new Error('最后一条消息必须是 user 消息');
   const history = conversation.slice(0, -1);
-  const historyText = history.map((item) => item.role.toUpperCase() + ':\\n' + item.content).join('\\n\\n');
-  return (historyText ? 'Conversation history:\\n' + historyText + '\\n\\n' : '') + 'USER:\\n' + latest.content;
+  const historyText = history.map((item) => item.role.toUpperCase() + ':\n' + item.content).join('\n\n');
+  return (historyText ? 'Conversation history:\n' + historyText + '\n\n' : '') + 'USER:\n' + latest.content;
 }
 
 export function handleAgentChatRequest(req: Request, res: Response, url: URL): boolean {
@@ -99,10 +99,13 @@ async function executeAgentChat(req: Request, res: Response): Promise<void> {
     skillInstructions ? 'The following server-managed Agent Skills are active. Follow their instructions when relevant.\n\n' + skillInstructions : '',
     body.jsonMode === true ? 'Return only a valid JSON object. Do not wrap it in Markdown fences or add explanatory text.' : '',
   ].filter(Boolean).join('\n\n');
-  const latest = conversation.pop();
-  if (!latest || latest.role !== 'user') { sendApiError(res, 400, '最后一条消息必须是 user 消息'); return; }
-  const historyText = conversation.map((item) => item.role.toUpperCase() + ':\n' + item.content).join('\n\n');
-  const prompt = (historyText ? 'Conversation history:\n' + historyText + '\n\n' : '') + 'USER:\n' + latest.content;
+  let prompt: string;
+  try {
+    prompt = buildAgentConversationPrompt(normalized);
+  } catch (error) {
+    sendApiError(res, 400, error instanceof Error ? error.message : String(error));
+    return;
+  }
   const requestId = randomUUID();
   const startedAt = Date.now();
   try {
