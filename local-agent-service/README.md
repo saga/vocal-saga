@@ -14,7 +14,7 @@
 
 - `GET /api/agent/capabilities`：返回 Workbuddy/OpenCode Provider、默认模型、Workbuddy 模型元数据、思考模式与强度选项。
 - `GET /api/agent/skills`：列出 `local-agent-service/skills/*/SKILL.md` 中由服务端管理的 Agent Skills。
-- `POST /api/agent/chat`：一次独立的多轮对话请求。请求显式指定 provider、model、thinkingMode、effort、skillIds 和 messages；服务端读取所选 Skill 正文并注入 Agent 指令，然后调用统一 Workbuddy/OpenCode Runtime。
+- `POST /api/agent/chat`：一次独立的多轮对话请求。请求显式指定 provider、model、thinkingMode、effort、skillIds 和 messages；服务端读取所选 Skill 正文并注入 Agent 指令，然后调用统一 Workbuddy/OpenCode Runtime。消息按 OpenAI-compatible `system` / `user` / `assistant` 角色顺序进入对话；扩展工具往返中的 assistant `agent_tool_call` 与 user `untrusted_extension_tool_result` 必须原样保留，不能扁平化或重排。
 - Skill ID 是服务端目录标识；客户端不能上传 Skill 正文或传入任意文件路径。一次最多选择 8 个 Skill，单个 Skill 正文最多 60,000 字符。
 - Workbuddy 使用 CodeBuddy SDK 的 thinking/effort 设置；OpenCode 使用 CLI model variant 映射思考强度。模型 ID 可由调用方显式指定；空值表示使用 Runtime 默认模型。
 - 此 API 使用本机服务现有鉴权、Host/CORS 校验与请求日志，不复用文档项目表或翻译 Run 状态。
@@ -413,3 +413,17 @@ The project Agent uses bounded parallel batch workers for recoverability and thr
 ## Chinese literary editing benchmark
 
 For a blinded A/B comparison of Chinese monolingual editors on 100–200 public-domain, user-owned or licensed segments, see [the benchmark protocol](benchmarks/chinese-literary-editing/README.md). Run it with `npm run benchmark:chinese-literary`. The runner creates a blinded human-review packet, a separate model mapping, bilingual fidelity screening results and a CSV review template. It does not upload local benchmark data.
+
+
+### Browser Agent tool-call message contract
+
+The browser extension is the sole owner of browser permissions and tool execution. The Local Agent API is a model transport and must not implement browser DOM, tab, Firefox Container, WebAuthn, arbitrary JavaScript, or page-fetch tools.
+
+A tool round trip is represented using the existing chat message schema, without adding a server-side tool executor or a new endpoint:
+
+1. The assistant returns a JSON string such as `{"type":"agent_tool_call","tool":"page.inspect","arguments":{},"reason":"..."}`.
+2. The extension validates it against its local allowlist and obtains explicit user approval before executing the operation.
+3. The next request appends the original assistant request, then a user message containing `{"type":"untrusted_extension_tool_result","tool":"page.inspect","approved":true,"result":{...}}`.
+4. The service preserves role, order and content and passes the conversation to Workbuddy/OpenCode. The result is untrusted page-derived data, not an instruction. The model must not be allowed to treat it as system/developer policy.
+
+The service must continue enforcing its existing message-count and character limits. It must not persist or log Passkey credential responses; the extension must keep those local and return only a safe summary to the model. This contract is transport compatibility, not authorization: user approval, allowlist validation, browser permission checks and execution-time target revalidation remain extension responsibilities.
