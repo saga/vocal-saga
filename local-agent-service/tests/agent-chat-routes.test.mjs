@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { handleAgentChatRequest } from '../src/agentChatRoutes.ts';
+import { handleAgentChatRequest, buildAgentConversationPrompt } from '../src/agentChatRoutes.ts';
 
 function responseStub() {
   return {
@@ -48,7 +48,6 @@ test('unrelated routes are not captured by the standalone Agent handler', () => 
 
 
 test('Agent tool round-trip preserves assistant request and untrusted user result in order', async () => {
-  const { buildAgentConversationPrompt } = await import('../src/agentChatRoutes.ts');
   const toolCall = JSON.stringify({
     type: 'agent_tool_call',
     tool: 'page.inspect',
@@ -74,7 +73,6 @@ test('Agent tool round-trip preserves assistant request and untrusted user resul
 });
 
 test('Agent conversation prompt rejects a tool result without a user-role final message', async () => {
-  const { buildAgentConversationPrompt } = await import('../src/agentChatRoutes.ts');
   assert.throws(() => buildAgentConversationPrompt([
     { role: 'assistant', content: '{"type":"agent_tool_call"}' },
   ]), /最后一条消息必须是 user 消息/);
