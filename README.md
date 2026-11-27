@@ -20,7 +20,7 @@ npm run deploy
 
 ## Endpoints
 
-The Cloud API also exposes `POST /api/v1/chat/completions` for authenticated remote-model conversations. The browser extension's remote chat uses this endpoint; local Workbuddy/OpenCode chat is handled separately by `local-agent-service`.
+The Cloud API also exposes `POST /api/v1/chat/completions` for authenticated remote-model conversations. The browser extension's remote chat uses this endpoint; local Workbuddy/OpenCode chat is handled separately by `local-agent-service`. Both endpoints preserve the extension's approval-mediated browser-tool round trip as ordinary OpenAI-compatible chat messages: an assistant message containing the `agent_tool_call` JSON, followed by a user message containing `untrusted_extension_tool_result`. The server only forwards these messages to the selected model; it never executes browser tools or receives browser credentials.
 
 
 | Path | 说明 |
@@ -185,3 +185,8 @@ npm run typecheck     # 类型检查
 启动步骤：进入 `local-agent-service`，运行 `npm install` 和 `npm start` 即可；`.env` 是可选的，只有需要覆盖运行时默认设置时才复制 `.env.example`。`LOCAL_AGENT_TOKEN` 可留空；服务仅监听 loopback，并拒绝普通网页来源。如需额外客户端校验，可设置随机 Token 并在扩展中填写相同值。
 
 服务默认监听 `http://127.0.0.1:8789`。需要 Node.js >= 22.13，详细设置、SQLite 存储和隐私选项见 [local-agent-service/README.md](local-agent-service/README.md)。也可从仓库根目录运行 `npm run local-agent:install`、`npm run local-agent:start` 和 `npm run local-agent:test`。该服务仅面向本机使用，不随 Cloudflare Worker 一起部署。每次请求会记录 request ID、provider/model、耗时和错误堆栈；`LOCAL_AGENT_LOG_RESPONSE_PREVIEW=false` 可关闭无效 JSON 响应预览。扩展启用本机 Provider 后，模型失败会直接报错，不会切换到远程 API。
+
+
+### Browser Agent tool-call compatibility
+
+The browser extension owns browser capabilities and execution. Cloud and Local Agent APIs are model-transport boundaries only. The extension may ask the model to return a structured JSON message with `type: "agent_tool_call"`; after the user approves and the extension executes the allowlisted action, the next model request includes the assistant tool-call message followed by a user message whose payload has `type: "untrusted_extension_tool_result"`. Preserve both messages, their roles, order and content exactly as conversation history. Do not reinterpret these payloads as server-side tool invocations, do not execute page scripts, and do not request or persist Passkey credential responses. The extension remains responsible for parsing, validating, approving, executing and withholding sensitive credential material.
