@@ -10,10 +10,43 @@ process.env.LOCAL_AGENT_DATABASE = path.join(testDataDir, 'service.sqlite');
 
 const { getDocumentProjectStore } = await import('../src/documents/projectStore.ts');
 const { CONTEXT_GRAPH_ANALYSIS_VERSION } = await import('../src/documents/contextGraph.ts');
+const { DEFAULT_DOCUMENT_TRANSLATION_STRATEGY, normalizeDocumentTranslationStrategy, applyAutomaticQualityRepairStrategy } = await import('../src/documents/documentStrategy.ts');
 const {
   autoAcceptFinishedRunCandidates,
   isContextGraphReadyForTranslationRun,
 } = await import('../src/documents/translationAgent.ts');
+
+test('automatic quality repair uses a narrow context budget and keeps a single accuracy review', () => {
+  const configured = normalizeDocumentTranslationStrategy({
+    ...DEFAULT_DOCUMENT_TRANSLATION_STRATEGY,
+    precedingContextSegments: 4,
+    contextBudgetChars: 18_000,
+    reviewStrength: 'strong',
+    maxModelAttempts: 2,
+  });
+  const normalRun = applyAutomaticQualityRepairStrategy(configured, undefined);
+  assert.deepEqual(normalRun, configured, 'ordinary translation must keep the configured strategy');
+
+  const repair = applyAutomaticQualityRepairStrategy(configured, { kind: 'quality-audit-repair', pass: 1 });
+  assert.equal(repair.precedingContextSegments, 1);
+  assert.equal(repair.contextBudgetChars, 8_000);
+  assert.equal(repair.reviewStrength, 'medium', 'strong two-call review is reduced to one combined accuracy review');
+  assert.equal(repair.maxModelAttempts, 2, 'keep the normal bounded retry budget for structured-output omissions');
+  assert.equal(repair.maxBatchSegments, configured.maxBatchSegments);
+  assert.equal(repair.translationConcurrency, configured.translationConcurrency);
+
+  const explicitOff = normalizeDocumentTranslationStrategy({ reviewStrength: 'off' });
+  assert.equal(
+    applyAutomaticQualityRepairStrategy(explicitOff, { kind: 'quality-audit-repair', pass: 1 }).reviewStrength,
+    'off',
+    'a user who explicitly disabled model review must not have that setting silently overridden',
+  );
+  assert.deepEqual(
+    applyAutomaticQualityRepairStrategy(configured, { kind: 'quality-audit-repair', pass: 0 }),
+    configured,
+    'unrecognized/non-automatic passes must not receive the repair-only optimization',
+  );
+});
 
 test('literary Run readiness is tied to source revision, analysis version and language direction', () => {
   const run = { sourceRevisionId: 'revision-1', sourceLang: 'en', targetLang: 'zh', translationMode: 'literary' };
