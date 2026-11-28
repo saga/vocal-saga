@@ -96,8 +96,9 @@ test('a must-fix segment marks its accompanying style proposal applied too', () 
   const style = findings.find((finding) => finding.category === 'style');
   const accuracy = findings.find((finding) => finding.category === 'accuracy');
   assert.equal(style?.applicationStatus, 'applied');
-  assert.equal(accuracy?.applicationStatus, undefined,
-    'accuracy findings carry no proposal and are not applied through the finding channel');
+  assert.equal(accuracy?.applicationStatus, 'applied',
+    'a must-fix is closed when the selected final translation removes its exact erroneous draft excerpt');
+  assert.equal(accuracy?.applicationMethod, 'automatic-bilingual-review');
 });
 
 test('applying a proposal whose text is already in the body only records the decision', async () => {
