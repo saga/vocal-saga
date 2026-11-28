@@ -44,29 +44,41 @@ export function currentReviewFindings(
     let applicationStatus = typeof finding.applicationStatus === 'string' ? finding.applicationStatus : 'pending';
     let applicationMethod = typeof finding.applicationMethod === 'string' ? finding.applicationMethod : null;
 
-    // 对当前已采纳文本做审计时，不要静默丢掉 accuracy/terminology must-fix：
-    // 如果问题原文片段仍在当前译文里，它仍是未解决项；若用户后来编辑并移除了
-    // 精确问题片段，则将其记为人工解决。可选文风建议仍只关联它实际审阅过的文本。
+    // Run 级候选审计使用该 Run 实际审阅的 candidate；全书审计使用当前已采纳译文。
+    // 两条路径都必须重新核对 must-fix，不能因历史记录中的 pending/applied 标记而误判质量门禁。
+    let auditTranslation = reviewedTranslation;
     if (!requestedRunId) {
       const accepted = db.prepare(
         'SELECT translation_text FROM translation_results WHERE source_revision_id = ? AND segment_id = ? ' +
         'AND accepted = 1 ORDER BY rowid DESC LIMIT 1'
       ).get(revisionId, String(row.segment_id)) as { translation_text?: string } | undefined;
       if (!accepted || typeof accepted.translation_text !== 'string') return [];
-      if (accepted.translation_text !== reviewedTranslation) {
-        if (row.category === 'style') return [];
-        const excerpt = typeof finding.draftExcerpt === 'string' ? finding.draftExcerpt.trim() : '';
-        if (excerpt && accepted.translation_text.includes(excerpt)) {
-          effectiveStatus = 'pending';
-          applicationStatus = 'pending';
-        } else if (excerpt) {
-          effectiveStatus = 'applied';
-          applicationStatus = 'applied';
-          applicationMethod = 'manual-edit-after-review';
-        } else {
-          effectiveStatus = 'pending';
-          applicationStatus = 'pending';
-        }
+      auditTranslation = accepted.translation_text;
+      // 文风建议只关联它实际审阅过的文本；后续人工改写后不再把旧建议算进当前质量门禁。
+      if (row.category === 'style' && auditTranslation !== reviewedTranslation) return [];
+    }
+
+    const isMustFix = row.priority === 'must_fix' &&
+      (row.category === 'accuracy' || row.category === 'terminology');
+    const isWaived = effectiveStatus === 'dismissed' || applicationStatus === 'dismissed';
+    if (isMustFix && !isWaived) {
+      const before = typeof finding.draftExcerpt === 'string' ? finding.draftExcerpt.trim() : '';
+      const revised = typeof finding.revisedExcerpt === 'string' ? finding.revisedExcerpt.trim() : '';
+      const removedOrReplaced = !!before && !auditTranslation.includes(before);
+      const insertionEvidence = !!before && revised.length > before.length &&
+        revised !== before && revised.includes(before) && auditTranslation.includes(revised);
+      const resolved = removedOrReplaced || insertionEvidence;
+
+      effectiveStatus = resolved ? 'applied' : 'pending';
+      applicationStatus = resolved ? 'applied' : 'pending';
+      if (resolved) {
+        applicationMethod = insertionEvidence
+          ? 'automatic-bilingual-review-insertion-evidence'
+          : auditTranslation === reviewedTranslation
+            ? 'automatic-bilingual-review'
+            : 'manual-edit-after-review';
+      } else {
+        applicationMethod = null;
       }
     }
     return [{

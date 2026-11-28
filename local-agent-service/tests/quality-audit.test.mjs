@@ -1104,3 +1104,72 @@ test('quality audit includes open accuracy must-fix findings and closes them onl
   assert.equal(repaired.metrics.qualityGateStatus, 'passed');
   assert.equal(repaired.metrics.qualityGatePassed, true);
 });
+
+
+test('run-scoped quality audit reconciles stale must-fix state against its reviewed candidate', () => {
+  const store = getDocumentProjectStore();
+  const cases = [
+    {
+      name: 'replacement',
+      source: 'The door was shut.',
+      draft: '门开着。',
+      finalText: '门关着。',
+      draftExcerpt: '门开着',
+      revisedExcerpt: undefined,
+      expected: 'applied',
+    },
+    {
+      name: 'insertion-with-evidence',
+      source: 'He said, Get out.',
+      draft: '他说，滚出去。',
+      finalText: '“滚出去。”他说。',
+      draftExcerpt: '滚出去',
+      revisedExcerpt: '“滚出去',
+      expected: 'applied',
+    },
+    {
+      name: 'insertion-without-evidence',
+      source: 'He said, Get out.',
+      draft: '他说，滚出去。',
+      finalText: '“滚出去。”他说。',
+      draftExcerpt: '滚出去',
+      revisedExcerpt: undefined,
+      expected: 'pending',
+    },
+  ];
+
+  for (const item of cases) {
+    const project = store.createProject({
+      title: 'Run-scoped finding reconciliation ' + item.name,
+      format: 'txt',
+      sourceFileName: item.name + '.txt',
+      prompt: { translationMode: 'literary', sourceLang: 'en', targetLang: 'zh', literaryReview: true },
+      segments: [{ id: 'p1', text: item.source, kind: 'paragraph', contextPath: 'Chapter 1' }],
+    });
+    ensureTestContextGraph(store, project);
+    const run = store.createRun(project.projectId, { scope: { type: 'all' } });
+    store.saveCandidate(project.projectId, run.runId, 'p1', item.finalText);
+    store.saveFinding(project.projectId, run.runId, 'p1', {
+      category: 'accuracy',
+      priority: 'must_fix',
+      sourceExcerpt: item.source,
+      draftExcerpt: item.draftExcerpt,
+      ...(item.revisedExcerpt ? { revisedExcerpt: item.revisedExcerpt } : {}),
+      proposedTranslation: item.finalText,
+      reason: '测试历史审校记录状态与候选译文可能不同步。',
+      suggestion: '按最终译文证据核验。',
+      applicationStatus: 'pending',
+    });
+    store.finishRun(project.projectId, run.runId);
+    store.acceptCandidates(project.projectId, run.runId);
+
+    const report = runProjectQualityAudit(project.projectId, run.runId);
+    const finding = report.findings.find((entry) =>
+      entry.type === 'accuracy-review' && entry.segmentIds.includes('p1'));
+    assert.ok(finding, item.name + ': expected a review finding');
+    assert.equal(finding.applicationStatus, item.expected, item.name);
+    assert.equal(report.metrics.qualityGateStatus,
+      item.expected === 'applied' ? 'passed' : 'blocked',
+      item.name + ': quality gate must follow the selected run candidate evidence');
+  }
+});
