@@ -12,7 +12,7 @@ export type CodeBuddyTaskKey =
 
 /**
  * 思考模式：`disabled` 完全关闭；`adaptive` 由运行时自行决定是否思考、不看预算；
- * `enabled` 强制开启并按 `thinkingBudgetTokens` 限预算。
+ * `enabled` 强制开启；推理量由模型与运行时自行控制，不设置 token 预算。
  */
 export type CodeBuddyThinkingMode = 'disabled' | 'adaptive' | 'enabled';
 /** 推理强度档位，粗略对应「想多深」，与思考模式相互独立。 */
@@ -27,8 +27,6 @@ export interface CodeBuddyTaskProfile {
   /** 可选：首选模型不可用时使用的 SDK fallbackModel。 */
   fallbackModel: string;
   thinkingMode: CodeBuddyThinkingMode;
-  /** 只在 thinkingMode='enabled' 时使用。 */
-  thinkingBudgetTokens: number;
   effort: CodeBuddyEffort;
   /** 加在内置与强制指令之前，因此宿主契约仍排在提示词靠后位置。 */
   systemPromptAppendix: string;
@@ -42,7 +40,6 @@ export type CodeBuddyTaskProfiles = Record<CodeBuddyTaskKey, CodeBuddyTaskProfil
 const common = {
   model: '',
   fallbackModel: 'hy3',
-  thinkingBudgetTokens: 8192,
   systemPromptAppendix: '',
   userPromptTemplate: '',
 };
@@ -123,12 +120,6 @@ export function normalizeCodeBuddyTaskProfile(
   const effort = typeof raw.effort === 'string' && validEfforts.has(raw.effort as CodeBuddyEffort)
     ? raw.effort as CodeBuddyEffort
     : defaults.effort;
-  const budgetValue = typeof raw.thinkingBudgetTokens === 'number' || typeof raw.thinkingBudgetTokens === 'string'
-    ? Number(raw.thinkingBudgetTokens)
-    : defaults.thinkingBudgetTokens;
-  const thinkingBudgetTokens = Number.isFinite(budgetValue)
-    ? Math.max(1024, Math.min(65536, Math.round(budgetValue)))
-    : defaults.thinkingBudgetTokens;
   const contextWindowRaw = raw.contextWindow;
   const contextWindowValue = typeof contextWindowRaw === 'number'
     ? contextWindowRaw
@@ -143,7 +134,6 @@ export function normalizeCodeBuddyTaskProfile(
     ...(contextWindow !== undefined ? { contextWindow } : {}),
     fallbackModel: text(raw.fallbackModel, 200),
     thinkingMode,
-    thinkingBudgetTokens,
     effort,
     systemPromptAppendix: text(raw.systemPromptAppendix, 12000),
     userPromptTemplate: text(raw.userPromptTemplate, 30000),
@@ -211,9 +201,7 @@ export function applyCodeBuddyTaskPrompt(
 /** 把持久化的档案转成官方 SDK 的 thinking 选项。 */
 export function codeBuddyThinkingOption(profile: CodeBuddyTaskProfile): Record<string, unknown> {
   if (profile.thinkingMode === 'disabled') return { type: 'disabled' };
-  if (profile.thinkingMode === 'enabled') {
-    return { type: 'enabled', budgetTokens: profile.thinkingBudgetTokens };
-  }
+  if (profile.thinkingMode === 'enabled') return { type: 'enabled' };
   return { type: 'adaptive' };
 }
 
