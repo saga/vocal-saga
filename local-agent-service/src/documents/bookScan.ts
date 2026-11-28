@@ -61,7 +61,7 @@ export interface BookQuantityMention {
   start: number; end: number; unit: string; unitFamily: string;
 }
 /**
- * 人名候选。`score` 只是覆盖率排序分，不是「是不是人名」的置信度：
+ * 大写名称候选。可用于人物或具名非人物对象的抽样定位；`score` 只是覆盖率排序分，不是实体类型置信度：
  * `log2(提及数+1) + 章节数×1.8 + 对白段数×1.4 + 覆盖区数×2.5 + 词数加成`。
  * `regionCount` 为早/中/晚中出现的区间数；`early/middle/lateSegmentId` 是各区间内最接近
  * 目标位置的提及（优先取对白段），供抽样直接定位。
@@ -103,7 +103,7 @@ export interface BookSamplePlan {
 
 /** 单次模型请求携带的样本上限。再多会撑爆上下文，收益也很小。 */
 const MAX_SAMPLES = 72;
-/** 抽样阶段最多为几个人名候选安排定位样本，避免头部候选吃光样本预算。 */
+/** 抽样阶段最多为多少名称候选安排定位样本，避免头部候选吃光样本预算。 */
 const MAX_NAME_CANDIDATES_FOR_SAMPLING = 18;
 /** 单个样本送入模型的字符上限，超出部分直接截断。 */
 const SAMPLE_TEXT_LIMIT = 850;
