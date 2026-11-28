@@ -15,6 +15,18 @@ test('normalizes model entity kinds into a small canonical vocabulary', () => {
   assert.equal(normalizeCanonicalEntityKind('term / language register'), 'other');
 });
 
+test('normalizes named vessels, spacecraft, aircraft, and vehicles as objects', () => {
+  for (const kind of [
+    'ship', 'vessel', 'boat', 'spacecraft', 'space ship', 'spaceship',
+    'starship', 'aircraft', 'airplane', 'plane', 'vehicle', 'transport',
+    'airship', 'submarine', 'train', 'locomotive',
+  ]) {
+    assert.equal(normalizeCanonicalEntityKind(kind), 'object', kind);
+  }
+  assert.equal(normalizeCanonicalEntityKind('artifact'), 'artifact');
+  assert.equal(normalizeCanonicalEntityKind('artefact'), 'artifact');
+});
+
 test('excludes common words and standard country names from book-specific entity memory', () => {
   for (const [source, kind] of [
     ['God', 'concept'], ['Japan', 'country'], ['England', 'place'],
