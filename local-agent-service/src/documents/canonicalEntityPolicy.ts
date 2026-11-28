@@ -50,7 +50,12 @@ export function normalizeCanonicalEntityKind(value: unknown): CanonicalEntityKin
   if (['person', 'character', 'human', 'character_epithet', 'nickname'].includes(kind)) return 'person';
   if (['place', 'location', 'country', 'nation', 'city', 'region'].includes(kind)) return 'place';
   if (['organization', 'organisation', 'group', 'clan', 'family', 'dynasty', 'faction', 'company'].includes(kind)) return 'organization';
-  if (['object', 'artifact', 'artefact', 'ship', 'vessel', 'weapon'].includes(kind)) return ['artifact', 'artefact'].includes(kind) ? 'artifact' : 'object';
+  if (['artifact', 'artefact'].includes(kind)) return 'artifact';
+  if ([
+    'object', 'boat', 'ship', 'vessel', 'spacecraft', 'space_ship', 'spaceship', 'starship',
+    'aircraft', 'airplane', 'plane', 'vehicle', 'transport', 'transportation', 'craft',
+    'airship', 'submarine', 'train', 'locomotive', 'weapon',
+  ].includes(kind)) return 'object';
   if (['work', 'book', 'title_of_work'].includes(kind)) return 'work';
   if (['concept', 'religion', 'deity', 'language', 'term', 'unit'].includes(kind)) return 'concept';
   if (['title', 'role', 'rank'].includes(kind)) return 'title';
