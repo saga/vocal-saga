@@ -21,7 +21,7 @@ export function currentReviewFindings(
       'WHERE tr.source_revision_id = ? AND tr.review_enabled = 1 ' +
       'AND (EXISTS (SELECT 1 FROM review_findings rf WHERE rf.run_id = tr.run_id) ' +
         'OR EXISTS (SELECT 1 FROM project_events pe WHERE pe.run_id = tr.run_id ' +
-          "AND pe.event_type = 'stage.completed' AND (pe.payload_json LIKE '%style-review%' OR pe.payload_json LIKE '%stage\":\"review%')))" +
+          "AND pe.event_type = 'stage.completed' AND (pe.payload_json LIKE '%style-review%' OR pe.payload_json LIKE '%stage\":\"review%'))) " +
       'ORDER BY tr.finished_at DESC, tr.created_at DESC LIMIT 1'
     ).get(revisionId) as any;
     reviewRunId = row?.run_id || null;
