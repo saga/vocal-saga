@@ -7,6 +7,7 @@
  * 内部按阶段拆开：装请求 → 记审计 → 调模型 → 校验强规范译名标记 → 解析 context delta。
  * 每个阶段都可以单独读、单独改，整条链只有 requestTranslation 一处会抛错。
  */
+import { createHash } from 'node:crypto';
 import { runAgentStructured } from '../agents/runner.ts';
 import { getCodeBuddyTaskProfile, resolveEffectiveTaskModel } from '../agents/taskProfiles.ts';
 import { summarizeTurnUsage } from '../agents/usage.ts';
@@ -34,6 +35,11 @@ import { sourceNameMatches } from './briefSourceContext.ts';
 import { buildUserPrompt, type TranslationParseDiagnostics, parseTranslations } from './translationPrompt.ts';
 import { addRunUsage } from './translationRunUsage.ts';
 import { LITERARY_TRANSLATION_CONTRACT, MANDATORY_TRANSLATION_CONTRACT, TRANSLATION_SCHEMA, type TranslationItem } from './translationSchema.ts';
+
+/** 只保留 12 位十六进制前缀：足够发现漂移，又不会把整段契约复制进事件流。 */
+function shortSha256(value: string): string {
+  return createHash('sha256').update(value).digest('hex').slice(0, 12);
+}
 
 /** 一次批次请求在发出前就已确定的全部输入；后续阶段只读它，不再重新装配。 */
 interface BatchRequest {
@@ -162,6 +168,12 @@ function appendPromptAudit(
     precedingSegmentCount: precedingSegments.length,
     userPromptChars: userPrompt.length,
     systemPromptChars: systemPrompt.length,
+    // 严格前缀缓存的可观测锚点：跨 batch/run 相同才说明稳定前缀没被破坏。
+    promptPrefixFingerprint: {
+      systemPromptSha256: shortSha256(systemPrompt),
+      schemaSha256: shortSha256(JSON.stringify(TRANSLATION_SCHEMA)),
+      systemPromptChars: systemPrompt.length,
+    },
     glossaryTerms: count((translationBrief?.glossary as any)?.document_terms ?? context.prompt.config?.glossary?.document_terms),
     memoryEntities: count(memory.entities),
     memoryRelationships: count(memory.relationships),
@@ -227,8 +239,11 @@ async function requestTranslation(
         stage: 'translate', batchIndex, requestId,
         provider: agent.provider, model: effectiveModel, requestedModel: agent.model || '<runtime-default>',
         thinkingMode: translationProfile.thinkingMode,
-            effort: translationProfile.effort,
+        effort: translationProfile.effort,
         fallbackModel: translationProfile.fallbackModel,
+        promptCacheRetention: translationProfile.promptCacheRetention,
+        cacheRetention: modelRun.cacheRetention,
+        ...(modelRun.sessionId ? { sessionId: modelRun.sessionId } : {}),
         ...summarizeTurnUsage(turnUsage),
       });
     }
@@ -238,8 +253,9 @@ async function requestTranslation(
       stage: 'translate', batchIndex, requestId,
       provider: agent.provider, model: effectiveModel, requestedModel: agent.model || '<runtime-default>',
       thinkingMode: translationProfile.thinkingMode,
-        effort: translationProfile.effort,
+      effort: translationProfile.effort,
       fallbackModel: translationProfile.fallbackModel,
+      promptCacheRetention: translationProfile.promptCacheRetention,
       durationMs: Date.now() - requestStartedAt,
       error: (error instanceof Error ? error.message : String(error)).slice(0, 500),
     });

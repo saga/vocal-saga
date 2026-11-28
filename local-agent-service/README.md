@@ -51,7 +51,16 @@ TranslationBrief 的历史已采纳译文只作为风格参考，不作为整章
 
 ## 小说文学初译的思考配置
 
-Local Agent 的文档翻译初译面向小说与文学文本，翻译任务固定启用 CodeBuddy thinking。默认推理强度为 `low`、思考预算为 8,192 tokens；推理开关与推理强度是两个独立参数，启用思考不会把强度自动提升到 medium/high。服务端会把旧配置中 translation=`disabled` 的值归一化为 `enabled`，避免历史配置绕过这项策略。准确性审校、文风审校、文学分析和全书预处理仍按各自任务配置执行。
+Local Agent 的文档任务默认配置：初译 `thinkingMode=enabled` + `effort=low`，审校/分析/预处理为 `adaptive`。**每个任务的 thinkingMode 都可由扩展设置显式配置为 `disabled` / `adaptive` / `enabled`**；服务端只对缺失或非法值回落到该任务默认值。推理开关与推理强度是两个独立参数，不传 `thinkingBudgetTokens`。无 task profile 的旧调用仍回落 `enabled` + `low`；显式文档任务始终按自身 profile 执行。
+
+## Provider Prompt Cache 档位
+
+每个任务 profile 可配置 `metadata.taskProfiles.<task>.promptCacheRetention = 'long' | 'short'`；缺失或非法值归一化为 `long`。服务端把它映射为 SDK 的 `CODEBUDDY_DISABLE_PROMPT_CACHING_1H` 环境变量（`long` 显式下发 `0`，`short` 下发 `1`），避免继承宿主进程遗留的 kill switch。
+
+- `long`（默认）：SDK/Provider 的 1 小时缓存档位。
+- `short`：短 TTL 档位，用于排查“是否因为 1 小时档位的最小可缓存前缀过长而未命中”。
+
+**档位不等于命中。** Hy4 flash 这类按严格前缀匹配的缓存只有前缀完全一致才按命中价计费；System Prompt、文学契约、Schema、工具定义顺序都必须稳定，动态原文与批次上下文必须放在最后。`batch.prompt.ready.promptPrefixFingerprint` 记录 system prompt 与 schema 的短 SHA-256，`model.usage` 记录实际 `cacheRetention`、`sessionId`、`cacheReadTokens` 与 `cacheCreationTokens`，可以直接核对“配置 → 实际命中”。
 
 ## 环境要求
 

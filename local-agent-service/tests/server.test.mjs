@@ -84,7 +84,7 @@ test('workbuddy 文本模式禁用工具，JSON 模式开启原生 structured ou
   assert.deepEqual(text.allowedTools, []);
   assert.equal(text.maxTurns, 1);
   assert.equal(text.outputFormat, undefined);
-  // 小说文学翻译固定启用 thinking；推理强度独立保持 low。
+  // 无 task profile 的旧调用默认启用 thinking；显式文档任务按自身 profile 执行。
   assert.deepEqual(text.thinking, { type: 'enabled' });
   assert.equal(text.effort, 'low');
   assert.equal(text.extraArgs, undefined);

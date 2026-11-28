@@ -17,6 +17,11 @@ export type CodeBuddyTaskKey =
 export type CodeBuddyThinkingMode = 'disabled' | 'adaptive' | 'enabled';
 /** 推理强度档位，粗略对应「想多深」，与思考模式相互独立。 */
 export type CodeBuddyEffort = 'low' | 'medium' | 'high' | 'xhigh';
+/**
+ * Provider prompt cache 档位。`long` 是 SDK 默认（1 小时），`short` 是短 TTL；
+ * 未配置时显式下发 `0`，避免继承外部进程里遗留的 kill switch。
+ */
+export type CodeBuddyPromptCacheRetention = 'short' | 'long';
 
 /** 一个任务的执行档案：模型、思考设置与提示词覆盖。字段语义见行内注释。 */
 export interface CodeBuddyTaskProfile {
@@ -28,6 +33,8 @@ export interface CodeBuddyTaskProfile {
   fallbackModel: string;
   thinkingMode: CodeBuddyThinkingMode;
   effort: CodeBuddyEffort;
+  /** 可选：显式指定 Provider prompt cache TTL；未提供时按 long 处理。 */
+  promptCacheRetention?: CodeBuddyPromptCacheRetention;
   /** 加在内置与强制指令之前，因此宿主契约仍排在提示词靠后位置。 */
   systemPromptAppendix: string;
   /** 用 {{CONTENT}} 包裹服务端生成的任务输入；不填则使用内置输入。 */
@@ -89,6 +96,7 @@ export const DEFAULT_CODEBUDDY_TASK_PROFILES: CodeBuddyTaskProfiles = {
 
 const validThinkingModes = new Set<CodeBuddyThinkingMode>(['disabled', 'adaptive', 'enabled']);
 const validEfforts = new Set<CodeBuddyEffort>(['low', 'medium', 'high', 'xhigh']);
+const validPromptCacheRetentions = new Set<CodeBuddyPromptCacheRetention>(['short', 'long']);
 
 /**
  * 归一化用户填写的可选文本字段：非字符串按空处理，超长截断，
@@ -109,14 +117,11 @@ export function normalizeCodeBuddyTaskProfile(
   const raw = input && typeof input === 'object' && !Array.isArray(input)
     ? input as Record<string, unknown>
     : {};
-  // Local Agent translation is literary novel translation: keep reasoning enabled even when
-  // an old profile persisted "disabled". Effort remains independently configurable and
-  // defaults to low, so enabling reasoning does not silently raise the reasoning intensity.
-  const thinkingMode = task === 'translation'
-    ? 'enabled'
-    : typeof raw.thinkingMode === 'string' && validThinkingModes.has(raw.thinkingMode as CodeBuddyThinkingMode)
-      ? raw.thinkingMode as CodeBuddyThinkingMode
-      : defaults.thinkingMode;
+  // 所有文档任务都接受显式思考方式；只有缺失或非法值才回落到任务默认值。
+  // 初译默认仍为 enabled / low，但用户可以改为 adaptive 或 disabled。
+  const thinkingMode = typeof raw.thinkingMode === 'string' && validThinkingModes.has(raw.thinkingMode as CodeBuddyThinkingMode)
+    ? raw.thinkingMode as CodeBuddyThinkingMode
+    : defaults.thinkingMode;
   const effort = typeof raw.effort === 'string' && validEfforts.has(raw.effort as CodeBuddyEffort)
     ? raw.effort as CodeBuddyEffort
     : defaults.effort;
@@ -129,12 +134,17 @@ export function normalizeCodeBuddyTaskProfile(
   const contextWindow = Number.isSafeInteger(contextWindowValue) && contextWindowValue > 0
     ? contextWindowValue
     : undefined;
+  const promptCacheRetention = typeof raw.promptCacheRetention === 'string'
+    && validPromptCacheRetentions.has(raw.promptCacheRetention as CodeBuddyPromptCacheRetention)
+    ? raw.promptCacheRetention as CodeBuddyPromptCacheRetention
+    : 'long';
   return {
     model: text(raw.model, 200),
     ...(contextWindow !== undefined ? { contextWindow } : {}),
     fallbackModel: text(raw.fallbackModel, 200),
     thinkingMode,
     effort,
+    promptCacheRetention,
     systemPromptAppendix: text(raw.systemPromptAppendix, 12000),
     userPromptTemplate: text(raw.userPromptTemplate, 30000),
   };
@@ -203,6 +213,24 @@ export function codeBuddyThinkingOption(profile: CodeBuddyTaskProfile): Record<s
   if (profile.thinkingMode === 'disabled') return { type: 'disabled' };
   if (profile.thinkingMode === 'enabled') return { type: 'enabled' };
   return { type: 'adaptive' };
+}
+
+/** 本次调用实际使用的 prompt cache 档位；缺失或非法值一律按 long。 */
+export function resolveCodeBuddyPromptCacheRetention(
+  profile?: CodeBuddyTaskProfile,
+): CodeBuddyPromptCacheRetention {
+  return profile?.promptCacheRetention === 'short' ? 'short' : 'long';
+}
+
+/**
+ * SDK 只暴露 `CODEBUDDY_DISABLE_PROMPT_CACHING_1H` 这个 kill switch：
+ * truthy（`1` / `true` / `yes` / `on`）为 short，否则为 long。
+ * 两个档位都显式下发，避免继承宿主进程遗留的环境变量。
+ */
+export function codeBuddyPromptCacheEnv(profile?: CodeBuddyTaskProfile): Record<string, string> {
+  return {
+    CODEBUDDY_DISABLE_PROMPT_CACHING_1H: resolveCodeBuddyPromptCacheRetention(profile) === 'short' ? '1' : '0',
+  };
 }
 
 /**

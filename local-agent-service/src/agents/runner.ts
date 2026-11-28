@@ -3,7 +3,11 @@ import { runWorkbuddy, runWorkbuddyJson, runWorkbuddyStructured } from './workbu
 import { parseJsonValue } from '../json.ts';
 import { logError, logInfo } from '../log.ts';
 import { formatTurnUsageLog, type TurnUsage } from './usage.ts';
-import { applyCodeBuddyTaskPrompt, type CodeBuddyTaskProfile } from './taskProfiles.ts';
+import {
+  applyCodeBuddyTaskPrompt,
+  type CodeBuddyPromptCacheRetention,
+  type CodeBuddyTaskProfile,
+} from './taskProfiles.ts';
 
 /** 一次调用的目标通道。`model` 为空串表示不显式指定，交给 CLI 运行时默认模型。 */
 type AgentSpec = { provider: string; model: string };
@@ -67,11 +71,13 @@ function compactOutputSummary(value: unknown): string {
 function logModelSuccess(
   agent: AgentSpec, output: unknown, requestId: string, sessionScope: string | undefined,
   startedAt: number, mode: string, usage: TurnUsage | null = null,
+  cacheRetention?: CodeBuddyPromptCacheRetention,
 ): void {
   logInfo('model', describeTask(requestId, sessionScope) + ' · 完成 · request=' + requestId.slice(0, 12) +
     ' · ' + agent.provider + '/' + (agent.model || '运行时默认模型') +
     ' · 耗时=' + ((Date.now() - startedAt) / 1000).toFixed(1) + 's · 输出=' + compactOutputSummary(output) +
     ' · ' + formatTurnUsageLog(usage) + ' · 模式=' + mode +
+    (cacheRetention ? ' · cache=' + cacheRetention : '') +
     (isWorkflowManaged(sessionScope) ? ' · 工作流' : ''));
 }
 
@@ -96,6 +102,8 @@ export interface AgentRunResult<T> {
   usage: TurnUsage | null;
   /** 可续跑的工作流所用的持久 CodeBuddy query() 会话存在时才有。 */
   sessionId?: string;
+  /** Workbuddy 调用实际使用的 Provider prompt cache 档位。 */
+  cacheRetention?: CodeBuddyPromptCacheRetention;
 }
 
 /**
@@ -206,11 +214,13 @@ export async function runAgentStructured(
     let result: Record<string, any> | any[];
     let usage: TurnUsage | null = null;
     let sessionId: string | undefined;
+    let cacheRetention: CodeBuddyPromptCacheRetention | undefined;
     if (effectiveAgent.provider === 'workbuddy') {
       const r = await runWorkbuddyStructured(effectiveAgent, effective.prompt, effective.systemPrompt, schema, requestId, sessionScope, taskProfile, options);
       result = r.parsed;
       usage = r.usage;
       sessionId = r.sessionId;
+      cacheRetention = r.cacheRetention;
     } else if (effectiveAgent.provider === 'opencode') {
       const output = await runOpenCode(effectiveAgent, effective.prompt, effective.systemPrompt, options.timeoutMs, openCodeVariant(taskProfile));
       const value = parseJsonValue(output, 'request=' + String(requestId).slice(0, 40));
@@ -219,8 +229,12 @@ export async function runAgentStructured(
     } else {
       throw new Error('不支持的本机 Agent：' + effectiveAgent.provider);
     }
-    logModelSuccess(effectiveAgent, result, requestId, sessionScope, startedAt, '结构化 JSON', usage);
-    return { result, usage, ...(sessionId ? { sessionId } : {}) };
+    logModelSuccess(effectiveAgent, result, requestId, sessionScope, startedAt, '结构化 JSON', usage, cacheRetention);
+    return {
+      result, usage,
+      ...(cacheRetention ? { cacheRetention } : {}),
+      ...(sessionId ? { sessionId } : {}),
+    };
   } catch (error) {
     logModelFailure(effectiveAgent, error, requestId, sessionScope, startedAt, '结构化 JSON');
     throw error;

@@ -4,7 +4,12 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { parseJsonValue } from '../json.ts';
 import { parseTurnUsage, type TurnUsage } from './usage.ts';
-import { codeBuddyThinkingOption, type CodeBuddyTaskProfile } from './taskProfiles.ts';
+import {
+  codeBuddyPromptCacheEnv,
+  codeBuddyThinkingOption,
+  type CodeBuddyPromptCacheRetention,
+  type CodeBuddyTaskProfile,
+} from './taskProfiles.ts';
 import {
   getCodeBuddyContextWindowOption,
   readModelCatalog,
@@ -15,6 +20,13 @@ import { logInfo, logWarn } from '../log.ts';
 
 const STRUCTURED_OUTPUT_TOOL = 'StructuredOutput';
 const JSON_MODE_MAX_TURNS = 5;
+const TRUTHY_ENV_VALUES = new Set(['1', 'true', 'yes', 'on']);
+
+/** 与 SDK BooleanUtils.isTruthy 对齐，记录本次调用真正会呈现在网关侧的 cache 档位。 */
+function resolveEnvCacheRetention(env: Record<string, unknown> | undefined): CodeBuddyPromptCacheRetention {
+  const raw = String(env?.CODEBUDDY_DISABLE_PROMPT_CACHING_1H ?? '').trim().toLowerCase();
+  return TRUTHY_ENV_VALUES.has(raw) ? 'short' : 'long';
+}
 
 /** workbuddy 通道的调用参数：模型、会话作用域与是否复用会话。 */
 export interface WorkbuddyAgent {
@@ -50,6 +62,8 @@ export function buildWorkbuddyOptions(
     cwd: WORK_DIR,
     permissionMode: 'default' as const,
     settingSources: [],
+    // 档位显式下发，既不依赖宿主进程环境变量，也不让 kill switch 悄悄改变计费口径。
+    env: codeBuddyPromptCacheEnv(taskProfile),
     persistSession: workflowSession.persistSession ?? false,
     ...(workflowSession.sessionId ? { resume: workflowSession.sessionId } : {}),
     // Every Local Agent text/structured request is part of literary translation.
@@ -133,8 +147,9 @@ async function queryWorkbuddyRaw(
   timeoutMs = REQUEST_TIMEOUT_MS,
   onSessionId?: (sessionId: string) => void,
   contextWindow?: number,
-): Promise<{ text: string; structuredOutput: unknown; usage: TurnUsage | null; sessionId?: string }> {
+): Promise<{ text: string; structuredOutput: unknown; usage: TurnUsage | null; sessionId?: string; cacheRetention: CodeBuddyPromptCacheRetention }> {
   const startedAt = Date.now();
+  const cacheRetention = resolveEnvCacheRetention(options.env);
   let effectiveOptions = options;
   let contextWorkspace: { cwd: string; cleanup: () => void } | undefined;
   let query: (AsyncIterable<unknown> & { interrupt?: () => unknown }) | undefined;
@@ -251,7 +266,7 @@ async function queryWorkbuddyRaw(
 
     await Promise.race([consume, timeoutPromise]);
     if (timedOut) throw timeoutError();
-    return { text: text.trim(), structuredOutput, usage, ...(sessionId ? { sessionId } : {}) };
+    return { text: text.trim(), structuredOutput, usage, cacheRetention, ...(sessionId ? { sessionId } : {}) };
   } catch (error) {
     if (timedOut) throw timeoutError();
     if (query) {
@@ -283,7 +298,9 @@ async function queryWorkbuddyRaw(
       ' · firstMessage=' + ms(timing.firstMessageAfterQueryMs) + 'ms' +
       ' · firstAssistant=' + ms(timing.firstAssistantAfterQueryMs) + 'ms' +
       ' · result=' + ms(timing.resultAfterQueryMs) + 'ms' +
-      ' · total=' + timing.totalMs + 'ms');
+      ' · total=' + timing.totalMs + 'ms' +
+      ' · cache=' + cacheRetention +
+      ' · session=' + (sessionId || 'n/a'));
   }
 }
 
@@ -378,8 +395,8 @@ export async function runWorkbuddyStructured(
     persistSession?: boolean;
     onSessionId?: (sessionId: string) => void;
   } = {},
-): Promise<{ parsed: Record<string, any> | any[]; usage: TurnUsage | null; sessionId?: string }> {
-  let result: { text: string; structuredOutput: unknown; usage: TurnUsage | null; sessionId?: string };
+): Promise<{ parsed: Record<string, any> | any[]; usage: TurnUsage | null; sessionId?: string; cacheRetention: CodeBuddyPromptCacheRetention }> {
+  let result: { text: string; structuredOutput: unknown; usage: TurnUsage | null; sessionId?: string; cacheRetention: CodeBuddyPromptCacheRetention };
   // 长任务（全书预处理）显式放宽上限；普通翻译批次沿用 REQUEST_TIMEOUT_MS。
   const timeoutMs = options.timeoutMs ?? REQUEST_TIMEOUT_MS;
   // StructuredOutput 是翻译格式约束，不代表可以关闭推理。旧调用缺少 taskProfile 时，
@@ -392,6 +409,7 @@ export async function runWorkbuddyStructured(
   return {
     parsed: resolveWorkbuddyStructured(result.structuredOutput, result.text, 'request=' + String(requestId).slice(0, 40)),
     usage: result.usage,
+    cacheRetention: result.cacheRetention,
     ...(result.sessionId ? { sessionId: result.sessionId } : {}),
   };
 }

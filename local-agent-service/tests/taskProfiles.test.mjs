@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   DEFAULT_CODEBUDDY_TASK_PROFILES,
   applyCodeBuddyTaskPrompt,
+  codeBuddyPromptCacheEnv,
   codeBuddyThinkingOption,
   normalizeCodeBuddyTaskProfile,
   normalizeCodeBuddyTaskProfiles,
@@ -85,6 +86,26 @@ test('contextWindow is opt-in and normalized without changing task defaults', ()
   assert.equal(normalizeCodeBuddyTaskProfile({ contextWindow: '1M' }, 'translation').contextWindow, undefined);
 });
 
+test('promptCacheRetention defaults to long and maps explicitly to the SDK kill switch', () => {
+  const defaults = normalizeCodeBuddyTaskProfiles({});
+  assert.equal(defaults.translation.promptCacheRetention, 'long');
+  assert.deepEqual(codeBuddyPromptCacheEnv(defaults.translation), {
+    CODEBUDDY_DISABLE_PROMPT_CACHING_1H: '0',
+  });
+
+  const short = normalizeCodeBuddyTaskProfile({ promptCacheRetention: 'short' }, 'translation');
+  assert.equal(short.promptCacheRetention, 'short');
+  assert.deepEqual(codeBuddyPromptCacheEnv(short), {
+    CODEBUDDY_DISABLE_PROMPT_CACHING_1H: '1',
+  });
+
+  const invalid = normalizeCodeBuddyTaskProfile({ promptCacheRetention: 'forever' }, 'translation');
+  assert.equal(invalid.promptCacheRetention, 'long');
+
+  const options = buildWorkbuddyOptions({ provider: 'workbuddy', model: 'hy4flash' }, undefined, short);
+  assert.equal(options.env.CODEBUDDY_DISABLE_PROMPT_CACHING_1H, '1');
+});
+
 test('effective model prefers the task profile over the pool default', () => {
   // 回归：审计事件曾经记录池默认模型（glm-5.3-flash），而 runner 实际用的是
   // taskProfile.model（deepseek-v4.1-flash），日志上的模型名因此是错的。
@@ -98,31 +119,34 @@ test('effective model prefers the task profile over the pool default', () => {
 });
 
 
-test('literary translation always enables thinking without raising low effort', () => {
+test('explicit thinking modes survive normalization for every document task', () => {
   const profile = normalizeCodeBuddyTaskProfile({
     thinkingMode: 'disabled',
     effort: 'low',
   }, 'translation');
-  assert.equal(profile.thinkingMode, 'enabled');
+  assert.equal(profile.thinkingMode, 'disabled');
   assert.equal(profile.effort, 'low');
-  assert.deepEqual(codeBuddyThinkingOption(profile), { type: 'enabled' });
+  assert.deepEqual(codeBuddyThinkingOption(profile), { type: 'disabled' });
+
+  const adaptive = normalizeCodeBuddyTaskProfile({ thinkingMode: 'adaptive' }, 'translation');
+  assert.equal(adaptive.thinkingMode, 'adaptive');
+  assert.deepEqual(codeBuddyThinkingOption(adaptive), { type: 'adaptive' });
 
   const reviewer = normalizeCodeBuddyTaskProfile({ thinkingMode: 'enabled' }, 'accuracyReview');
-  assert.equal(reviewer.thinkingMode, 'enabled',
-    'other task profiles remain independently configurable');
+  assert.equal(reviewer.thinkingMode, 'enabled');
 });
 
 
-test('legacy thinking budget values are ignored and the no-profile fallback still enables thinking at low effort', () => {
+test('legacy thinking budget values are ignored; only the no-profile fallback stays enabled', () => {
   const profile = normalizeCodeBuddyTaskProfile({
     thinkingMode: 'disabled',
     thinkingBudgetTokens: 12345,
     effort: 'low',
   }, 'translation');
-  assert.equal(profile.thinkingMode, 'enabled');
+  assert.equal(profile.thinkingMode, 'disabled');
   assert.equal(profile.effort, 'low');
   assert.equal(Object.hasOwn(profile, 'thinkingBudgetTokens'), false);
-  assert.deepEqual(codeBuddyThinkingOption(profile), { type: 'enabled' });
+  assert.deepEqual(codeBuddyThinkingOption(profile), { type: 'disabled' });
 
   const fallback = buildWorkbuddyOptions({ provider: 'workbuddy', model: 'default-model' });
   assert.deepEqual(fallback.thinking, { type: 'enabled' });
