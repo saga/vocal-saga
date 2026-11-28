@@ -202,7 +202,7 @@ export function collectReviewResults(
 
 /**
  * 单片段 finding 收集：类别必须属于本阶段职责，证据必须能逐字定位。
- * 没有可用候选译文时，所有 finding 降级为 optional——因为没有东西可以自动应用。
+ * 没有可用候选译文时，style 保持 optional；accuracy/terminology must-fix 保留为 pending。
  */
 function collectSegmentFindings(input: {
   raw: any;
