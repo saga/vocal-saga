@@ -13,7 +13,6 @@ import {
 import { initDatabase } from './db.ts';
 import { sendApiError, sendJson, addCors, isAllowedHost, assertExposureIsSafe, requestHostname } from './middleware.ts';
 import { handleRequest } from './routes.ts';
-import { getTextPool } from './agents/workbuddyPool.ts';
 import { getDocumentProjectStore } from './documents/projectStore.ts';
 import {
   logError, logWarn, logInfo, requestPath, summarizeError, errorStackTail,
@@ -144,18 +143,9 @@ export function startLocalAgentServer() {
     logInfo('local-agent', 'timeouts: 普通调用 ' + (REQUEST_TIMEOUT_MS / 1000).toFixed(0)
       + 's · Reviewer ' + (REVIEW_TIMEOUT_MS / 1000).toFixed(0)
       + 's · 全书预处理 ' + (ANALYSIS_TIMEOUT_MS / 1000).toFixed(0) + 's');
-    // 仅默认 Provider 为 Workbuddy 时预热会话池，避免 OpenCode 模式启动无用 CLI。
-    //
-    // 默认关闭：文档翻译/审校带 task profile，走 query() 而完全不进池（见 workbuddy.ts 的
-    // `if (taskProfile)` 分支），所以预热带给文档链路的收益是 0；它只对网页翻译的首次请求
-    // 有约 0.9s（实测 864–905ms/槽位）的冷启动收益，代价是常驻 N 个 codebuddy-headless 进程。
-    // 需要这点冷启动收益的机器可以设 LOCAL_AGENT_PREWARM=true 打开。
-    if (DEFAULT_PROVIDER === 'workbuddy' && (process.env.LOCAL_AGENT_PREWARM || 'false').trim().toLowerCase() === 'true') {
-      void getTextPool().prewarm({ provider: 'workbuddy', model: DEFAULT_WORKBUDDY_MODEL })
-        // 预热失败本身不影响首单（首单会懒创建），但终端要留下原因，
-        // 否则「CLI 起不来」只能靠后面的调用失败去猜。
-        .catch((error) => logWarn('pool', '预热失败（首单将懒创建会话）· ' + summarizeError(error)));
-    }
+    // 翻译请求统一走 query()，以确保 thinking/effort 等 Query Options 真正生效。
+    // CodeBuddy V2 SessionOptions 不支持这些推理参数，因此不再预热共享 Session 池。
+
   });
 
   /**
