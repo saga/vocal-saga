@@ -239,17 +239,38 @@ function collectSegmentFindings(input: {
       reason: typeof item.reason === 'string' ? item.reason.slice(0, 400) : '',
       suggestion: typeof item.suggestion === 'string' ? item.suggestion.slice(0, 400) : '',
       ...styleDimensionFields(item, chineseMonolingualEdit),
-      ...(item.category === 'style' && candidateUsable ? {
+      ...(candidateUsable ? {
         proposedTranslation: candidateText,
+        ...(item.category === 'style'
+          ? { applicationStatus: 'pending' as const }
+          : {
+              // A must-fix is only closed automatically when the reviewed final translation
+              // actually removes the exact problematic draft excerpt. A finding alone is not
+              // proof that the model repaired it (the uploaded run exposed this failure mode).
+              applicationStatus: candidateText !== original.draft && !!draftExcerpt &&
+                !candidateText.includes(draftExcerpt) ? 'applied' as const : 'pending' as const,
+              ...((candidateText !== original.draft && !!draftExcerpt &&
+                !candidateText.includes(draftExcerpt))
+                ? { applicationMethod: 'automatic-bilingual-review' }
+                : {}),
+            }),
+      } : item.category === 'style' ? {} : {
         applicationStatus: 'pending' as const,
-      } : {}),
+      }),
     };
     if (finding.reason || finding.suggestion) candidateFindings.push(finding);
   }
   if (candidateFindings.length && !candidateUsable) {
     for (const finding of candidateFindings) {
-      finding.priority = 'optional';
-      finding.reason = (finding.reason ? finding.reason + '；' : '') + '本机未返回长度合规的完整修正译文，因此没有自动覆盖初译';
+      // Style remains optional. Accuracy/terminology must-fix findings stay open when
+      // no complete reviewed replacement exists; the run must not silently downgrade them.
+      if (finding.category === 'style') {
+        finding.priority = 'optional';
+      } else {
+        finding.priority = 'must_fix';
+        finding.applicationStatus = 'pending';
+      }
+      finding.reason = (finding.reason ? finding.reason + '；' : '') + '本机未返回长度合规的完整修正译文，因此保留初译并将此项标记为未解决';
     }
   }
   return candidateFindings;
