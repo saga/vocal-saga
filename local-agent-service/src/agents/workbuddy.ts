@@ -73,8 +73,48 @@ export function buildWorkbuddyOptions(
 }
 
 /**
+ * Workbuddy query 的阶段耗时摘要。时间戳使用同一进程的 Date.now()，
+ * 缺失阶段返回 null，避免把初始化/调用失败伪装成零耗时。
+ */
+export interface WorkbuddyQueryTimingSummary {
+  sdkImportMs: number | null;
+  preQuerySetupMs: number | null;
+  queryCreateMs: number | null;
+  firstMessageAfterQueryMs: number | null;
+  firstAssistantAfterQueryMs: number | null;
+  resultAfterQueryMs: number | null;
+  totalMs: number;
+}
+
+export function summarizeWorkbuddyQueryTiming(input: {
+  startedAt: number;
+  sdkReadyAt?: number;
+  queryCreateStartedAt?: number;
+  queryCreatedAt?: number;
+  firstMessageAt?: number;
+  firstAssistantAt?: number;
+  resultAt?: number;
+  finishedAt: number;
+}): WorkbuddyQueryTimingSummary {
+  const elapsed = (start: number | undefined, end: number | undefined): number | null =>
+    Number.isFinite(start) && Number.isFinite(end) && Number(end) >= Number(start)
+      ? Number(end) - Number(start)
+      : null;
+  return {
+    sdkImportMs: elapsed(input.startedAt, input.sdkReadyAt),
+    preQuerySetupMs: elapsed(input.sdkReadyAt, input.queryCreateStartedAt),
+    queryCreateMs: elapsed(input.queryCreateStartedAt, input.queryCreatedAt),
+    firstMessageAfterQueryMs: elapsed(input.queryCreatedAt, input.firstMessageAt),
+    firstAssistantAfterQueryMs: elapsed(input.queryCreatedAt, input.firstAssistantAt),
+    resultAfterQueryMs: elapsed(input.queryCreatedAt, input.resultAt),
+    totalMs: Math.max(0, input.finishedAt - input.startedAt),
+  };
+}
+
+/**
  * 底层 Workbuddy 调用：动态导入 SDK，发起 query，流式消费消息，提取文本/structuredOutput/usage/sessionId。
  * 带超时、心跳日志、中断与临时 context window 工作区清理；contextWindow 指定时校验模型档位并创建临时 cwd。
+ * 额外记录 SDK 加载、query 创建、首个事件与模型结果到达耗时；不记录 Prompt/正文。
  */
 async function queryWorkbuddyRaw(
   agent: WorkbuddyAgent,
@@ -114,11 +154,18 @@ async function queryWorkbuddyRaw(
   let usage: TurnUsage | null = null;
   let sessionId: string | undefined;
   let messageCount = 0;
+  let sdkReadyAt = 0;
+  let queryCreateStartedAt = 0;
+  let queryCreatedAt = 0;
+  let firstMessageAt = 0;
+  let firstAssistantAt = 0;
+  let resultAt = 0;
   let iterator: AsyncIterator<unknown> | undefined;
 
   try {
     // 先开始计时，再动态导入 SDK：这样初始化卡住也能显式失败。
     const sdk = await Promise.race([import('@tencent-ai/agent-sdk'), timeoutPromise]);
+    sdkReadyAt = Date.now();
     if (contextWindow !== undefined) {
       const catalog = readModelCatalog({ projectRoot: WORK_DIR });
       const effectiveModel = resolveWorkbuddyModel(agent.model, catalog) || agent.model;
@@ -137,7 +184,9 @@ async function queryWorkbuddyRaw(
       };
     }
 
+    queryCreateStartedAt = Date.now();
     query = sdk.query({ prompt: buildCombinedPrompt(prompt, systemPrompt), options: effectiveOptions });
+    queryCreatedAt = Date.now();
     if (timedOut) requestInterrupt();
 
     iterator = query[Symbol.asyncIterator]();
@@ -150,6 +199,7 @@ async function queryWorkbuddyRaw(
           const message = next.value;
           const raw: any = message && typeof message === 'object' ? message : {};
           messageCount += 1;
+          if (!firstMessageAt) firstMessageAt = Date.now();
           // SDK 的 init 事件带着持久的 session_id，后续工作流阶段要靠它续聊。
           const observedSessionId = [raw.session_id, raw.sessionId, raw.session?.id, raw.message?.session_id]
             .find((value) => typeof value === 'string' && value.trim());
@@ -158,6 +208,7 @@ async function queryWorkbuddyRaw(
             onSessionId?.(sessionId);
           }
           if (raw.type === 'assistant' && raw.message && Array.isArray(raw.message.content)) {
+            if (!firstAssistantAt) firstAssistantAt = Date.now();
             for (const part of raw.message.content) {
               if (part?.type === 'text' && typeof part.text === 'string' && part.text.trim()) {
                 text += (text ? '\n' : '') + part.text;
@@ -165,6 +216,7 @@ async function queryWorkbuddyRaw(
             }
           }
           if (raw.type === 'result') {
+            resultAt = Date.now();
             if (raw.subtype && raw.subtype !== 'success') {
               throw new Error('Workbuddy 执行失败：' + String(raw.error?.message || raw.error || raw.subtype));
             }
@@ -205,6 +257,25 @@ async function queryWorkbuddyRaw(
     if (timer) clearTimeout(timer);
     if (heartbeat) clearInterval(heartbeat);
     contextWorkspace?.cleanup();
+    const timing = summarizeWorkbuddyQueryTiming({
+      startedAt,
+      sdkReadyAt: sdkReadyAt || undefined,
+      queryCreateStartedAt: queryCreateStartedAt || undefined,
+      queryCreatedAt: queryCreatedAt || undefined,
+      firstMessageAt: firstMessageAt || undefined,
+      firstAssistantAt: firstAssistantAt || undefined,
+      resultAt: resultAt || undefined,
+      finishedAt: Date.now(),
+    });
+    const ms = (value: number | null) => value == null ? 'n/a' : String(value);
+    logInfo('agent', 'Workbuddy query 阶段耗时 · request=' + String(_requestId).slice(0, 40) +
+      ' · sdkImport=' + ms(timing.sdkImportMs) + 'ms' +
+      ' · preQuerySetup=' + ms(timing.preQuerySetupMs) + 'ms' +
+      ' · queryCreate=' + ms(timing.queryCreateMs) + 'ms' +
+      ' · firstMessage=' + ms(timing.firstMessageAfterQueryMs) + 'ms' +
+      ' · firstAssistant=' + ms(timing.firstAssistantAfterQueryMs) + 'ms' +
+      ' · result=' + ms(timing.resultAfterQueryMs) + 'ms' +
+      ' · total=' + timing.totalMs + 'ms');
   }
 }
 
