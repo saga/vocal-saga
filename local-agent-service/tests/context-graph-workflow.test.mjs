@@ -71,6 +71,16 @@ test('entity preflight preserves fictional clan names instead of replacing histo
   assert.match(prompt, /bookSpecificMeaning=true/);
 });
 
+
+test('entity extraction explicitly covers recurring named vessels and resolves variants conservatively', () => {
+  const prompt = buildContextGraphWorkflowPrompt('entities', 'SAMPLED SOURCE TEXT', {}, false);
+  assert.match(prompt, /具名载具/);
+  assert.match(prompt, /船只、飞船、舰艇/);
+  assert.match(prompt, /object\/artifact/);
+  assert.match(prompt, /早\/中\/晚样本/);
+  assert.match(prompt, /不要仅凭词面相似合并/);
+});
+
 test('stage waves cover every stage once and keep dependencies in earlier waves', () => {
   const flat = CONTEXT_GRAPH_STAGE_WAVES.flat();
   assert.equal(flat.length, CONTEXT_GRAPH_WORKFLOW_STAGES.length);
