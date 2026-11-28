@@ -130,9 +130,15 @@ export function detectSourceLanguageMismatch(
     .slice(0, 30_000);
   const words = sample.toLocaleLowerCase().match(/[a-zÀ-ÿ]+/gu) || [];
   if (words.length < 80) return null;
-  const score = (language: string): number => words.reduce<number>(
-    (total, word) => total + (LANGUAGE_SIGNAL_WORDS[language]?.has(word) ? 1 : 0), 0,
-  );
+  const score = (language: string): number => {
+    let total = 0;
+    const signals = LANGUAGE_SIGNAL_WORDS[language];
+    if (!signals) return total;
+    for (const word of words) {
+      if (signals.has(word)) total++;
+    }
+    return total;
+  };
   const requestedScore = score(requested);
   const detectedScore = score(other);
   if (detectedScore < 8 || detectedScore - requestedScore < 5 ||
