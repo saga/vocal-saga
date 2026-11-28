@@ -35,14 +35,6 @@ export interface WorkbuddyAgent {
 }
 
 /**
- * 将 system 与 user prompt 合并为 SDK 所需的单一 prompt 文本，system 部分带 "SYSTEM INSTRUCTIONS:" 前缀。
- */
-export function buildCombinedPrompt(prompt: string, systemPrompt: string): string {
-  return [systemPrompt ? 'SYSTEM INSTRUCTIONS:\n' + systemPrompt : '', 'USER REQUEST:\n' + prompt]
-    .filter(Boolean).join('\n\n');
-}
-
-/**
  * 构造 CodeBuddy SDK 的调用选项：无 schema 时禁用工具、maxTurns=1；有 schema 时启用 StructuredOutput 工具
  * 并通过 json_schema 约束输出。canUseTool 仅允许 StructuredOutput，拒绝其余工具。
  */
@@ -135,6 +127,8 @@ export function summarizeWorkbuddyQueryTiming(input: {
 
 /**
  * 底层 Workbuddy 调用：动态导入 SDK，发起 query，流式消费消息，提取文本/structuredOutput/usage/sessionId。
+ * 稳定契约通过 SDK 原生 systemPrompt 进入 system 角色，动态任务负载只放在 user prompt，
+ * 以匹配 Hy4 flash 等 Provider 的严格前缀缓存要求。
  * 带超时、心跳日志、中断与临时 context window 工作区清理；contextWindow 指定时校验模型档位并创建临时 cwd。
  * 额外记录 SDK 加载、query 创建、首个事件与模型结果到达耗时；不记录 Prompt/正文。
  */
@@ -207,8 +201,14 @@ async function queryWorkbuddyRaw(
       };
     }
 
+    // 用 SDK 原生 systemPrompt 承载稳定前缀；append 保留 CLI 默认 system 指令，
+    // 避免整段替换掉工具/输出契约。动态 JSON 负载仍然只在 user prompt 中。
+    effectiveOptions = {
+      ...effectiveOptions,
+      systemPrompt: { append: systemPrompt },
+    };
     queryCreateStartedAt = Date.now();
-    query = sdk.query({ prompt: buildCombinedPrompt(prompt, systemPrompt), options: effectiveOptions });
+    query = sdk.query({ prompt, options: effectiveOptions });
     queryCreatedAt = Date.now();
     if (timedOut) requestInterrupt();
 

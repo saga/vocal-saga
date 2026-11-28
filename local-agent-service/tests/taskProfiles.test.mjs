@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 import {
   DEFAULT_CODEBUDDY_TASK_PROFILES,
@@ -51,6 +52,13 @@ test('builds documented query Options for the selected task', () => {
   assert.equal(options.effort, 'high');
   assert.deepEqual(options.tools, []);
   assert.equal(options.maxTurns, 1);
+});
+
+test('workbuddy sends the stable prompt prefix through the native system role', () => {
+  const source = readFileSync(new URL('../src/agents/workbuddy.ts', import.meta.url), 'utf8');
+  assert.match(source, /systemPrompt: \{ append: systemPrompt \}/);
+  assert.match(source, /query = sdk\.query\(\{ prompt, options: effectiveOptions \}\)/);
+  assert.ok(!source.includes('buildCombinedPrompt'));
 });
 
 test('task prompts are supplemental and cannot drop the generated task payload', () => {
