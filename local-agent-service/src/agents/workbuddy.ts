@@ -282,7 +282,7 @@ export function resolveWorkbuddyJson(structuredOutput: unknown, text: string, co
 }
 
 /**
- * 结构化 Workbuddy 调用：根据 taskProfile/sessionScope 决定走 query() 或共享池，支持超时与 session 恢复。
+ * 结构化 Workbuddy 翻译调用：统一走 query()，支持 task profile、超时与显式 session 恢复。
  * 返回 parsed + usage + sessionId。
  */
 export async function runWorkbuddyStructured(
@@ -291,7 +291,7 @@ export async function runWorkbuddyStructured(
   systemPrompt: string,
   schema: Record<string, unknown>,
   requestId = 'unknown',
-  sessionScope?: string,
+  _sessionScope?: string,
   taskProfile?: CodeBuddyTaskProfile,
   options: {
     timeoutMs?: number;
@@ -326,7 +326,7 @@ export async function runWorkbuddyJson(
   systemPrompt: string,
   schema: Record<string, unknown>,
   requestId = 'unknown',
-  sessionScope?: string,
+  _sessionScope?: string,
   taskProfile?: CodeBuddyTaskProfile,
   options: { timeoutMs?: number } = {},
 ): Promise<{ parsed: Record<string, any>; usage: TurnUsage | null }> {
