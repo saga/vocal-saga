@@ -34,7 +34,7 @@ import { buildDocumentBatchSessionScope } from './translationConcurrency.ts';
 import { sourceNameMatches } from './briefSourceContext.ts';
 import { buildUserPrompt, type TranslationParseDiagnostics, parseTranslations } from './translationPrompt.ts';
 import { addRunUsage } from './translationRunUsage.ts';
-import { buildTranslationSchema, LITERARY_TRANSLATION_CONTRACT, MANDATORY_TRANSLATION_CONTRACT, type TranslationItem } from './translationSchema.ts';
+import { buildTranslationSchema, LITERARY_TRANSLATION_CONTRACT, MANDATORY_TRANSLATION_CONTRACT, TRANSLATION_SCHEMA, type TranslationItem } from './translationSchema.ts';
 
 /** 只保留 12 位十六进制前缀：足够发现漂移，又不会把整段契约复制进事件流。 */
 function shortSha256(value: string): string {
@@ -168,10 +168,11 @@ function appendPromptAudit(
     precedingSegmentCount: precedingSegments.length,
     userPromptChars: userPrompt.length,
     systemPromptChars: systemPrompt.length,
-    // 严格前缀缓存的可观测锚点：跨 batch/run 相同才说明稳定前缀没被破坏。
+    // 固定契约骨架用于观察稳定前缀；批次动态 Schema 单独记录，因其 ID 枚举必然随 batch 变化。
     promptPrefixFingerprint: {
       systemPromptSha256: shortSha256(systemPrompt),
       schemaSha256: shortSha256(JSON.stringify(TRANSLATION_SCHEMA)),
+      batchSchemaSha256: shortSha256(JSON.stringify(buildTranslationSchema(items.map((item) => item.id)))),
       systemPromptChars: systemPrompt.length,
     },
     glossaryTerms: count((translationBrief?.glossary as any)?.document_terms ?? context.prompt.config?.glossary?.document_terms),
