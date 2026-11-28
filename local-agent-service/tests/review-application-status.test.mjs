@@ -168,3 +168,76 @@ test('an unresolved must-fix remains open unless the reviewed translation remove
   assert.equal(corrected.findings[0].applicationStatus, 'applied');
   assert.equal(corrected.findings[0].applicationMethod, 'automatic-bilingual-review');
 });
+
+test('must-fix findings persist as applied only when the reviewer actually repaired the text', async () => {
+  await withStore((store) => {
+    const project = store.createProject({ title: 'Must-fix persistence', format: 'txt', sourceFileName: 'must-fix.txt', segments });
+    const run = store.createRun(project.projectId, { scope: { type: 'ids', ids: ['ch1-p1'] } });
+    const review = collectReviewResults({
+      results: [{
+        id: 'ch1-p1',
+        finalTranslation: '门敞开着。',
+        findings: [{
+          category: 'accuracy',
+          sourceExcerpt: 'The door was open.',
+          draftExcerpt: '门关着。',
+          reason: '原文是 open，初译说反了。',
+          suggestion: '改为「门开着」。',
+        }],
+      }],
+    }, [{ id: 'ch1-p1', source: 'The door was open.', draft: '门关着。' }], 'accuracy', false);
+    store.saveCandidates(
+      project.projectId,
+      run.runId,
+      [{ segmentId: 'ch1-p1', text: review.translations['ch1-p1'] }],
+      review.findings.map((finding) => ({ segmentId: 'ch1-p1', finding })),
+    );
+
+    const persisted = store.getRun(project.projectId, run.runId).findings[0];
+    assert.equal(persisted.category, 'accuracy');
+    assert.equal(persisted.status, 'applied');
+    assert.equal(persisted.finding.applicationStatus, 'applied');
+    assert.equal(persisted.finding.applicationMethod, 'automatic-bilingual-review');
+  });
+});
+
+test('a user can explicitly waive an unresolved accuracy must-fix without applying its draft', async () => {
+  await withStore((store) => {
+    const project = store.createProject({ title: 'Must-fix waiver', format: 'txt', sourceFileName: 'waiver.txt', segments });
+    const run = store.createRun(project.projectId, { scope: { type: 'ids', ids: ['ch1-p1'] } });
+    store.saveCandidates(
+      project.projectId,
+      run.runId,
+      [{ segmentId: 'ch1-p1', text: '门关着。' }],
+      [{
+        segmentId: 'ch1-p1',
+        finding: {
+          category: 'accuracy',
+          priority: 'must_fix',
+          sourceExcerpt: 'The door was open.',
+          draftExcerpt: '门关着。',
+          reason: '原文是 open，初译说反了。',
+          suggestion: '改为「门开着」。',
+          applicationStatus: 'pending',
+        },
+      }],
+    );
+    store.finishRun(project.projectId, run.runId);
+    store.acceptCandidates(project.projectId, run.runId);
+
+    const result = store.setReviewFindingDisposition(project.projectId, run.runId, 1, 'dismiss');
+    assert.equal(result.applicationStatus, 'dismissed');
+    assert.equal(result.disposition, 'user-waiver');
+    assert.equal(result.priority, 'must_fix');
+
+    const finding = store.getRun(project.projectId, run.runId).findings[0];
+    assert.equal(finding.status, 'dismissed');
+    assert.equal(finding.finding.applicationStatus, 'dismissed');
+    assert.equal(finding.finding.applicationMethod, 'user-waiver');
+    assert.equal(
+      store.getSegments(project.projectId, { limit: 10 }).find((item) => item.id === 'ch1-p1')?.acceptedTranslation,
+      '门关着。',
+      'waiving a finding must never silently apply the reviewer suggestion',
+    );
+  });
+});
