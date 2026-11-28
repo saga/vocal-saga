@@ -140,3 +140,31 @@ test('applying a proposal whose text is already in the body only records the dec
     );
   });
 });
+
+
+test('an unresolved must-fix remains open unless the reviewed translation removes its exact bad excerpt', () => {
+  const source = 'Bog help you if you did not give him the money.';
+  const draft = '愿上帝保佑你，如果你不给他钱。';
+  const finding = {
+    category: 'accuracy',
+    sourceExcerpt: source,
+    draftExcerpt: '愿上帝保佑你',
+    reason: '原文是威胁，不是祝福。',
+    suggestion: '可有你好受的。',
+  };
+  const sameMeaningFailure = collectReviewResults({
+    results: [{ id: 'ch1-p1', finalTranslation: draft, findings: [finding] }],
+  }, [{ id: 'ch1-p1', source, draft }], 'accuracy', false);
+  assert.equal(sameMeaningFailure.translations['ch1-p1'], draft);
+  assert.equal(sameMeaningFailure.findings[0].priority, 'must_fix');
+  assert.equal(sameMeaningFailure.findings[0].applicationStatus, 'pending',
+    'the finding cannot be marked fixed when its exact problematic wording remains');
+
+  const corrected = collectReviewResults({
+    results: [{ id: 'ch1-p1', finalTranslation: '你要是不把钱给他，可有你好受的。', findings: [finding] }],
+  }, [{ id: 'ch1-p1', source, draft }], 'accuracy', false);
+  assert.equal(corrected.translations['ch1-p1'], '你要是不把钱给他，可有你好受的。');
+  assert.equal(corrected.findings[0].priority, 'must_fix');
+  assert.equal(corrected.findings[0].applicationStatus, 'applied');
+  assert.equal(corrected.findings[0].applicationMethod, 'automatic-bilingual-review');
+});
