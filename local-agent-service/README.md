@@ -49,6 +49,10 @@ TranslationBrief 的历史已采纳译文只作为风格参考，不作为整章
 
 诊断快照记录 `acceptedExamplesInjected`、`acceptedExamplesTrimmedByBudget`、`acceptedExamplesExcludedAsPreceding`、`acceptedExampleChars` 和 `acceptedExampleBudgetChars`，可用于核对实际注入量。诊断只记录数量和字符数，不导出原文或译文正文。
 
+## 小说文学初译的思考配置
+
+Local Agent 的文档翻译初译面向小说与文学文本，翻译任务固定启用 CodeBuddy thinking。默认推理强度为 `low`、思考预算为 8,192 tokens；推理开关与推理强度是两个独立参数，启用思考不会把强度自动提升到 medium/high。服务端会把旧配置中 translation=`disabled` 的值归一化为 `enabled`，避免历史配置绕过这项策略。准确性审校、文风审校、文学分析和全书预处理仍按各自任务配置执行。
+
 ## 环境要求
 
 - macOS 与 Node.js >= 22.13（使用 Node 内置 `node:sqlite`，不需要另外安装 sqlite3）。
