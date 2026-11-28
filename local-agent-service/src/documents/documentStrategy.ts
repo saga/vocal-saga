@@ -133,6 +133,28 @@ export function normalizeDocumentTranslationStrategy(input: unknown): DocumentTr
   };
 }
 
+/**
+ * 自动质量补译只修复已审计命中的少量片段，不应继承整本翻译的上下文预算。
+ * 保留当前书籍的规范译名/记忆与一次合并审校；只压缩相邻前文和历史示例。
+ * strong 会触发两轮模型审校，自动补译统一降为 medium（一次合并审校）；
+ * weak/off 则尊重用户显式关闭模型审校的设置。
+ */
+export function applyAutomaticQualityRepairStrategy(
+  strategy: DocumentTranslationStrategy,
+  automationScope: unknown,
+): DocumentTranslationStrategy {
+  const automation = automationScope && typeof automationScope === 'object' && !Array.isArray(automationScope)
+    ? automationScope as Record<string, unknown>
+    : {};
+  if (automation.kind !== 'quality-audit-repair' || Number(automation.pass) < 1) return strategy;
+  return {
+    ...strategy,
+    precedingContextSegments: Math.min(strategy.precedingContextSegments, 1),
+    contextBudgetChars: Math.min(strategy.contextBudgetChars, 8_000),
+    reviewStrength: strategy.reviewStrength === 'strong' ? 'medium' : strategy.reviewStrength,
+  };
+}
+
 /** 文风是提示词的一部分：随项目保存，重新生成提示词时保持同一文风。 */
 const DOCUMENT_PROMPT_STYLES = ['default', 'jinyong', 'acheng', 'wangxiaobo', 'ja-source-natural'] as const;
 
