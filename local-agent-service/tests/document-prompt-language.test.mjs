@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applyRunLanguageDirection, documentLanguageName } from '../src/documents/languageMatch.ts';
+import { applyRunLanguageDirection, detectSourceLanguageMismatch, documentLanguageName } from '../src/documents/languageMatch.ts';
 import { normalizePromptStyle } from '../src/documents/documentStrategy.ts';
 
 /**
@@ -48,4 +48,21 @@ test('文风随项目保存，未知值回落到通用直译', () => {
   assert.equal(normalizePromptStyle('ja-source-natural'), 'ja-source-natural');
   assert.equal(normalizePromptStyle('nope'), 'default');
   assert.equal(normalizePromptStyle(undefined), 'default');
+});
+
+
+test('source-language preflight catches clear English/French configuration mismatches', () => {
+  const english = Array.from({ length: 8 }, () => ({
+    text: 'The old man was standing by the door, and he said that she would come back with his brother. They were waiting for the ship after the storm.',
+  }));
+  const french = Array.from({ length: 8 }, () => ({
+    text: 'Le vieil homme était près de la porte et il disait que sa sœur viendrait avec son frère. Ils attendaient le navire après la tempête.',
+  }));
+
+  assert.equal(detectSourceLanguageMismatch(english, 'fr')?.detectedLang, 'en');
+  assert.equal(detectSourceLanguageMismatch(french, 'en')?.detectedLang, 'fr');
+  assert.equal(detectSourceLanguageMismatch(english.slice(0, 1), 'fr'), null,
+    'short samples are not sufficient evidence to block a run');
+  assert.equal(detectSourceLanguageMismatch(english, 'auto'), null,
+    'automatic language mode is not compared against a fixed language');
 });
