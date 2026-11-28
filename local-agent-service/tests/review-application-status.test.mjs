@@ -242,3 +242,50 @@ test('a user can explicitly waive an unresolved accuracy must-fix without applyi
     );
   });
 });
+
+
+test('a must-fix insertion repair closes only with an exact revised excerpt', () => {
+  const source = 'He said, Get out.';
+  const draft = '他说，滚出去。';
+  const fixed = '“滚出去。”他说。';
+  const review = collectReviewResults({
+    results: [{
+      id: 'ch1-p1',
+      finalTranslation: fixed,
+      findings: [{
+        category: 'accuracy',
+        sourceExcerpt: 'Get out.',
+        draftExcerpt: '滚出去',
+        revisedExcerpt: '“滚出去',
+        reason: '原文是直接引语，初译缺少前引号。',
+        suggestion: '补上引号。',
+      }],
+    }],
+  }, [{ id: 'ch1-p1', source, draft }], 'accuracy', false);
+
+  assert.equal(review.translations['ch1-p1'], fixed);
+  assert.equal(review.findings[0].revisedExcerpt, '“滚出去');
+  assert.equal(review.findings[0].applicationStatus, 'applied');
+  assert.equal(review.findings[0].applicationMethod, 'automatic-bilingual-review-insertion-evidence');
+});
+
+test('a must-fix insertion repair remains pending without revised-excerpt evidence', () => {
+  const source = 'He said, Get out.';
+  const draft = '他说，滚出去。';
+  const review = collectReviewResults({
+    results: [{
+      id: 'ch1-p1',
+      finalTranslation: '“滚出去。”他说。',
+      findings: [{
+        category: 'accuracy',
+        sourceExcerpt: 'Get out.',
+        draftExcerpt: '滚出去',
+        reason: '原文是直接引语，初译缺少前引号。',
+        suggestion: '补上引号。',
+      }],
+    }],
+  }, [{ id: 'ch1-p1', source, draft }], 'accuracy', false);
+
+  assert.equal(review.translations['ch1-p1'], '“滚出去。”他说。');
+  assert.equal(review.findings[0].applicationStatus, 'pending');
+});

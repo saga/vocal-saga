@@ -34,7 +34,7 @@ import { buildDocumentBatchSessionScope } from './translationConcurrency.ts';
 import { sourceNameMatches } from './briefSourceContext.ts';
 import { buildUserPrompt, type TranslationParseDiagnostics, parseTranslations } from './translationPrompt.ts';
 import { addRunUsage } from './translationRunUsage.ts';
-import { LITERARY_TRANSLATION_CONTRACT, MANDATORY_TRANSLATION_CONTRACT, TRANSLATION_SCHEMA, type TranslationItem } from './translationSchema.ts';
+import { buildTranslationSchema, LITERARY_TRANSLATION_CONTRACT, MANDATORY_TRANSLATION_CONTRACT, type TranslationItem } from './translationSchema.ts';
 
 /** 只保留 12 位十六进制前缀：足够发现漂移，又不会把整段契约复制进事件流。 */
 function shortSha256(value: string): string {
@@ -207,7 +207,7 @@ function appendPromptAudit(
     translationBriefChars: translationBrief?.contextChars || 0,
     translationBriefPolicyVersion: translationBrief?.policyVersion || null,
     graphKnowledgeBoundaryOrdinal: (contextGraph as any)?.knowledgeBoundaryOrdinal ?? null,
-    audit: { systemPrompt, userPrompt, schema: TRANSLATION_SCHEMA, sourceSegments: items.map((item) => ({ id: item.id, text: item.text })), precedingSegments: precedingSegments.map((item) => ({ id: item.id, text: item.text })) },
+    audit: { systemPrompt, userPrompt, schema: buildTranslationSchema(items.map((item) => item.id)), sourceSegments: items.map((item) => ({ id: item.id, text: item.text })), precedingSegments: precedingSegments.map((item) => ({ id: item.id, text: item.text })) },
   });
 }
 
@@ -229,7 +229,7 @@ async function requestTranslation(
   const { agent, userPrompt, systemPrompt, sessionScope, translationProfile, effectiveModel } = request;
   try {
     const modelRun = await runAgentStructured(
-      agent, userPrompt, systemPrompt, TRANSLATION_SCHEMA, requestId, sessionScope,
+      agent, userPrompt, systemPrompt, buildTranslationSchema(items.map((item) => item.id)), requestId, sessionScope,
       translationProfile,
     );
     const turnUsage = modelRun.usage;

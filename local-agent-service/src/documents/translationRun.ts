@@ -27,6 +27,7 @@ import {
   CONFIGURED_TRANSLATION_CONCURRENCY,
   createConcurrencyLimiter,
   resolveDocumentRunConcurrencyBudget,
+  resolveReviewConcurrencyForWave,
   runWithConcurrency,
 } from './translationConcurrency.ts';
 import { type TranslationItem } from './translationSchema.ts';
@@ -716,25 +717,9 @@ async function scheduleTranslationWaves(
     ).all(context.run.sourceRevisionId) as Array<{ segment_id: string; ordinal: number }>;
     for (const row of sourceOrdinals) ordinalById.set(row.segment_id, Number(row.ordinal));
 
-    // Reserve the configured translation workers first, then use the remaining
-    // shared session capacity for reviews throughout the run. This avoids the old
-    // two-reviewer bottleneck without creating per-wave oversubscription.
+    // Reserve only the translation slots needed by the current dependency-safe wave;
+    // queued reviews can use the remaining shared session capacity.
     const modelReviewEnabled = scope.reviewStrength === 'strong' || scope.reviewStrength === 'medium';
-    const reviewConcurrencyDuringTranslation = Math.min(
-      scope.reviewDrainConcurrency,
-      Math.max(scope.reviewConcurrency, scope.poolSize - translationConcurrency),
-    );
-    if (modelReviewEnabled && reviewConcurrencyDuringTranslation > scope.reviewLimiter.getConcurrency()) {
-      const previous = scope.reviewLimiter.getConcurrency();
-      const applied = scope.reviewLimiter.setConcurrency(reviewConcurrencyDuringTranslation);
-      store.appendEvent(projectId, runId, 'review.translation.capacity.expanded', {
-        from: previous,
-        to: applied,
-        translationConcurrency,
-        poolSize: scope.poolSize,
-        policy: 'reserve-translation-capacity-and-share-remaining-sessions',
-      });
-    }
 
     // 人名第一次出现的批次与同波中重复提到它的批次不能并发：
     // 前者必须先完成，才能把经过当前 Reviewer 结果回校的临时译名注入后者。
@@ -757,6 +742,31 @@ async function scheduleTranslationWaves(
       pendingBatchIndexes = pendingBatchIndexes.filter((index) => !completedThisWave.has(index));
       const wave = batchIndexes.map((index) => batches[index]!).filter(Boolean);
       if (!wave.length) continue;
+      if (modelReviewEnabled) {
+        const previous = scope.reviewLimiter.getConcurrency();
+        const desired = resolveReviewConcurrencyForWave({
+          poolSize: scope.poolSize,
+          translationConcurrency,
+          waveBatchCount: wave.length,
+          reviewConcurrency: scope.reviewConcurrency,
+          reviewDrainConcurrency: scope.reviewDrainConcurrency,
+        });
+        if (desired !== previous) {
+          const applied = scope.reviewLimiter.setConcurrency(desired);
+          store.appendEvent(projectId, runId,
+            applied > previous ? 'review.translation.capacity.expanded' : 'review.translation.capacity.contracted',
+            {
+              from: previous,
+              to: applied,
+              translationConcurrency,
+              waveTranslationWorkers: wave.length,
+              activeReviews: scope.reviewLimiter.active(),
+              pendingReviews: scope.reviewLimiter.pending(),
+              poolSize: scope.poolSize,
+              policy: 'reserve-current-wave-translation-capacity-and-share-remaining-sessions',
+            });
+        }
+      }
       const waveFirstOrdinal = Math.min(...wave.map((batch) =>
         ordinalById.get(batch[0]?.id || '') ?? Number.MAX_SAFE_INTEGER));
       const priorDeltas = store.listTranslationContextDeltas(projectId, runId)
@@ -853,10 +863,11 @@ async function drainAndSettleReviews(
   const { modelReviewEnabled, reviewConcurrency, reviewDrainConcurrency } = prepared;
   const drainedAt = Date.now();
   const pendingReviews = reviewLimiter.pending();
-  if (modelReviewEnabled && pendingReviews > 0 && reviewDrainConcurrency > reviewLimiter.getConcurrency()) {
+  const previousReviewConcurrency = reviewLimiter.getConcurrency();
+  if (modelReviewEnabled && pendingReviews > 0 && reviewDrainConcurrency > previousReviewConcurrency) {
     const applied = reviewLimiter.setConcurrency(reviewDrainConcurrency);
     store.appendEvent(projectId, runId, 'review.drain.expanded', {
-      from: reviewConcurrency,
+      from: previousReviewConcurrency,
       to: applied,
       pendingReviews,
       translationWallMs: drainedAt - runStartedAt,

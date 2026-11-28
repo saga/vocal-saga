@@ -51,8 +51,8 @@ export function buildLiteraryReviewPrompt(input: {
     ...(reviewFocus === 'style' ? [] : [
       '双语准确性审校应特别核对人称及单复数（尤其英语 you 在当前语境中的指向）、代词和称谓所指、动作施事者与受事者，以及推测、否定和刻意保留的歧义；同时核对粗口/辱骂/讽刺的具体语义类型、攻击对象与力度，习语/隐喻在上下文中的实际含义，以及地域、族群和历史文化表达的指涉。不能因为译文流畅就默认语义准确，也不能只按粗俗程度替换辱骂词、用带有额外感情色彩的成语替换习语，或擅自消除原文的不确定性。',
     ]),
-    'sourceExcerpt 必须是当前原文片段中的逐字连续引文，draftExcerpt 必须是本次传入初译中的逐字连续引文；两者缺失或不能核验时，该 finding 会被丢弃且不会触发自动修订。',
-    '只返回严格 JSON：{ "results": [{ "id": "...", "finalTranslation": "...", "findings": [{ "category": "accuracy|terminology|style", "priority": "must_fix|optional", "dimension": "character_voice", "characterId": "...", "relatedCharacterId": "...", "evidenceSegmentIds": [], "sourceExcerpt": "...", "draftExcerpt": "...", "reason": "...", "suggestion": "..." }] }] }。',
+    'sourceExcerpt 必须是当前原文片段中的逐字连续引文，draftExcerpt 必须是本次传入初译中的逐字连续引文；两者缺失或不能核验时，该 finding 会被丢弃且不会触发自动修订。若 accuracy/terminology 修订后仍保留 draftExcerpt（例如补前引号、标点或局部漏译），必须额外提供 revisedExcerpt：从 finalTranslation 中逐字截取一段包含新增/修订内容、且比 draftExcerpt 更完整的连续短引文；不能提供可定位的 revisedExcerpt 时，该项保持 pending。若问题文本已被替换或删除，则无需 revisedExcerpt。',
+    '只返回严格 JSON：{ "results": [{ "id": "...", "finalTranslation": "...", "findings": [{ "category": "accuracy|terminology|style", "priority": "must_fix|optional", "dimension": "character_voice", "characterId": "...", "relatedCharacterId": "...", "evidenceSegmentIds": [], "sourceExcerpt": "...", "draftExcerpt": "...", "revisedExcerpt": "...", "reason": "...", "suggestion": "..." }] }] }。',
   ].join('\n');
   // 字段顺序 = 缓存前缀长度。稳定内容（目标语言、glossary、voiceContext、Context Graph）
   // 放前面，每批必变的章节/brief 元数据/前文放后面，这样同一条 lane 上的后一次调用
