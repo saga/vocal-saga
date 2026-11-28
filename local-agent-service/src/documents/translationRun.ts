@@ -695,6 +695,26 @@ async function scheduleTranslationWaves(
     ).all(context.run.sourceRevisionId) as Array<{ segment_id: string; ordinal: number }>;
     for (const row of sourceOrdinals) ordinalById.set(row.segment_id, Number(row.ordinal));
 
+    // Reserve the configured translation workers first, then use the remaining
+    // shared session capacity for reviews throughout the run. This avoids the old
+    // two-reviewer bottleneck without creating per-wave oversubscription.
+    const modelReviewEnabled = scope.reviewStrength === 'strong' || scope.reviewStrength === 'medium';
+    const reviewConcurrencyDuringTranslation = Math.min(
+      scope.reviewDrainConcurrency,
+      Math.max(scope.reviewConcurrency, scope.poolSize - translationConcurrency),
+    );
+    if (modelReviewEnabled && reviewConcurrencyDuringTranslation > scope.reviewLimiter.getConcurrency()) {
+      const previous = scope.reviewLimiter.getConcurrency();
+      const applied = scope.reviewLimiter.setConcurrency(reviewConcurrencyDuringTranslation);
+      store.appendEvent(projectId, runId, 'review.translation.capacity.expanded', {
+        from: previous,
+        to: applied,
+        translationConcurrency,
+        poolSize: scope.poolSize,
+        policy: 'reserve-translation-capacity-and-share-remaining-sessions',
+      });
+    }
+
     // 人名第一次出现的批次与同波中重复提到它的批次不能并发：
     // 前者必须先完成，才能把经过当前 Reviewer 结果回校的临时译名注入后者。
     // 只有确实存在这种依赖时才切分波次；其余批次仍保持原有并发宽度。
@@ -744,28 +764,6 @@ async function scheduleTranslationWaves(
         memoryEntityCount: Array.isArray(batchContext.memory?.entities) ? batchContext.memory.entities.length : 0,
         policy: 'freeze-within-wave; source-order-delta-visibility; first-use-name-dependencies',
       });
-      // The review limiter shares the real Workbuddy session pool with translation.
-      // Expand review concurrency to the capacity left by this wave's actual width,
-      // without oversubscribing the pool or waiting until every translation batch ends.
-      const modelReviewEnabled = scope.reviewStrength === 'strong' || scope.reviewStrength === 'medium';
-      const waveTranslationWidth = Math.min(translationConcurrency, wave.length);
-      const waveReviewConcurrency = Math.min(
-        scope.reviewDrainConcurrency,
-        Math.max(scope.reviewConcurrency, scope.poolSize - waveTranslationWidth),
-      );
-      if (modelReviewEnabled && waveReviewConcurrency > scope.reviewLimiter.getConcurrency()) {
-        const previous = scope.reviewLimiter.getConcurrency();
-        const applied = scope.reviewLimiter.setConcurrency(waveReviewConcurrency);
-        store.appendEvent(projectId, runId, 'review.wave.expanded', {
-          waveIndex: waveIndex + 1,
-          batchIndexes: batchIndexes.map((index) => index + 1),
-          translationWidth: waveTranslationWidth,
-          from: previous,
-          to: applied,
-          poolSize: scope.poolSize,
-          policy: 'share-unused-session-capacity-during-translation',
-        });
-      }
       await runWithConcurrency(
         wave,
         translationConcurrency,
