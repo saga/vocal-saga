@@ -15,7 +15,7 @@ import {
   getContextGraphStatus,
   startContextGraphAnalysis,
 } from './contextGraph.ts';
-import { normalizeDocumentTranslationStrategy, type DocumentTranslationStrategy } from './documentStrategy.ts';
+import { applyAutomaticQualityRepairStrategy, normalizeDocumentTranslationStrategy, type DocumentTranslationStrategy } from './documentStrategy.ts';
 import { detectSourceLanguageMismatch, sourceLanguageMatches } from './languageMatch.ts';
 import { type DocumentProjectStore, getDocumentProjectStore } from './projectStore.ts';
 import { mergeTranslationContextDeltasIntoMemory, type ValidatedTranslationContextDelta } from './translationContextDelta.ts';
@@ -295,7 +295,19 @@ export async function prepareRunExecution(
       readRunFirstUseDecisions(store, projectId, runId),
     );
   }
-  const strategy = normalizeDocumentTranslationStrategy(context.prompt?.config?.translationStrategy);
+  const configuredStrategy = normalizeDocumentTranslationStrategy(context.prompt?.config?.translationStrategy);
+  const automationScope = (context.run.scope && typeof context.run.scope === 'object')
+    ? (context.run.scope as Record<string, any>).automation : undefined;
+  const strategy = applyAutomaticQualityRepairStrategy(configuredStrategy, automationScope);
+  if (automationScope?.kind === 'quality-audit-repair' && Number(automationScope.pass) >= 1) {
+    store.appendEvent(projectId, runId, 'quality-repair.context-policy.applied', {
+      precedingContextSegments: strategy.precedingContextSegments,
+      contextBudgetChars: strategy.contextBudgetChars,
+      reviewStrength: strategy.reviewStrength,
+      preservedConfiguredModelAttempts: strategy.maxModelAttempts,
+      policy: 'narrow-context-preserve-memory-and-one-accuracy-review',
+    });
+  }
   const batches = buildBatches(items, context.run.translationMode === 'literary', strategy);
 
   // 审校强度只在文学模式下有意义；技术模式本来就不审校。
@@ -501,13 +513,10 @@ export function finalizeRunExecution(
     (finishedRun.error ? ' · error=' + summarizeError(finishedRun.error) : '');
   if (['failed', 'cancelled'].includes(String(finishedRun.status))) logWarn('document-agent', finishedLine);
   else logInfo('document-agent', finishedLine);
-  if (['completed', 'partial'].includes(finishedRun.status)) {
-    scheduleChineseEditorialProfileRefresh(projectId, runId);
-  }
-
   // 完整/部分运行结束后仍执行全书质量审计；但自动补译只允许覆盖父 Run 实际包含的片段，最多一轮。
   // 局部 Run 不得因全书其它位置缺译而扩大执行范围；启发式英文残留、数字差异、重复表达和规范名冲突
   // 留给有界 Reviewer/非阻塞报告处理。
+  let automaticRepairScheduled = false;
   if (['completed', 'partial'].includes(finishedRun.status)) {
     try {
       const audit = runProjectQualityAudit(projectId);
@@ -547,6 +556,12 @@ export function finalizeRunExecution(
           scopePolicy: 'automatic-repair-is-restricted-to-parent-run-segments',
         });
         startProjectTranslationRun(projectId, repair.run.runId);
+        automaticRepairScheduled = true;
+        store.appendEvent(projectId, runId, 'chinese-editorial-profile.deferred', {
+          reason: 'automatic-quality-repair-in-progress',
+          repairRunId: repair.run.runId,
+          policy: 'refresh-after-repair-to-avoid-competing-for-model-capacity',
+        });
       } else {
         store.appendEvent(projectId, runId, 'quality-audit.auto-disposition', {
           auditId: audit.auditId,
@@ -575,6 +590,12 @@ export function finalizeRunExecution(
         logWarn('document-agent', 'automatic quality audit failed and warning could not be persisted');
       }
     }
+  }
+
+  // 父 Run 若安排了自动补译，就把书级文风档案刷新交给补译 Run 的最终化阶段。
+  // 这样避免两个模型任务在同一时刻争用会话池；补译结束后仍会刷新一次最新样本。
+  if (['completed', 'partial'].includes(finishedRun.status) && !automaticRepairScheduled) {
+    scheduleChineseEditorialProfileRefresh(projectId, runId);
   }
 }
 
