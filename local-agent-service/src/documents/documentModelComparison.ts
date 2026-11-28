@@ -1,5 +1,5 @@
 /**
- * 文档双模型初译对比。该能力独立于 translation_runs：只读取当前来源、
+ * 文档多模型初译对比。该能力独立于 translation_runs：只读取当前来源、
  * 项目 Prompt 与同一套 TranslationBrief 构建器，不进入正式翻译/审校/采纳流水线。
  */
 import { randomUUID } from 'node:crypto';
@@ -81,7 +81,7 @@ function updateResult(db: any, id: string, key: 'model_a_json' | 'model_b_json' 
 
 async function translateForModel(input: {
   project: any; prompt: any; run: any; memory: any; memoryRevisionId: string | null;
-  items: any[]; preceding: any[]; brief: any; choice: ModelChoice; comparisonId: string; slot: 'a' | 'b';
+  items: any[]; preceding: any[]; brief: any; choice: ModelChoice; comparisonId: string; slot: 'a' | 'b' | 'c';
 }): Promise<any> {
   const { project, prompt, run, items, preceding, brief, choice, comparisonId, slot } = input;
   const context = { project, prompt, run: { ...run, provider: choice.provider, model: choice.model } , memory: input.memory, memoryRevisionId: input.memoryRevisionId };
