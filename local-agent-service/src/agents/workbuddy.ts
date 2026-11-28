@@ -100,13 +100,21 @@ export function summarizeWorkbuddyQueryTiming(input: {
     Number.isFinite(start) && Number.isFinite(end) && Number(end) >= Number(start)
       ? Number(end) - Number(start)
       : null;
+  const sdkImportMs = elapsed(input.startedAt, input.sdkReadyAt);
+  const preQuerySetupMs = sdkImportMs === null
+    ? null
+    : elapsed(input.sdkReadyAt, input.queryCreateStartedAt);
+  const queryCreateMs = preQuerySetupMs === null
+    ? null
+    : elapsed(input.queryCreateStartedAt, input.queryCreatedAt);
+  const queryClockValid = queryCreateMs !== null;
   return {
-    sdkImportMs: elapsed(input.startedAt, input.sdkReadyAt),
-    preQuerySetupMs: elapsed(input.sdkReadyAt, input.queryCreateStartedAt),
-    queryCreateMs: elapsed(input.queryCreateStartedAt, input.queryCreatedAt),
-    firstMessageAfterQueryMs: elapsed(input.queryCreatedAt, input.firstMessageAt),
-    firstAssistantAfterQueryMs: elapsed(input.queryCreatedAt, input.firstAssistantAt),
-    resultAfterQueryMs: elapsed(input.queryCreatedAt, input.resultAt),
+    sdkImportMs,
+    preQuerySetupMs,
+    queryCreateMs,
+    firstMessageAfterQueryMs: queryClockValid ? elapsed(input.queryCreatedAt, input.firstMessageAt) : null,
+    firstAssistantAfterQueryMs: queryClockValid ? elapsed(input.queryCreatedAt, input.firstAssistantAt) : null,
+    resultAfterQueryMs: queryClockValid ? elapsed(input.queryCreatedAt, input.resultAt) : null,
     totalMs: Math.max(0, input.finishedAt - input.startedAt),
   };
 }
