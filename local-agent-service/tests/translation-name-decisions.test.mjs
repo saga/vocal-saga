@@ -160,3 +160,37 @@ test('immutable user-confirmed snapshot overrides a provisional first-use mappin
   assert.equal(merged[0].target, '坦嫩特');
   assert.equal(merged[0].decisionSource, 'user-confirmed-memory');
 });
+
+test('first-use canonical mapping also stabilizes named vessels and other durable non-person entities', () => {
+  const decision = chooseFirstUseRunNameDecision({
+    source: 'Safina',
+    aliases: ['the Safina'],
+    kind: 'ship',
+    targetLang: 'zh',
+    targets: ['萨菲娜'],
+    rows: [
+      { ...row('ship-first', '萨菲娜驶入港口。', 1), sourceHash: 'ship-hash-1' },
+    ],
+  });
+
+  assert.equal(decision?.kind, 'object', 'ship is normalized to the canonical object kind');
+  assert.equal(decision?.target, '萨菲娜');
+  assert.equal(decision?.sourceStatus, 'run-canonical');
+  assert.equal(decision?.decisionSource, 'first-use-provisional');
+  assert.deepEqual(decision?.evidenceSegmentIds, ['ship-first']);
+});
+
+test('ordinary/unknown kinds do not become run-wide canonical entity decisions', () => {
+  const decision = chooseFirstUseRunNameDecision({
+    source: 'Safina',
+    kind: 'other',
+    targetLang: 'zh',
+    targets: ['萨菲娜'],
+    rows: [
+      { ...row('other-first', '萨菲娜驶入港口。', 1), sourceHash: 'other-hash-1' },
+    ],
+  });
+
+  assert.equal(decision, null);
+});
+
