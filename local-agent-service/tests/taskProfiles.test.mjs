@@ -116,7 +116,7 @@ test('literary translation always enables thinking without raising low effort', 
 test('legacy thinking budget values are ignored and the no-profile fallback still enables thinking at low effort', () => {
   const profile = normalizeCodeBuddyTaskProfile({
     thinkingMode: 'disabled',
-    thinkingBudgetTokens: 8192,
+    thinkingBudgetTokens: 12345,
     effort: 'low',
   }, 'translation');
   assert.equal(profile.thinkingMode, 'enabled');
