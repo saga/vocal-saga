@@ -291,7 +291,7 @@ function buildAuditMetrics(input: {
   const resolvedMustFixFindings = mustFixFindings.filter((item) =>
     item.applicationStatus === 'applied' || item.status === 'applied').length;
   const waivedMustFixFindings = mustFixFindings.filter((item) =>
-    item.applicationStatus === 'dismissed' || item.status === 'dismissed').length;
+    item.applicationStatus === 'dismissed' || item.status === 'dismissed');
   const characterVoiceFindings = reviewRows.filter((item) => item.type === 'character-voice-review').length;
   const qualityGateStatus = !section.review.reviewRunId
     ? 'not-assessed'
