@@ -26,28 +26,22 @@ export function buildUserPrompt(template: string, items: TranslationItem[], cont
     ...item,
     text: maskCanonicalTermText(item.text, termProtections),
   }));
+  // Cache-friendly ordering: invariant run metadata and reusable literary context lead;
+  // preceding/batch-specific source text stays at the end of the serialized payload.
   const payload = JSON.stringify({
-    document: context.project.title,
-    format: context.project.format,
     sourceLang: context.run.sourceLang,
     targetLang: context.run.targetLang,
     translationMode: context.run.translationMode,
-    // 前文只用于指代/对白轮次解析，不属于本次输出范围；不得重新翻译或输出其 ID。
-    precedingSegments: promptPrecedingSegments,
-    segments: payloadItems.map((item) => ({
-      id: item.id,
-      text: item.text,
-      kind: item.kind || 'paragraph',
-      ...(item.contextPath ? { contextPath: item.contextPath } : {}),
-      ...(item.page != null ? { page: item.page } : {}),
-      ...(item.level != null ? { level: item.level } : {}),
-      ...(item.marker ? { marker: item.marker } : {}),
-    })),
+    document: context.project.title,
+    format: context.project.format,
     glossary: context.run.translationMode === 'literary'
       ? translationBrief?.glossary ?? { document_terms: [] }
       : context.prompt.config?.glossary ?? null,
-    // 当前批次只注入相关人物声音、关系规则和 approved 锚点，不把整本书的记忆全部塞进上下文。
-    // 译者和两个审校消费的是同一份有界、绑定源文版本的快照。
+    voiceContext: context.run.translationMode === 'literary'
+      ? translationBrief?.voiceContext ?? buildProjectVoiceContext(context.memory, items, items[0]?.contextPath || context.project.title, precedingSegments)
+      : null,
+    contextGraph: effectiveContextGraph,
+    // These metadata can vary by batch, so they follow invariant run-level context.
     translationBrief: translationBrief ? {
       policyVersion: translationBrief.policyVersion,
       contextHash: translationBrief.contextHash,
@@ -59,11 +53,17 @@ export function buildUserPrompt(template: string, items: TranslationItem[], cont
       chapterPath: translationBrief.chapterPath || null,
       knowledgeBoundaryOrdinal: (translationBrief.contextGraph as any)?.knowledgeBoundaryOrdinal ?? null,
     } : null,
-    voiceContext: context.run.translationMode === 'literary'
-      ? translationBrief?.voiceContext ?? buildProjectVoiceContext(context.memory, items, items[0]?.contextPath || context.project.title, precedingSegments)
-      : null,
-    // 只挑与这个按章切分的批次时间上可见的图谱证据。
-    contextGraph: effectiveContextGraph,
+    // 前文只用于指代/对白轮次解析，不属于本次输出范围；不得重新翻译或输出其 ID。
+    precedingSegments: promptPrecedingSegments,
+    segments: payloadItems.map((item) => ({
+      id: item.id,
+      text: item.text,
+      kind: item.kind || 'paragraph',
+      ...(item.contextPath ? { contextPath: item.contextPath } : {}),
+      ...(item.page != null ? { page: item.page } : {}),
+      ...(item.level != null ? { level: item.level } : {}),
+      ...(item.marker ? { marker: item.marker } : {}),
+    })),
   });
   if (template.includes('{{CONTENT}}')) return template.replaceAll('{{CONTENT}}', payload);
   if (template.includes('{{CONTENT_JSON}}')) return template.replaceAll('{{CONTENT_JSON}}', payload);
@@ -120,7 +120,12 @@ export function parseTranslations(value: unknown, expectedIds: Set<string>): {
     seenIds.add(id);
     if (duplicate) {
       duplicateCount++;
-      if (expectedIds.has(id)) duplicateIds.add(id);
+      if (expectedIds.has(id)) {
+        duplicateIds.add(id);
+        // A duplicated ID is ambiguous: discard the first value as well, so the
+        // caller treats this segment as missing and retries only that segment.
+        translations.delete(id);
+      }
     }
     if (!expectedIds.has(id)) {
       unexpectedCount++;

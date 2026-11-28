@@ -201,6 +201,28 @@ export function collectReviewResults(
 }
 
 /**
+ * 判断 must-fix 是否有可核验的修订证据。
+ *
+ * 替换/删除型修复：原问题摘录已不再出现在修订译文中。
+ * 插入型修复（例如补前引号、补标点）：必须额外提供 revisedExcerpt，
+ * 它应逐字出现在修订译文中，并包含原 draftExcerpt 及新增的修订内容。
+ * 仅仅改变了整段译文、或只提供一句建议，不足以关闭 must-fix。
+ */
+function isMustFixRepairGrounded(
+  originalDraft: string,
+  candidateText: string,
+  draftExcerpt: string,
+  revisedExcerpt: string,
+): boolean {
+  const before = typeof draftExcerpt === 'string' ? draftExcerpt.trim() : '';
+  if (!before || candidateText.trim() === originalDraft.trim() || !originalDraft.includes(before)) return false;
+  if (!candidateText.includes(before)) return true;
+  const after = typeof revisedExcerpt === 'string' ? revisedExcerpt.trim() : '';
+  return after.length > before.length && after !== before &&
+    after.includes(before) && candidateText.includes(after);
+}
+
+/**
  * 单片段 finding 收集：类别必须属于本阶段职责，证据必须能逐字定位。
  * 没有可用候选译文时，style 保持 optional；accuracy/terminology must-fix 保留为 pending。
  */
@@ -231,10 +253,15 @@ function collectSegmentFindings(input: {
       ? !isChineseLiteraryFindingGrounded(original.draft, targetExcerpt)
       : !isLiteraryReviewFindingGrounded(original.source, original.draft, sourceExcerpt, draftExcerpt)) continue;
     const priority = item.category === 'style' ? 'optional' : 'must_fix';
+    const revisedExcerpt = !chineseMonolingualEdit && typeof item.revisedExcerpt === 'string'
+      ? item.revisedExcerpt.trim().slice(0, 240) : '';
+    const mustFixResolved = priority === 'must_fix' && candidateUsable &&
+      isMustFixRepairGrounded(original.draft, candidateText, draftExcerpt, revisedExcerpt);
     const finding = {
       id: raw.id, category: item.category, priority,
       sourceExcerpt,
       draftExcerpt,
+      ...(revisedExcerpt ? { revisedExcerpt } : {}),
       ...(chineseMonolingualEdit ? { targetExcerpt, editorialMode: 'chinese-monolingual' } : {}),
       reason: typeof item.reason === 'string' ? item.reason.slice(0, 400) : '',
       suggestion: typeof item.suggestion === 'string' ? item.suggestion.slice(0, 400) : '',
@@ -244,15 +271,8 @@ function collectSegmentFindings(input: {
         ...(item.category === 'style'
           ? { applicationStatus: 'pending' as const }
           : {
-              // A must-fix is only closed automatically when the reviewed final translation
-              // actually removes the exact problematic draft excerpt. A finding alone is not
-              // proof that the model repaired it (the uploaded run exposed this failure mode).
-              applicationStatus: candidateText !== original.draft && !!draftExcerpt &&
-                !candidateText.includes(draftExcerpt) ? 'applied' as const : 'pending' as const,
-              ...((candidateText !== original.draft && !!draftExcerpt &&
-                !candidateText.includes(draftExcerpt))
-                ? { applicationMethod: 'automatic-bilingual-review' }
-                : {}),
+              applicationStatus: mustFixResolved ? 'applied' as const : 'pending' as const,
+              ...(mustFixResolved ? { applicationMethod: 'automatic-bilingual-review-evidence' } : {}),
             }),
       } : item.category === 'style' ? {} : {
         applicationStatus: 'pending' as const,

@@ -19,6 +19,24 @@ export const CONFIGURED_REVIEW_CONCURRENCY = positiveIntegerEnv('LOCAL_AGENT_DOC
 // 想保留翻译期那种克制行为的机器可以调小。
 export const CONFIGURED_REVIEW_DRAIN_CONCURRENCY = positiveIntegerEnv('LOCAL_AGENT_DOCUMENT_REVIEW_DRAIN_CONCURRENCY', 64);
 
+/** 批次波次内的审校并发：为本波翻译 worker 预留槽位，其余会话让给已排队审校。 */
+export function resolveReviewConcurrencyForWave(input: {
+  poolSize: number;
+  translationConcurrency: number;
+  waveBatchCount: number;
+  reviewConcurrency: number;
+  reviewDrainConcurrency: number;
+}): number {
+  const poolSize = Math.max(1, Math.floor(input.poolSize) || 1);
+  const translationLimit = Math.max(1, Math.floor(input.translationConcurrency) || 1);
+  const waveBatchCount = Math.max(1, Math.floor(input.waveBatchCount) || 1);
+  const translationSlots = Math.min(poolSize, translationLimit, waveBatchCount);
+  const spareSlots = Math.max(1, poolSize - translationSlots);
+  const reviewFloor = Math.max(1, Math.floor(input.reviewConcurrency) || 1);
+  const drainLimit = Math.max(1, Math.floor(input.reviewDrainConcurrency) || 1);
+  return Math.min(poolSize, drainLimit, Math.max(reviewFloor, spareSlots));
+}
+
 /** 批次角色：'translation' 为翻译批次，'review' 为审校批次。 */
 export type DocumentBatchRole = 'translation' | 'review';
 
@@ -119,6 +137,8 @@ export interface ConcurrencyLimiter {
   setConcurrency(next: number): number;
   /** 当前上限。 */
   getConcurrency(): number;
+  /** 当前正在运行的任务数。 */
+  active(): number;
   /** 在跑 + 排队的任务数，用于判断是否还有活干。 */
   pending(): number;
 }
@@ -138,9 +158,13 @@ export function createConcurrencyLimiter(concurrency: number): ConcurrencyLimite
     try {
       return await task();
     } finally {
-      const next = waiting.shift();
-      if (next) next();
-      else active--;
+      // Release the finished slot first. Only transfer it to a waiter when the
+      // current active count is below the (possibly reduced) limit.
+      active--;
+      if (waiting.length && active < limit) {
+        active++;
+        waiting.shift()?.();
+      }
     }
   };
   limiter.setConcurrency = (next: number): number => {
@@ -157,6 +181,7 @@ export function createConcurrencyLimiter(concurrency: number): ConcurrencyLimite
     return limit;
   };
   limiter.getConcurrency = () => limit;
+  limiter.active = () => active;
   limiter.pending = () => active + waiting.length;
   return limiter;
 }
