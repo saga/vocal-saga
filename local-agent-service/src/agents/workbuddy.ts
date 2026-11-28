@@ -330,7 +330,7 @@ export async function runWorkbuddyJson(
   taskProfile?: CodeBuddyTaskProfile,
   options: { timeoutMs?: number } = {},
 ): Promise<{ parsed: Record<string, any>; usage: TurnUsage | null }> {
-  const result = await runWorkbuddyStructured(agent, prompt, systemPrompt, schema, requestId, sessionScope, taskProfile, options);
+  const result = await runWorkbuddyStructured(agent, prompt, systemPrompt, schema, requestId, _sessionScope, taskProfile, options);
   if (!result.parsed || typeof result.parsed !== 'object' || Array.isArray(result.parsed)) {
     throw new Error('Workbuddy 返回内容不是预期 JSON 对象');
   }
