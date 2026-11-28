@@ -37,10 +37,14 @@ export function saveCandidates(store: DocumentProjectStore, projectId: string, r
     const category = ['accuracy', 'terminology', 'style'].includes(item.finding.category)
       ? item.finding.category : 'style';
     const priority = category === 'style' ? 'optional' : 'must_fix';
+    const applicationStatus = item.finding.applicationStatus === 'applied' ? 'applied'
+      : item.finding.applicationStatus === 'dismissed' ? 'dismissed'
+        : category === 'style' ? 'pending' : 'pending';
     return {
       segmentId,
       category,
       priority,
+      status: applicationStatus,
       findingJson: JSON.stringify({ ...item.finding, id: segmentId, category, priority }),
     };
   });
@@ -86,10 +90,10 @@ export function saveCandidates(store: DocumentProjectStore, projectId: string, r
       updateCandidate.run(resultId, now, runId, item.segmentId);
     }
     const insertFinding = db.prepare(
-      "INSERT INTO review_findings(run_id, segment_id, category, priority, finding_json, status, created_at) VALUES (?, ?, ?, ?, ?, 'pending', ?)",
+      'INSERT INTO review_findings(run_id, segment_id, category, priority, finding_json, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
     );
     for (const item of normalizedFindings) {
-      insertFinding.run(runId, item.segmentId, item.category, item.priority, item.findingJson, now);
+      insertFinding.run(runId, item.segmentId, item.category, item.priority, item.findingJson, item.status, now);
     }
     db.exec('COMMIT');
     return true;
