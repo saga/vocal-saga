@@ -266,7 +266,7 @@ test('a must-fix insertion repair closes only with an exact revised excerpt', ()
   assert.equal(review.translations['ch1-p1'], fixed);
   assert.equal(review.findings[0].revisedExcerpt, '“滚出去');
   assert.equal(review.findings[0].applicationStatus, 'applied');
-  assert.equal(review.findings[0].applicationMethod, 'automatic-bilingual-review-evidence');
+  assert.equal(review.findings[0].applicationMethod, 'automatic-bilingual-review-insertion-evidence');
 });
 
 test('a must-fix insertion repair remains pending without revised-excerpt evidence', () => {

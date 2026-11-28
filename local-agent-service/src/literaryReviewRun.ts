@@ -272,7 +272,11 @@ function collectSegmentFindings(input: {
           ? { applicationStatus: 'pending' as const }
           : {
               applicationStatus: mustFixResolved ? 'applied' as const : 'pending' as const,
-              ...(mustFixResolved ? { applicationMethod: 'automatic-bilingual-review-evidence' } : {}),
+              ...(mustFixResolved ? {
+                applicationMethod: candidateText.includes(draftExcerpt)
+                  ? 'automatic-bilingual-review-insertion-evidence'
+                  : 'automatic-bilingual-review',
+              } : {}),
             }),
       } : item.category === 'style' ? {} : {
         applicationStatus: 'pending' as const,
