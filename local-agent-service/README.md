@@ -60,7 +60,7 @@ Local Agent 的文档任务默认配置：初译 `thinkingMode=enabled` + `effor
 - `long`（默认）：SDK/Provider 的 1 小时缓存档位。
 - `short`：短 TTL 档位，用于排查“是否因为 1 小时档位的最小可缓存前缀过长而未命中”。
 
-**档位不等于命中。** Hy4 flash 这类按严格前缀匹配的缓存只有前缀完全一致才按命中价计费；System Prompt、文学契约、Schema、工具定义顺序都必须稳定，动态原文与批次上下文必须放在最后。Workbuddy 调用通过 SDK 原生 `systemPrompt: { append }` 把稳定契约放进 system 角色，保留 CLI 默认 system 指令，不让动态负载污染前缀。`batch.prompt.ready.promptPrefixFingerprint` 记录 system prompt 与 schema 的短 SHA-256，`model.usage` 记录实际 `cacheRetention`、`sessionId`、`cacheReadTokens` 与 `cacheCreationTokens`，可以直接核对“配置 → 实际命中”。
+**档位不等于命中。** Hy4 flash 这类按严格前缀匹配的缓存只有前缀完全一致才按命中价计费；System Prompt、文学契约、Schema、工具定义顺序都必须稳定，动态原文与批次上下文必须放在最后。Workbuddy 调用通过 SDK 原生 `systemPrompt: { append }` 把稳定契约放进 system 角色，保留 CLI 默认 system 指令，不让动态负载污染前缀。结构化 Schema 固定为跨批恒定的 `TRANSLATION_SCHEMA`；本批 ID 枚举与精确数量约束追加在 User Prompt 末尾，由 `parseTranslations()` 校验缺失/重复/越界并交给有界重试，不再写进 Schema。`batch.prompt.ready.promptPrefixFingerprint` 记录 system prompt 与 schema 的短 SHA-256，`model.usage` 记录实际 `cacheRetention`、`sessionId`、`cacheReadTokens` 与 `cacheCreationTokens`，可以直接核对“配置 → 实际命中”。
 
 ## 环境要求
 

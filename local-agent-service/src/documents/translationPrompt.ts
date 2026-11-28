@@ -10,6 +10,24 @@ import { type TranslationBrief } from './translationBrief.ts';
 import { buildProjectVoiceContext } from './voiceContext.ts';
 import { type TranslationItem } from './translationSchema.ts';
 /**
+ * 批次级输出约束：精确 ID 列表与数量只能放在 User Prompt 末尾。
+ *
+ * Schema 必须跨批次逐字稳定，才能参与 Hy4 flash 等 Provider 的严格前缀缓存；
+ * 本批 ID 枚举属于动态内容，不能写进 Schema 或稳定前缀。缺失/重复/越界由
+ * parseTranslations() 校验，缺失片段交给上层有界重试。
+ */
+export function buildBatchOutputConstraint(items: readonly TranslationItem[]): string {
+  if (items.length < 1) return '';
+  const ids = items.map((item) => item.id).join(', ');
+  return [
+    '本批输出约束（只适用于本批，不属于可复用规则）：',
+    'translations 必须恰好包含 ' + items.length + ' 项；每项的 id 必须逐字取自下面的列表，且每个 id 恰好出现一次：',
+    ids,
+    '不要输出 precedingSegments 的 id，也不要新增、合并、改写或重复任何 id。',
+  ].join('\n');
+}
+
+/**
  * 构建批次的用户 Prompt：注入上下文、保护强规范译名、序列化 segments/glossary/brief。
  * @returns 完整用户 Prompt 字符串
  */

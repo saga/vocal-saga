@@ -32,9 +32,9 @@ import {
 } from './translationContextDelta.ts';
 import { buildDocumentBatchSessionScope } from './translationConcurrency.ts';
 import { sourceNameMatches } from './briefSourceContext.ts';
-import { buildUserPrompt, type TranslationParseDiagnostics, parseTranslations } from './translationPrompt.ts';
+import { buildBatchOutputConstraint, buildUserPrompt, type TranslationParseDiagnostics, parseTranslations } from './translationPrompt.ts';
 import { addRunUsage } from './translationRunUsage.ts';
-import { buildTranslationSchema, LITERARY_TRANSLATION_CONTRACT, MANDATORY_TRANSLATION_CONTRACT, TRANSLATION_SCHEMA, type TranslationItem } from './translationSchema.ts';
+import { LITERARY_TRANSLATION_CONTRACT, MANDATORY_TRANSLATION_CONTRACT, TRANSLATION_SCHEMA, type TranslationItem } from './translationSchema.ts';
 
 /** 只保留 12 位十六进制前缀：足够发现漂移，又不会把整段契约复制进事件流。 */
 function shortSha256(value: string): string {
@@ -66,7 +66,7 @@ export async function translateBatch(context: any, items: TranslationItem[], req
   const requestStartedAt = Date.now();
   appendPromptAudit(store, context, request, items, requestId, batchIndex, precedingSegments, translationBrief);
 
-  const value = await requestTranslation(store, context, request, items, requestId, batchIndex, requestStartedAt);
+  const value = await requestTranslation(store, context, request, requestId, batchIndex, requestStartedAt);
   const parsed = parseTranslations(value, new Set(items.map((item) => item.id)));
   const translations = acceptCanonicalTranslations(store, context, request, parsed.translations, batchIndex, requestId, items);
   appendOutputAudit(store, context, request, items, translations, value, parsed.diagnostics, requestId, batchIndex, requestStartedAt);
@@ -104,9 +104,11 @@ function prepareBatchRequest(
   const maskedSourceById = new Map(items.map((item) => [
     item.id, maskCanonicalTermText(item.text, termProtections),
   ]));
+  // 稳定契约走 system 角色；批次 ID/数量约束是动态内容，追加在 User Prompt 末尾。
   const userPrompt = buildUserPrompt(
     context.prompt.userPromptTemplate || '', items, context, precedingSegments, contextGraph, translationBrief,
-  ) + buildCanonicalMarkerReminder(Array.from(maskedSourceById.values()), termProtections);
+  ) + buildCanonicalMarkerReminder(Array.from(maskedSourceById.values()), termProtections)
+    + buildBatchOutputConstraint(items);
   const systemPrompt = [
     // 项目 Prompt 是上一次生效的快照，语言行可能已经过期；运行时的语言对才是权威。
     applyRunLanguageDirection(context.prompt.systemPrompt || '', context.run),
@@ -168,11 +170,10 @@ function appendPromptAudit(
     precedingSegmentCount: precedingSegments.length,
     userPromptChars: userPrompt.length,
     systemPromptChars: systemPrompt.length,
-    // 固定契约骨架用于观察稳定前缀；批次动态 Schema 单独记录，因其 ID 枚举必然随 batch 变化。
+    // 稳定前缀骨架：System Prompt 与 Schema 都跨批次恒定；批次动态 ID 只在 User Prompt 末尾。
     promptPrefixFingerprint: {
       systemPromptSha256: shortSha256(systemPrompt),
       schemaSha256: shortSha256(JSON.stringify(TRANSLATION_SCHEMA)),
-      batchSchemaSha256: shortSha256(JSON.stringify(buildTranslationSchema(items.map((item) => item.id)))),
       systemPromptChars: systemPrompt.length,
     },
     glossaryTerms: count((translationBrief?.glossary as any)?.document_terms ?? context.prompt.config?.glossary?.document_terms),
@@ -208,7 +209,7 @@ function appendPromptAudit(
     translationBriefChars: translationBrief?.contextChars || 0,
     translationBriefPolicyVersion: translationBrief?.policyVersion || null,
     graphKnowledgeBoundaryOrdinal: (contextGraph as any)?.knowledgeBoundaryOrdinal ?? null,
-    audit: { systemPrompt, userPrompt, schema: buildTranslationSchema(items.map((item) => item.id)), sourceSegments: items.map((item) => ({ id: item.id, text: item.text })), precedingSegments: precedingSegments.map((item) => ({ id: item.id, text: item.text })) },
+    audit: { systemPrompt, userPrompt, schema: TRANSLATION_SCHEMA, sourceSegments: items.map((item) => ({ id: item.id, text: item.text })), precedingSegments: precedingSegments.map((item) => ({ id: item.id, text: item.text })) },
   });
 }
 
@@ -222,7 +223,6 @@ async function requestTranslation(
   store: DocumentProjectStore,
   context: any,
   request: BatchRequest,
-  items: TranslationItem[],
   requestId: string,
   batchIndex: number,
   requestStartedAt: number,
@@ -230,7 +230,7 @@ async function requestTranslation(
   const { agent, userPrompt, systemPrompt, sessionScope, translationProfile, effectiveModel } = request;
   try {
     const modelRun = await runAgentStructured(
-      agent, userPrompt, systemPrompt, buildTranslationSchema(items.map((item) => item.id)), requestId, sessionScope,
+      agent, userPrompt, systemPrompt, TRANSLATION_SCHEMA, requestId, sessionScope,
       translationProfile,
     );
     const turnUsage = modelRun.usage;

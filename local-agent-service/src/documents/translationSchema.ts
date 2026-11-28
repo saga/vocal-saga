@@ -88,23 +88,6 @@ export const TRANSLATION_SCHEMA: Record<string, unknown> = {
   required: ['translations'],
 };
 
-/** 为当前批次生成精确的输出 Schema：ID 只能来自本批，返回数量必须与本批一致。 */
-export function buildTranslationSchema(expectedSegmentIds: readonly string[]): Record<string, unknown> {
-  if (!Array.isArray(expectedSegmentIds) || expectedSegmentIds.length < 1) {
-    throw new Error('结构化翻译 Schema 至少需要一个当前批次 ID');
-  }
-  const ids = expectedSegmentIds.map((id) => typeof id === 'string' ? id.trim() : '');
-  if (ids.some((id) => !id) || new Set(ids).size !== ids.length) {
-    throw new Error('结构化翻译 Schema 的批次 ID 不能为空或重复');
-  }
-  const schema = JSON.parse(JSON.stringify(TRANSLATION_SCHEMA)) as Record<string, any>;
-  const translations = schema.properties.translations;
-  translations.minItems = ids.length;
-  translations.maxItems = ids.length;
-  translations.items.properties.id.enum = ids;
-  return schema;
-}
-
 /** 文学翻译的附加契约：保留作者声音、潜台词与对白差异，不得改写。仅在文学模式下拼进提示词。 */
 export const LITERARY_TRANSLATION_CONTRACT = [
   '任务模式：文学作品翻译。保留作者叙述声音、潜台词、节奏和人物对白之间的差别；不能改写成自己的作品。',
