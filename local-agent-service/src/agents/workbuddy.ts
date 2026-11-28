@@ -3,7 +3,6 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { parseJsonValue } from '../json.ts';
-import { getTextPool } from './workbuddyPool.ts';
 import { parseTurnUsage, type TurnUsage } from './usage.ts';
 import { codeBuddyThinkingOption, type CodeBuddyTaskProfile } from './taskProfiles.ts';
 import {
@@ -53,10 +52,13 @@ export function buildWorkbuddyOptions(
     settingSources: [],
     persistSession: workflowSession.persistSession ?? false,
     ...(workflowSession.sessionId ? { resume: workflowSession.sessionId } : {}),
-    thinking: taskProfile ? codeBuddyThinkingOption(taskProfile) : schema
-      ? { type: 'adaptive' as const }
-      : { type: 'disabled' as const },
-    effort: taskProfile?.effort || (schema ? 'medium' as const : 'low' as const),
+    // Every Local Agent text/structured request is part of literary translation.
+    // Even legacy callers without a task profile must explicitly enable reasoning;
+    // effort remains low and is deliberately independent from the thinking switch.
+    thinking: taskProfile
+      ? codeBuddyThinkingOption(taskProfile)
+      : { type: 'enabled' as const, budgetTokens: 8192 },
+    effort: taskProfile?.effort || 'low' as const,
     canUseTool,
   };
   if (!schema) return { ...base, tools: [], allowedTools: [], maxTurns: 1 };
@@ -234,38 +236,26 @@ function createCodeBuddyContextWindowWorkspace(contextWindow: number): { cwd: st
 }
 
 /**
- * 文本模式 Workbuddy 调用：有 taskProfile 时走 query()（支持 thinking/effort），否则走共享文本池。
- * 返回文本与 usage；空输出抛错。
+ * 文本模式 Workbuddy 调用。
+ *
+ * 所有翻译调用统一使用 query()，因为 CodeBuddy 的 V2 SessionOptions 不支持 thinking/effort；
+ * 继续走共享 Session 池会让“启用思考”配置失效。无 taskProfile 的旧调用也默认启用思考、
+ * 使用 low effort；显式 taskProfile 则使用对应任务的独立设置。
  */
 export async function runWorkbuddy(
   agent: WorkbuddyAgent,
   prompt: string,
   systemPrompt: string,
   requestId = 'unknown',
-  sessionScope?: string,
+  _sessionScope?: string,
   taskProfile?: CodeBuddyTaskProfile,
 ): Promise<{ text: string; usage: TurnUsage | null }> {
-  // 任务档案必须走 query()，thinking/effort/fallbackModel 才会被采纳。
-  if (taskProfile) {
-    const result = await queryWorkbuddyRaw(
-      agent, prompt, systemPrompt, buildWorkbuddyOptions(agent, undefined, taskProfile), requestId,
-      REQUEST_TIMEOUT_MS, undefined, taskProfile.contextWindow,
-    );
-    if (!result.text) throw new Error('Workbuddy 已结束，但没有返回译文');
-    return { text: result.text, usage: result.usage };
-  }
-  const pool = getTextPool();
-  const index = await pool.acquire(agent, sessionScope || 'shared-text-translation');
-  try {
-    const firstMessage = !sessionScope || pool.isFresh(index)
-      ? buildCombinedPrompt(prompt, systemPrompt)
-      : prompt;
-    const result = await pool.runPrompt(index, firstMessage, requestId);
-    if (!result.text) throw new Error('Workbuddy 已结束，但没有返回译文');
-    return { text: result.text, usage: result.usage };
-  } finally {
-    pool.release(index);
-  }
+  const result = await queryWorkbuddyRaw(
+    agent, prompt, systemPrompt, buildWorkbuddyOptions(agent, undefined, taskProfile), requestId,
+    REQUEST_TIMEOUT_MS, undefined, taskProfile?.contextWindow,
+  );
+  if (!result.text) throw new Error('Workbuddy 已结束，但没有返回译文');
+  return { text: result.text, usage: result.usage };
 }
 
 /**
@@ -292,7 +282,7 @@ export function resolveWorkbuddyJson(structuredOutput: unknown, text: string, co
 }
 
 /**
- * 结构化 Workbuddy 调用：根据 taskProfile/sessionScope 决定走 query() 或共享池，支持超时与 session 恢复。
+ * 结构化 Workbuddy 翻译调用：统一走 query()，支持 task profile、超时与显式 session 恢复。
  * 返回 parsed + usage + sessionId。
  */
 export async function runWorkbuddyStructured(
@@ -301,7 +291,7 @@ export async function runWorkbuddyStructured(
   systemPrompt: string,
   schema: Record<string, unknown>,
   requestId = 'unknown',
-  sessionScope?: string,
+  _sessionScope?: string,
   taskProfile?: CodeBuddyTaskProfile,
   options: {
     timeoutMs?: number;
@@ -313,30 +303,13 @@ export async function runWorkbuddyStructured(
   let result: { text: string; structuredOutput: unknown; usage: TurnUsage | null; sessionId?: string };
   // 长任务（全书预处理）显式放宽上限；普通翻译批次沿用 REQUEST_TIMEOUT_MS。
   const timeoutMs = options.timeoutMs ?? REQUEST_TIMEOUT_MS;
-  if (taskProfile || options.persistSession || options.sessionId) {
-    // 持久化工作流的轮次必须绕过共享池，才能续上它那个确切的 SDK 会话。
-    // Query Options 正式支持推理相关设置；SessionOptions 不暴露它们。
-    result = await queryWorkbuddyRaw(
-      agent, prompt, systemPrompt,
-      buildWorkbuddyOptions(agent, schema, taskProfile, options),
-      requestId, timeoutMs, options.onSessionId, taskProfile?.contextWindow,
-    );
-  } else if (sessionScope) {
-    const pool = getTextPool();
-    const index = await pool.acquire(agent, sessionScope, schema);
-    try {
-      const promptForTurn = pool.isFresh(index) ? buildCombinedPrompt(prompt, systemPrompt) : prompt;
-      const value = await pool.runPrompt(index, promptForTurn, requestId, timeoutMs);
-      result = { text: value.text, structuredOutput: value.structuredOutput, usage: value.usage };
-    } finally {
-      pool.release(index);
-    }
-  } else {
-    result = await queryWorkbuddyRaw(
-      agent, prompt, systemPrompt, buildWorkbuddyOptions(agent, schema, undefined, options),
-      requestId, timeoutMs, options.onSessionId,
-    );
-  }
+  // StructuredOutput 是翻译格式约束，不代表可以关闭推理。旧调用缺少 taskProfile 时，
+  // buildWorkbuddyOptions 也会使用 enabled + low；显式 workflow session 仍按原参数续接。
+  result = await queryWorkbuddyRaw(
+    agent, prompt, systemPrompt,
+    buildWorkbuddyOptions(agent, schema, taskProfile, options),
+    requestId, timeoutMs, options.onSessionId, taskProfile?.contextWindow,
+  );
   return {
     parsed: resolveWorkbuddyStructured(result.structuredOutput, result.text, 'request=' + String(requestId).slice(0, 40)),
     usage: result.usage,
@@ -353,11 +326,11 @@ export async function runWorkbuddyJson(
   systemPrompt: string,
   schema: Record<string, unknown>,
   requestId = 'unknown',
-  sessionScope?: string,
+  _sessionScope?: string,
   taskProfile?: CodeBuddyTaskProfile,
   options: { timeoutMs?: number } = {},
 ): Promise<{ parsed: Record<string, any>; usage: TurnUsage | null }> {
-  const result = await runWorkbuddyStructured(agent, prompt, systemPrompt, schema, requestId, sessionScope, taskProfile, options);
+  const result = await runWorkbuddyStructured(agent, prompt, systemPrompt, schema, requestId, _sessionScope, taskProfile, options);
   if (!result.parsed || typeof result.parsed !== 'object' || Array.isArray(result.parsed)) {
     throw new Error('Workbuddy 返回内容不是预期 JSON 对象');
   }

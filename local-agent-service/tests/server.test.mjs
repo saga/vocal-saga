@@ -84,9 +84,8 @@ test('workbuddy 文本模式禁用工具，JSON 模式开启原生 structured ou
   assert.deepEqual(text.allowedTools, []);
   assert.equal(text.maxTurns, 1);
   assert.equal(text.outputFormat, undefined);
-  // 翻译任务关思考、推理深度压到 low。
-  // effort 现在是 SDK 的一级选项（transport 直接拼 --effort），不再经 extraArgs 传。
-  assert.deepEqual(text.thinking, { type: 'disabled' });
+  // 小说文学翻译固定启用 thinking；推理强度独立保持 low。
+  assert.deepEqual(text.thinking, { type: 'enabled', budgetTokens: 8192 });
   assert.equal(text.effort, 'low');
   assert.equal(text.extraArgs, undefined);
 
