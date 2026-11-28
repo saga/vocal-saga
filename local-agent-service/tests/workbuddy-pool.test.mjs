@@ -73,7 +73,7 @@ test('recreates a pooled Session when the SDK surface cannot switch models', asy
 test('legacy text translation option builder carries enabled low reasoning defaults', async () => {
   const { buildWorkbuddyOptions } = await import('../src/agents/workbuddy.ts');
   const options = buildWorkbuddyOptions(agent('model-a'));
-  assert.deepEqual(options.thinking, { type: 'enabled', budgetTokens: 8192 });
+  assert.deepEqual(options.thinking, { type: 'enabled' });
   assert.equal(options.effort, 'low');
 });
 
@@ -83,7 +83,7 @@ test('legacy structured translation option builder also keeps thinking enabled a
     type: 'object',
     properties: { translations: { type: 'array' } },
   });
-  assert.deepEqual(options.thinking, { type: 'enabled', budgetTokens: 8192 });
+  assert.deepEqual(options.thinking, { type: 'enabled' });
   assert.equal(options.effort, 'low');
   assert.equal(options.outputFormat.type, 'json_schema');
 });

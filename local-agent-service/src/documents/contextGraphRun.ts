@@ -123,7 +123,6 @@ async function runAnalysis(projectId: string, runId: string): Promise<void> {
     sourceLang, targetLang,
     provider: agent.provider, model: agent.model || '<runtime-default>',
     thinkingMode: taskProfile.thinkingMode,
-    thinkingBudgetTokens: taskProfile.thinkingBudgetTokens,
     effort: taskProfile.effort,
     fallbackModel: taskProfile.fallbackModel,
     scan: {
