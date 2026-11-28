@@ -59,6 +59,37 @@ test('sampling is deterministic, bounded, and records why each segment was selec
   assert.ok(first.samples.some((sample) => sample.reasons.some((reason) => reason.startsWith('repeated-phrase:'))));
 });
 
+
+test('recurring named vessels are sampled across early, middle, and late source regions', () => {
+  const segments = Array.from({ length: 90 }, (_, index) => {
+    const chapter = Math.floor(index / 10) + 1;
+    const hasSafina = [3, 43, 83].includes(index);
+    return {
+      id: 'vessel-' + String(index + 1).padStart(3, '0'),
+      ordinal: index,
+      contextPath: 'Chapter ' + chapter,
+      kind: 'paragraph',
+      text: hasSafina
+        ? 'The vessel Safina crossed the channel under a clear sky.'
+        : 'A quiet passage leads deeper into the archive.',
+    };
+  });
+
+  const scan = scanBookSegments(segments);
+  const candidate = scan.nameCandidates.find((item) => item.name === 'Safina');
+  assert.ok(candidate, 'the deterministic scan should surface the recurring capitalized vessel name');
+  assert.equal(candidate.mentions, 3);
+  assert.equal(candidate.chapterCount, 3);
+  assert.equal(candidate.regionCount, 3);
+
+  const plan = planBookSamples(segments, scan, 60);
+  const selected = plan.samples.filter((item) =>
+    item.reasons.some((reason) => reason.endsWith(':Safina')));
+  assert.ok(selected.some((item) => item.reasons.includes('entity-early:Safina')));
+  assert.ok(selected.some((item) => item.reasons.includes('entity-middle:Safina')));
+  assert.ok(selected.some((item) => item.reasons.includes('entity-late:Safina')));
+});
+
 test('short documents keep all source segments and do not truncate the sample set', () => {
   const segments = makeSegments().slice(0, 12);
   const plan = planBookSamples(segments);
