@@ -54,7 +54,7 @@ test('does not report negative phase durations when timestamps are inconsistent'
   assert.equal(summary.sdkImportMs, null);
   assert.equal(summary.preQuerySetupMs, null);
   assert.equal(summary.queryCreateMs, null);
-  assert.equal(summary.firstMessageAfterQueryMs, 20);
+  assert.equal(summary.firstMessageAfterQueryMs, null);
   assert.equal(summary.firstAssistantAfterQueryMs, null);
   assert.equal(summary.resultAfterQueryMs, null);
   assert.equal(summary.totalMs, 50);
