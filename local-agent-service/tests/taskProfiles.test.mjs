@@ -99,3 +99,17 @@ test('effective model prefers the task profile over the pool default', () => {
   assert.equal(resolveEffectiveTaskModel('glm-5.3-flash', { ...profile, model: 'auto' }), 'glm-5.3-flash');
   assert.equal(resolveEffectiveTaskModel('glm-5.3-flash', { ...profile, model: '  ' }), 'glm-5.3-flash');
 });
+
+
+test('legacy translation profiles cannot re-enable reasoning for high-volume draft generation', () => {
+  const profile = normalizeCodeBuddyTaskProfile({
+    thinkingMode: 'enabled',
+    thinkingBudgetTokens: 8192,
+    effort: 'low',
+  }, 'translation');
+  assert.equal(profile.thinkingMode, 'disabled');
+  assert.deepEqual(codeBuddyThinkingOption(profile), { type: 'disabled' });
+  const reviewer = normalizeCodeBuddyTaskProfile({ thinkingMode: 'enabled' }, 'accuracyReview');
+  assert.equal(reviewer.thinkingMode, 'enabled',
+    'reasoning remains configurable for accuracy review');
+});
