@@ -12,32 +12,27 @@ import {
 import { buildWorkbuddyOptions } from '../src/agents/workbuddy.ts';
 
 test('literary translation defaults to enabled thinking at low effort', () => {
-  assert.deepEqual(codeBuddyThinkingOption(DEFAULT_CODEBUDDY_TASK_PROFILES.translation), {
-    type: 'enabled',
-    budgetTokens: 8192,
-  });
+  assert.deepEqual(codeBuddyThinkingOption(DEFAULT_CODEBUDDY_TASK_PROFILES.translation), { type: 'enabled' });
   assert.deepEqual(codeBuddyThinkingOption(DEFAULT_CODEBUDDY_TASK_PROFILES.accuracyReview), { type: 'adaptive' });
   assert.equal(DEFAULT_CODEBUDDY_TASK_PROFILES.translation.effort, 'low');
   assert.equal(DEFAULT_CODEBUDDY_TASK_PROFILES.styleReview.effort, 'high');
   assert.equal(DEFAULT_CODEBUDDY_TASK_PROFILES.contextGraph.effort, 'high');
 });
 
-test('normalizes model inheritance and bounds thinking budget', () => {
+test('normalizes model inheritance without a thinking token budget', () => {
   const normalized = normalizeCodeBuddyTaskProfile({
     model: 'auto',
     fallbackModel: ' auto ',
     thinkingMode: 'enabled',
-    thinkingBudgetTokens: 90000,
     effort: 'xhigh',
     systemPromptAppendix: '  Keep names consistent  ',
   }, 'styleReview');
 
   assert.equal(normalized.model, '');
   assert.equal(normalized.fallbackModel, '');
-  assert.equal(normalized.thinkingBudgetTokens, 65536);
   assert.equal(normalized.effort, 'xhigh');
   assert.equal(normalized.systemPromptAppendix, 'Keep names consistent');
-  assert.deepEqual(codeBuddyThinkingOption(normalized), { type: 'enabled', budgetTokens: 65536 });
+  assert.deepEqual(codeBuddyThinkingOption(normalized), { type: 'enabled' });
 });
 
 test('builds documented query Options for the selected task', () => {
@@ -45,14 +40,13 @@ test('builds documented query Options for the selected task', () => {
     model: 'review-model',
     fallbackModel: 'backup-model',
     thinkingMode: 'enabled',
-    thinkingBudgetTokens: 4096,
     effort: 'high',
   }, 'accuracyReview');
   const options = buildWorkbuddyOptions({ provider: 'workbuddy', model: 'review-model' }, undefined, profile);
 
   assert.equal(options.model, 'review-model');
   assert.equal(options.fallbackModel, 'backup-model');
-  assert.deepEqual(options.thinking, { type: 'enabled', budgetTokens: 4096 });
+  assert.deepEqual(options.thinking, { type: 'enabled' });
   assert.equal(options.effort, 'high');
   assert.deepEqual(options.tools, []);
   assert.equal(options.maxTurns, 1);
@@ -107,14 +101,30 @@ test('effective model prefers the task profile over the pool default', () => {
 test('literary translation always enables thinking without raising low effort', () => {
   const profile = normalizeCodeBuddyTaskProfile({
     thinkingMode: 'disabled',
+    effort: 'low',
+  }, 'translation');
+  assert.equal(profile.thinkingMode, 'enabled');
+  assert.equal(profile.effort, 'low');
+  assert.deepEqual(codeBuddyThinkingOption(profile), { type: 'enabled' });
+
+  const reviewer = normalizeCodeBuddyTaskProfile({ thinkingMode: 'enabled' }, 'accuracyReview');
+  assert.equal(reviewer.thinkingMode, 'enabled',
+    'other task profiles remain independently configurable');
+});
+
+
+test('legacy thinking budget values are ignored and the no-profile fallback still enables thinking at low effort', () => {
+  const profile = normalizeCodeBuddyTaskProfile({
+    thinkingMode: 'disabled',
     thinkingBudgetTokens: 8192,
     effort: 'low',
   }, 'translation');
   assert.equal(profile.thinkingMode, 'enabled');
   assert.equal(profile.effort, 'low');
-  assert.deepEqual(codeBuddyThinkingOption(profile), { type: 'enabled', budgetTokens: 8192 });
+  assert.equal(Object.hasOwn(profile, 'thinkingBudgetTokens'), false);
+  assert.deepEqual(codeBuddyThinkingOption(profile), { type: 'enabled' });
 
-  const reviewer = normalizeCodeBuddyTaskProfile({ thinkingMode: 'enabled' }, 'accuracyReview');
-  assert.equal(reviewer.thinkingMode, 'enabled',
-    'other task profiles remain independently configurable');
+  const fallback = buildWorkbuddyOptions({ provider: 'workbuddy', model: 'default-model' });
+  assert.deepEqual(fallback.thinking, { type: 'enabled' });
+  assert.equal(fallback.effort, 'low');
 });
