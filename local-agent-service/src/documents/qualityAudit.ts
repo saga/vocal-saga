@@ -288,11 +288,15 @@ function buildAuditMetrics(input: {
   const openMustFixFindings = mustFixFindings.filter((item) =>
     !['applied', 'dismissed'].includes(String(item.applicationStatus || 'pending')) &&
     !['applied', 'dismissed', 'resolved'].includes(String(item.status || 'pending')));
-  const resolvedMustFixFindings = mustFixFindings.length - openMustFixFindings.length;
+  const resolvedMustFixFindings = mustFixFindings.filter((item) =>
+    item.applicationStatus === 'applied' || item.status === 'applied').length;
+  const waivedMustFixFindings = mustFixFindings.filter((item) =>
+    item.applicationStatus === 'dismissed' || item.status === 'dismissed').length;
   const characterVoiceFindings = reviewRows.filter((item) => item.type === 'character-voice-review').length;
   const qualityGateStatus = !section.review.reviewRunId
     ? 'not-assessed'
-    : openMustFixFindings.length ? 'blocked' : 'passed';
+    : openMustFixFindings.length ? 'blocked'
+      : waivedMustFixFindings.length ? 'passed-with-waivers' : 'passed';
   return {
     sourceSegmentCount: segments.length,
     translatedSegmentCount: translatedCount,
@@ -320,8 +324,9 @@ function buildAuditMetrics(input: {
     reviewerTerminologyOpenFindingCount: openMustFixFindings.filter((item) => item.category === 'terminology').length,
     openMustFixReviewFindingCount: openMustFixFindings.length,
     resolvedMustFixReviewFindingCount: resolvedMustFixFindings,
+    waivedMustFixReviewFindingCount: waivedMustFixFindings,
     qualityGateStatus,
-    qualityGatePassed: qualityGateStatus === 'passed',
+    qualityGatePassed: qualityGateStatus === 'passed' || qualityGateStatus === 'passed-with-waivers',
     styleReviewFindingCount: styleFindings,
     styleFindingRatePer100Segments: rate(styleFindings),
     characterVoiceFindingCount: characterVoiceFindings,
