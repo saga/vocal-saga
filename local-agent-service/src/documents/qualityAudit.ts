@@ -282,7 +282,17 @@ function buildAuditMetrics(input: {
   const rate = (count: number) => ratePer100Segments(count, segments.length);
   const repeatedDrift = repeated.filter((item) => item.type === 'repeated-expression-drift').length;
   const styleFindings = reviewRows.filter((item) => item.category === 'style').length;
+  const accuracyFindings = reviewRows.filter((item) => item.category === 'accuracy').length;
+  const reviewerTerminologyFindings = reviewRows.filter((item) => item.category === 'terminology').length;
+  const mustFixFindings = reviewRows.filter((item) => item.severity === 'must-fix');
+  const openMustFixFindings = mustFixFindings.filter((item) =>
+    !['applied', 'dismissed'].includes(String(item.applicationStatus || 'pending')) &&
+    !['applied', 'dismissed', 'resolved'].includes(String(item.status || 'pending')));
+  const resolvedMustFixFindings = mustFixFindings.length - openMustFixFindings.length;
   const characterVoiceFindings = reviewRows.filter((item) => item.type === 'character-voice-review').length;
+  const qualityGateStatus = !section.review.reviewRunId
+    ? 'not-assessed'
+    : openMustFixFindings.length ? 'blocked' : 'passed';
   return {
     sourceSegmentCount: segments.length,
     translatedSegmentCount: translatedCount,
@@ -304,8 +314,14 @@ function buildAuditMetrics(input: {
     entityMentionDriftCount: mentions.length,
     repeatedExpressionAlignmentReviewCount: repeated.filter((item) => item.type === 'repeated-expression-alignment-review').length,
     repeatedExpressionDriftRatePer100Segments: rate(repeatedDrift),
-    accuracyReviewFindingCount: reviewRows.filter((item) => item.category === 'accuracy').length,
-    reviewerTerminologyFindingCount: reviewRows.filter((item) => item.category === 'terminology').length,
+    accuracyReviewFindingCount: accuracyFindings,
+    accuracyReviewOpenFindingCount: openMustFixFindings.filter((item) => item.category === 'accuracy').length,
+    reviewerTerminologyFindingCount: reviewerTerminologyFindings,
+    reviewerTerminologyOpenFindingCount: openMustFixFindings.filter((item) => item.category === 'terminology').length,
+    openMustFixReviewFindingCount: openMustFixFindings.length,
+    resolvedMustFixReviewFindingCount: resolvedMustFixFindings,
+    qualityGateStatus,
+    qualityGatePassed: qualityGateStatus === 'passed',
     styleReviewFindingCount: styleFindings,
     styleFindingRatePer100Segments: rate(styleFindings),
     characterVoiceFindingCount: characterVoiceFindings,
