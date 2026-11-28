@@ -90,7 +90,7 @@ const STAGE_INSTRUCTIONS: Record<ContextGraphWorkflowStageId, string> = {
     '对高频或跨章节反复出现的非人物名称，比较早/中/晚样本中的称呼、上下文和类别词，判断是同一实体的表面变体、别名，还是不同实体；有歧义时保留独立节点并写入 openQuestions，不要仅凭词面相似合并。',
     '一条 entity 只能有一个 canonical name 和一个 target。不得把同一语义场中的多个词、国家或语言名称合成一个实体。不要输出斜杠清单、逗号清单或括号注释形式的目标译名。若名称的作品专属意义不清楚，宁可不输出实体，也不要把常见词永久化。',
     '必须覆盖重要虚构专名，包括虚构家族/宗族/氏族/王朝/派系。虚构专名不得被归化成其现实历史原型或相似名称；现实原型不是源文别名，不能写入 aliases。suggestedTranslation 是本书本次运行的预选规范译名，不是已获用户确认的全局事实。',
-    '实体需要稳定 name、aliases、规范 kind、significance、suggestedTranslation 和可核验 evidence。目标译名必须是目标语言中完整、自然的单一名称；中文人名不得出现不合理的拉丁字母/汉字混排（如 achi子），不得保留源词片段、清单分隔符或解释性括注。默认不把单次普通词汇登记为概念；只有在原文证据支持其跨章节具有作品专属含义时，才可附 bookSpecificMeaning=true，并在 significance 中具体说明；常见国名、语言名、普通宗教通名不得仅靠该标记绕过反复出现和意义证据要求。证据不足时 target 留空，不得猜测。只返回 entities 字段。',
+    '实体需要稳定 name、aliases、规范 kind、significance、suggestedTranslation 和可核验 evidence。significance 应用简短、来自原文的身份/作用描述区分同名对象，并说明它与剧情、人物或组织的关系；不要写成百科式猜测。目标译名必须是目标语言中完整、自然的单一名称；中文人名不得出现不合理的拉丁字母/汉字混排（如 achi子），不得保留源词片段、清单分隔符或解释性括注。默认不把单次普通词汇登记为概念；只有在原文证据支持其跨章节具有作品专属含义时，才可附 bookSpecificMeaning=true，并在 significance 中具体说明；常见国名、语言名、普通宗教通名不得仅靠该标记绕过反复出现和意义证据要求。证据不足时 target 留空，不得猜测。只返回 entities 字段。',
   ].join('\n'),
   relationships: [
     '只识别由样本文本直接支持的人物/实体关系。优先复用之前阶段已经识别的规范 name；from/to 必须能在人物或实体清单中精确对应。',
@@ -113,7 +113,7 @@ function compactPriorOutputs(stageId: ContextGraphWorkflowStageId, prior: Record
       name: item?.name, aliases: item?.aliases, suggestedTranslation: item?.suggestedTranslation, role: item?.role,
     }));
     if (stageId === 'relationships' && Array.isArray(prior.entities)) compact.entities = prior.entities.map((item: any) => ({
-      name: item?.name, aliases: item?.aliases, kind: item?.kind, suggestedTranslation: item?.suggestedTranslation,
+      name: item?.name, aliases: item?.aliases, kind: item?.kind, significance: item?.significance, suggestedTranslation: item?.suggestedTranslation,
     }));
   }
   if (stageId === 'chapters' && typeof prior.bookSummary === 'string') compact.bookSummary = prior.bookSummary;
