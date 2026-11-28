@@ -57,7 +57,7 @@ export function buildWorkbuddyOptions(
     // effort remains low and is deliberately independent from the thinking switch.
     thinking: taskProfile
       ? codeBuddyThinkingOption(taskProfile)
-      : { type: 'enabled' as const, budgetTokens: 8192 },
+      : { type: 'enabled' as const },
     effort: taskProfile?.effort || 'low' as const,
     canUseTool,
   };
