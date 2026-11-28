@@ -37,10 +37,14 @@ export function saveCandidates(store: DocumentProjectStore, projectId: string, r
     const category = ['accuracy', 'terminology', 'style'].includes(item.finding.category)
       ? item.finding.category : 'style';
     const priority = category === 'style' ? 'optional' : 'must_fix';
+    const applicationStatus = item.finding.applicationStatus === 'applied' ? 'applied'
+      : item.finding.applicationStatus === 'dismissed' ? 'dismissed'
+        : category === 'style' ? 'pending' : 'pending';
     return {
       segmentId,
       category,
       priority,
+      status: applicationStatus,
       findingJson: JSON.stringify({ ...item.finding, id: segmentId, category, priority }),
     };
   });
@@ -86,10 +90,10 @@ export function saveCandidates(store: DocumentProjectStore, projectId: string, r
       updateCandidate.run(resultId, now, runId, item.segmentId);
     }
     const insertFinding = db.prepare(
-      "INSERT INTO review_findings(run_id, segment_id, category, priority, finding_json, status, created_at) VALUES (?, ?, ?, ?, ?, 'pending', ?)",
+      'INSERT INTO review_findings(run_id, segment_id, category, priority, finding_json, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
     );
     for (const item of normalizedFindings) {
-      insertFinding.run(runId, item.segmentId, item.category, item.priority, item.findingJson, now);
+      insertFinding.run(runId, item.segmentId, item.category, item.priority, item.findingJson, item.status, now);
     }
     db.exec('COMMIT');
     return true;
@@ -240,8 +244,13 @@ export function setReviewFindingDisposition(store: DocumentProjectStore, project
     if (!row) throw Object.assign(new Error('找不到这条审校建议'), { status: 404 });
     const finding = parseJson<any>(row.finding_json, {});
     const isNamingConsolidation = row.category === 'terminology' && finding.generatedBy === 'translation-name-consolidation';
-    if (row.category !== 'style' && !isNamingConsolidation) {
-      throw Object.assign(new Error('只有文风建议或服务端生成的规范译名修复建议支持手动采纳'), { status: 400 });
+    const isMustFixReview = ['accuracy', 'terminology'].includes(String(row.category)) &&
+      finding.priority === 'must_fix' && !isNamingConsolidation;
+    if (row.category !== 'style' && !isNamingConsolidation && !isMustFixReview) {
+      throw Object.assign(new Error('只有文风建议、准确性/术语 must-fix 处置或服务端规范译名修复支持手动处理'), { status: 400 });
+    }
+    if (isMustFixReview && action === 'apply') {
+      throw Object.assign(new Error('准确性/术语问题不能直接采纳 Reviewer finding；请先修订正文，或明确驳回该项。'), { status: 409 });
     }
     if (row.source_revision_id !== currentSourceRevisionId) {
       throw Object.assign(new Error('这条审校建议属于旧原文版本，不能应用到当前文档'), { status: 409 });
@@ -251,17 +260,29 @@ export function setReviewFindingDisposition(store: DocumentProjectStore, project
       throw Object.assign(new Error('中文编辑建议尚未完成双语忠实度复核，暂时不能采纳。'), { status: 409 });
     }
 
-    if (action === 'apply' && row.finding_status === 'applied' && finding.applicationStatus === 'applied' && finding.appliedResultId) {
-      const saved = db.prepare(
-        'SELECT translation_text FROM translation_results WHERE result_id = ? AND accepted = 1',
-      ).get(finding.appliedResultId) as { translation_text?: string } | undefined;
-      if (saved?.translation_text) {
+    if (action === 'apply' && row.finding_status === 'applied' && finding.applicationStatus === 'applied') {
+      const proposed = typeof finding.proposedTranslation === 'string' ? finding.proposedTranslation.trim() : '';
+      const saved = finding.appliedResultId
+        ? db.prepare(
+            'SELECT result_id, translation_text FROM translation_results WHERE result_id = ? AND accepted = 1',
+          ).get(finding.appliedResultId) as { result_id?: string; translation_text?: string } | undefined
+        : db.prepare(
+            'SELECT result_id, translation_text FROM translation_results ' +
+            'WHERE source_revision_id = ? AND segment_id = ? AND accepted = 1 ' +
+            'ORDER BY COALESCE(accepted_at, created_at) DESC, rowid DESC LIMIT 1',
+          ).get(currentSourceRevisionId, row.segment_id) as { result_id?: string; translation_text?: string } | undefined;
+      // Older and newly auto-adopted findings may have no appliedResultId. If the
+      // latest accepted text already equals the grounded proposal, confirming it is
+      // idempotent and must not attempt a second UPDATE of a non-pending finding.
+      if (saved?.translation_text && proposed && saved.translation_text.trim() === proposed) {
         db.exec('ROLLBACK');
         return {
           findingId, segmentId: row.segment_id, applicationStatus: 'applied',
-          resultId: finding.appliedResultId, text: saved.translation_text, alreadyApplied: true,
+          resultId: saved.result_id || finding.appliedResultId || undefined,
+          text: saved.translation_text, alreadyApplied: true,
         };
       }
+      throw Object.assign(new Error('这条审校建议已经应用，当前正文已发生变化；请刷新后核对正文。'), { status: 409 });
     }
     if (action === 'dismiss' && (row.finding_status === 'dismissed' || finding.applicationStatus === 'dismissed')) {
       db.exec('ROLLBACK');
@@ -371,13 +392,17 @@ export function setReviewFindingDisposition(store: DocumentProjectStore, project
       result = { findingId, segmentId: row.segment_id, applicationStatus: 'applied', resultId, text: proposed };
     } else {
       finding.applicationStatus = 'dismissed';
+      finding.applicationMethod = isMustFixReview ? 'user-waiver' : 'user-dismissed';
       const findingUpdate = db.prepare(
         "UPDATE review_findings SET status = 'dismissed', finding_json = ? WHERE finding_id = ? AND run_id = ? AND status = 'pending'",
       ).run(JSON.stringify(finding), findingId, runId);
       if (Number(findingUpdate.changes || 0) !== 1) {
-        throw Object.assign(new Error('这条文风建议刚刚被处理；请刷新后重试。'), { status: 409 });
+        throw Object.assign(new Error('这条审校发现刚刚被处理；请刷新后重试。'), { status: 409 });
       }
-      result = { findingId, segmentId: row.segment_id, applicationStatus: 'dismissed' };
+      result = {
+        findingId, segmentId: row.segment_id, applicationStatus: 'dismissed',
+        ...(isMustFixReview ? { priority: 'must_fix', disposition: 'user-waiver' } : {}),
+      };
     }
     db.exec('COMMIT');
   } catch (error) {
@@ -387,7 +412,9 @@ export function setReviewFindingDisposition(store: DocumentProjectStore, project
 
   if (statusEvent) store.addEvent(projectId, runId, 'run.' + statusEvent.status, { error: statusEvent.error || undefined });
   store.addEvent(projectId, runId, action === 'apply' ? 'review-finding.applied' : 'review-finding.dismissed', {
-    findingId, segmentId: result.segmentId, ...(result.resultId ? { resultId: result.resultId } : {}),
+    findingId, segmentId: result.segmentId,
+    ...(result.resultId ? { resultId: result.resultId } : {}),
+    ...(result.disposition ? { priority: result.priority, disposition: result.disposition } : {}),
   });
   store.catalogDb().prepare('UPDATE document_projects SET updated_at = ? WHERE project_id = ?').run(now, projectId);
   return result;

@@ -1055,3 +1055,52 @@ test('automatic quality repair rejects non-missing findings even when they are i
   ), /自动返工只允许使用明确选中的/);
 });
 
+
+test('quality audit includes open accuracy must-fix findings and closes them only after a concrete edit', () => {
+  const store = getDocumentProjectStore();
+  const source = 'Bog help you if you did not give him the money.';
+  const badDraft = '愿上帝保佑你，如果你不给他钱。';
+  const project = store.createProject({
+    title: 'Accuracy Review Gate Test',
+    format: 'txt',
+    sourceFileName: 'accuracy-review-gate.txt',
+    prompt: {
+      translationMode: 'literary', sourceLang: 'en', targetLang: 'zh',
+      literaryReview: true,
+    },
+    segments: [{ id: 'threat-1', text: source, kind: 'paragraph', contextPath: 'Chapter 1' }],
+  });
+  ensureTestContextGraph(store, project);
+  const run = store.createRun(project.projectId, { scope: { type: 'all' } });
+  store.saveCandidate(project.projectId, run.runId, 'threat-1', badDraft);
+  store.saveFinding(project.projectId, run.runId, 'threat-1', {
+    category: 'accuracy',
+    priority: 'must_fix',
+    sourceExcerpt: source,
+    draftExcerpt: '愿上帝保佑你',
+    reason: '原文是威胁，不是祝福。',
+    suggestion: '可有你好受的。',
+    applicationStatus: 'pending',
+  });
+  store.finishRun(project.projectId, run.runId);
+  store.acceptCandidates(project.projectId, run.runId);
+
+  const blocked = runProjectQualityAudit(project.projectId);
+  assert.equal(blocked.metrics.accuracyReviewFindingCount, 1);
+  assert.equal(blocked.metrics.accuracyReviewOpenFindingCount, 1);
+  assert.equal(blocked.metrics.openMustFixReviewFindingCount, 1);
+  assert.equal(blocked.metrics.qualityGateStatus, 'blocked');
+  assert.equal(blocked.metrics.qualityGatePassed, false);
+  assert.ok(blocked.findings.some((item) => item.type === 'accuracy-review' &&
+    item.segmentIds.includes('threat-1') && item.applicationStatus === 'pending'));
+
+  // A later manual edit only closes the finding when it actually removes the anchored wrong phrase.
+  store.saveManualEdit(project.projectId, 'threat-1', '你要是不把钱给他，可有你好受的。');
+  const repaired = runProjectQualityAudit(project.projectId);
+  assert.equal(repaired.metrics.accuracyReviewFindingCount, 1);
+  assert.equal(repaired.metrics.accuracyReviewOpenFindingCount, 0);
+  assert.equal(repaired.metrics.openMustFixReviewFindingCount, 0);
+  assert.equal(repaired.metrics.resolvedMustFixReviewFindingCount, 1);
+  assert.equal(repaired.metrics.qualityGateStatus, 'passed');
+  assert.equal(repaired.metrics.qualityGatePassed, true);
+});

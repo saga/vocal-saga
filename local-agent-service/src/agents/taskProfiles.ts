@@ -113,9 +113,14 @@ export function normalizeCodeBuddyTaskProfile(
   const raw = input && typeof input === 'object' && !Array.isArray(input)
     ? input as Record<string, unknown>
     : {};
-  const thinkingMode = typeof raw.thinkingMode === 'string' && validThinkingModes.has(raw.thinkingMode as CodeBuddyThinkingMode)
-    ? raw.thinkingMode as CodeBuddyThinkingMode
-    : defaults.thinkingMode;
+  // Translation is a high-volume generation task, not a reasoning task. Force thinking off
+  // even for persisted legacy profiles that explicitly saved "enabled"; this prevents old
+  // project snapshots from silently reintroducing the 8k-token reasoning overhead.
+  const thinkingMode = task === 'translation'
+    ? 'disabled'
+    : typeof raw.thinkingMode === 'string' && validThinkingModes.has(raw.thinkingMode as CodeBuddyThinkingMode)
+      ? raw.thinkingMode as CodeBuddyThinkingMode
+      : defaults.thinkingMode;
   const effort = typeof raw.effort === 'string' && validEfforts.has(raw.effort as CodeBuddyEffort)
     ? raw.effort as CodeBuddyEffort
     : defaults.effort;

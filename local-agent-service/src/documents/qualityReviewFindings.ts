@@ -21,7 +21,7 @@ export function currentReviewFindings(
       'WHERE tr.source_revision_id = ? AND tr.review_enabled = 1 ' +
       'AND (EXISTS (SELECT 1 FROM review_findings rf WHERE rf.run_id = tr.run_id) ' +
         'OR EXISTS (SELECT 1 FROM project_events pe WHERE pe.run_id = tr.run_id ' +
-          "AND pe.event_type = 'stage.completed' AND pe.payload_json LIKE '%style-review%')) " +
+          "AND pe.event_type = 'stage.completed' AND (pe.payload_json LIKE '%style-review%' OR pe.payload_json LIKE '%stage\":\"review%'))) " +
       'ORDER BY tr.finished_at DESC, tr.created_at DESC LIMIT 1'
     ).get(revisionId) as any;
     reviewRunId = row?.run_id || null;
@@ -33,34 +33,54 @@ export function currentReviewFindings(
     'FROM review_findings rf JOIN translation_runs tr ON tr.run_id = rf.run_id ' +
     'LEFT JOIN run_segments rs ON rs.run_id = rf.run_id AND rs.segment_id = rf.segment_id ' +
     'LEFT JOIN translation_results r ON r.result_id = rs.candidate_result_id ' +
-    "WHERE rf.run_id = ? AND tr.source_revision_id = ? AND rf.category = 'style' " +
+    "WHERE rf.run_id = ? AND tr.source_revision_id = ? AND rf.category IN ('accuracy', 'terminology', 'style') " +
     'ORDER BY rf.finding_id DESC LIMIT 300'
   ).all(reviewRunId, revisionId) as any[];
   const findings = rows.flatMap((row) => {
     const reviewedTranslation = typeof row.reviewed_translation === 'string' ? row.reviewed_translation : null;
-    // 审计已采纳文本时（没指定 runId），要压掉旧候选留下的过期文风发现——
-    // 那份译文已经不是当前源文版本的已采纳文本了。
+    let finding: any = {};
+    try { finding = JSON.parse(row.finding_json); } catch { finding = {}; }
+    let effectiveStatus = String(row.status);
+    let applicationStatus = typeof finding.applicationStatus === 'string' ? finding.applicationStatus : 'pending';
+    let applicationMethod = typeof finding.applicationMethod === 'string' ? finding.applicationMethod : null;
+
+    // 对当前已采纳文本做审计时，不要静默丢掉 accuracy/terminology must-fix：
+    // 如果问题原文片段仍在当前译文里，它仍是未解决项；若用户后来编辑并移除了
+    // 精确问题片段，则将其记为人工解决。可选文风建议仍只关联它实际审阅过的文本。
     if (!requestedRunId) {
       const accepted = db.prepare(
         'SELECT translation_text FROM translation_results WHERE source_revision_id = ? AND segment_id = ? ' +
         'AND accepted = 1 ORDER BY rowid DESC LIMIT 1'
       ).get(revisionId, String(row.segment_id)) as { translation_text?: string } | undefined;
-      if (!accepted || accepted.translation_text !== reviewedTranslation) return [];
+      if (!accepted || typeof accepted.translation_text !== 'string') return [];
+      if (accepted.translation_text !== reviewedTranslation) {
+        if (row.category === 'style') return [];
+        const excerpt = typeof finding.draftExcerpt === 'string' ? finding.draftExcerpt.trim() : '';
+        if (excerpt && accepted.translation_text.includes(excerpt)) {
+          effectiveStatus = 'pending';
+          applicationStatus = 'pending';
+        } else if (excerpt) {
+          effectiveStatus = 'applied';
+          applicationStatus = 'applied';
+          applicationMethod = 'manual-edit-after-review';
+        } else {
+          effectiveStatus = 'pending';
+          applicationStatus = 'pending';
+        }
+      }
     }
-    let finding: any = {};
-    try { finding = JSON.parse(row.finding_json); } catch { finding = {}; }
     return [{
       findingId: Number(row.finding_id),
       segmentId: String(row.segment_id),
       category: String(row.category),
       priority: String(row.priority),
-      status: String(row.status),
+      status: effectiveStatus,
       dimension: typeof finding.dimension === 'string' ? finding.dimension : null,
       characterId: typeof finding.characterId === 'string' ? finding.characterId : null,
       editorialMode: typeof finding.editorialMode === 'string' ? finding.editorialMode : null,
       bilingualReviewStatus: typeof finding.bilingualReviewStatus === 'string' ? finding.bilingualReviewStatus : 'not-required',
-      applicationStatus: typeof finding.applicationStatus === 'string' ? finding.applicationStatus : 'pending',
-      applicationMethod: typeof finding.applicationMethod === 'string' ? finding.applicationMethod : null,
+      applicationStatus,
+      applicationMethod,
       appliedResultId: typeof finding.appliedResultId === 'string' ? finding.appliedResultId : null,
       targetExcerpt: typeof finding.targetExcerpt === 'string' ? finding.targetExcerpt : null,
       sourceExcerpt: String(finding.sourceExcerpt || ''),

@@ -30,8 +30,11 @@ export interface RunBatchScope {
   batches: TranslationItem[][];
   reviewStrength: string;
   detachReviews: boolean;
+  poolSize: number;
+  reviewConcurrency: number;
+  reviewDrainConcurrency: number;
   reviewLimiter: ConcurrencyLimiter;
-  reviewTasks: Array<Promise<unknown>>;
+  reviewTasks: Array<{ batchIndex: number; task: Promise<unknown> }>;
 }
 
 /** 一批片段在审校阶段的共享状态；初译结果与候选集合在同一批内被反复读写。 */
@@ -188,7 +191,7 @@ export async function processBatch(
   });
   if (scope.detachReviews) {
     // 这里不要 await：这次审校还在飞的时候，另一个翻译批次就该能开跑。
-    scope.reviewTasks.push(scope.reviewLimiter(job));
+    scope.reviewTasks.push({ batchIndex, task: scope.reviewLimiter(job) });
   } else {
     // 会话池只有一个槽位时，翻译和审校没法安全重叠。
     await scope.reviewLimiter(job);

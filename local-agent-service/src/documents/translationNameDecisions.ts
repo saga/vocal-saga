@@ -355,6 +355,70 @@ export function buildRunNameDependencyWaves(
   return waves;
 }
 
+/**
+ * Return only the batch indexes that introduced a new canonical entity in this wave.
+ * Their review result is the only review work that must settle before the dependent
+ * translation waves can use a first-use decision. Unrelated reviews may keep running.
+ */
+export function getUnstagedRunNameCandidateLeaderBatchIndexes(
+  store: DocumentProjectStore,
+  projectId: string,
+  runId: string,
+  context: any,
+  batches: Array<Array<{ id: string; text: string }>>,
+  batchIndexes: number[],
+): number[] {
+  if (!batchIndexes.length) return [];
+  const db = store.getProjectContext(projectId).db;
+  if (!tableExists(db, 'translation_context_deltas')) return [];
+  const decided = new Set([
+    ...readRunDecisions(db, runId),
+    ...readRunFirstUseDecisionsFromDb(db, runId),
+  ].map((item) => normalizeEntityName(item.source)));
+  const persistedBatchIndexes = batchIndexes.map((index) => index + 1);
+  const placeholders = persistedBatchIndexes.map(() => '?').join(',');
+  const rows = db.prepare(
+    'SELECT delta_json FROM translation_context_deltas WHERE run_id = ? AND batch_index IN (' + placeholders + ')'
+  ).all(runId, ...persistedBatchIndexes) as Array<{ delta_json: string }>;
+  if (!rows.length) return [];
+
+  const revisionId = String(context?.run?.sourceRevisionId || '');
+  const memory = context.memory && typeof context.memory === 'object'
+    ? context.memory as Record<string, any>
+    : store.getCurrentLiteraryMemory(projectId).memory;
+  const groups = loadNameGroups(db, revisionId, memory, runId);
+  const firstMentions = firstRunMentionOrdinals(db, runId, revisionId, groups);
+  const runRows = db.prepare(
+    'SELECT s.segment_id AS segmentId, s.ordinal AS ordinal ' +
+    'FROM run_segments rs JOIN source_segments s ON s.segment_id = rs.segment_id ' +
+    'AND s.source_revision_id = ? WHERE rs.run_id = ? ORDER BY s.ordinal'
+  ).all(revisionId, runId) as Array<{ segmentId: string; ordinal: number }>;
+  const segmentAtOrdinal = new Map(runRows.map((row) => [Number(row.ordinal), row.segmentId]));
+  const batchBySegment = new Map<string, number>();
+  batches.forEach((batch, index) => batch.forEach((item) => batchBySegment.set(item.id, index)));
+  const leaders = new Set<number>();
+
+  for (const row of rows) {
+    const delta = parseJson(row.delta_json, {});
+    for (const candidate of Array.isArray(delta.entityCandidates) ? delta.entityCandidates : []) {
+      const kind = normalizeCanonicalEntityKind(candidate?.kind);
+      const source = typeof candidate?.canonicalSource === 'string' ? candidate.canonicalSource.trim() : '';
+      const key = normalizeEntityName(source);
+      if (!source || !key || !supportsRunCanonicalFirstUse(kind) || decided.has(key)) continue;
+      const group = groups.get(key);
+      if (!group) continue;
+      const firstOrdinal = firstMentions.get(key);
+      if (firstOrdinal === undefined) continue;
+      const firstSegmentId = segmentAtOrdinal.get(firstOrdinal);
+      const leaderBatchIndex = firstSegmentId ? batchBySegment.get(firstSegmentId) : undefined;
+      if (leaderBatchIndex !== undefined && batchIndexes.includes(leaderBatchIndex)) {
+        leaders.add(leaderBatchIndex);
+      }
+    }
+  }
+  return Array.from(leaders).sort((a, b) => a - b);
+}
+
 /** Detect a new canonical-entity proposal before deciding whether its leader reviewers must be drained. */
 export function hasUnstagedRunNameCandidates(
   store: DocumentProjectStore,

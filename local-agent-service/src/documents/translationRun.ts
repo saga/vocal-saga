@@ -16,7 +16,7 @@ import {
   startContextGraphAnalysis,
 } from './contextGraph.ts';
 import { normalizeDocumentTranslationStrategy, type DocumentTranslationStrategy } from './documentStrategy.ts';
-import { sourceLanguageMatches } from './languageMatch.ts';
+import { detectSourceLanguageMismatch, sourceLanguageMatches } from './languageMatch.ts';
 import { type DocumentProjectStore, getDocumentProjectStore } from './projectStore.ts';
 import { mergeTranslationContextDeltasIntoMemory, type ValidatedTranslationContextDelta } from './translationContextDelta.ts';
 import { runProjectQualityAudit } from './qualityAudit.ts';
@@ -36,7 +36,7 @@ import { processBatch, type RunBatchScope } from './translationRunBatch.ts';
 import {
   buildRunNameDependencyWaves,
   consolidateAcceptedRunNames,
-  hasUnstagedRunNameCandidates,
+  getUnstagedRunNameCandidateLeaderBatchIndexes,
   mergeRunNameDecisions,
   prepareRunFirstUseDecisions,
   prepareRunNameDecisions,
@@ -81,6 +81,67 @@ export function shouldUseLightweightLiteraryContext(
   if (!valid.length || valid.length > 12) return false;
   const sourceChars = valid.reduce((total, segment) => total + String(segment.text).length, 0);
   return sourceChars <= 6_000;
+}
+
+/** Read bounded source samples from early, middle and late portions of one immutable revision. */
+export function readSourceLanguagePreflightSamples(
+  db: any,
+  sourceRevisionId: string,
+  sampleSize = 8,
+): Array<{ text: string }> {
+  const row = db.prepare(
+    'SELECT COUNT(*) AS total FROM source_segments WHERE source_revision_id = ?',
+  ).get(sourceRevisionId) as { total?: number } | undefined;
+  const total = Math.max(0, Number(row?.total || 0));
+  if (!total) return [];
+  const size = Math.max(1, Math.min(12, Math.floor(sampleSize) || 8));
+  const lastOffset = Math.max(0, total - size);
+  const offsets = Array.from(new Set([
+    0,
+    Math.max(0, Math.floor((total - size) / 2)),
+    lastOffset,
+  ]));
+  const seen = new Set<string>();
+  const samples: Array<{ text: string }> = [];
+  const query = db.prepare(
+    'SELECT text FROM source_segments WHERE source_revision_id = ? ORDER BY ordinal LIMIT ? OFFSET ?',
+  );
+  for (const offset of offsets) {
+    const rows = query.all(sourceRevisionId, size, offset) as Array<{ text?: unknown }>;
+    for (const item of rows) {
+      const text = typeof item.text === 'string' ? item.text.trim() : '';
+      if (text && !seen.has(text)) {
+        seen.add(text);
+        samples.push({ text });
+      }
+    }
+  }
+  return samples;
+}
+
+function assertRunSourceLanguageMatchesText(
+  store: DocumentProjectStore,
+  projectId: string,
+  runId: string,
+  run: Record<string, any>,
+): void {
+  const { db } = store.getProjectContext(projectId);
+  const samples = readSourceLanguagePreflightSamples(db, String(run.sourceRevisionId || ''));
+  const mismatch = detectSourceLanguageMismatch(samples, run.sourceLang);
+  store.appendEvent(projectId, runId, 'source-language.preflight', {
+    requestedLang: String(run.sourceLang || 'auto'),
+    sampleSegmentCount: samples.length,
+    mismatch,
+    detector: 'local-en-fr-stopword-signal-v1',
+  });
+  if (mismatch) {
+    throw new Error(
+      '源语言设置与原文样本明显不符：当前设置为 ' + mismatch.requestedLang +
+      '，样本更接近 ' + mismatch.detectedLang +
+      '。为避免整本翻译方向错误，请修改项目源语言后重新创建 Run。' +
+      '（本地预检覆盖 ' + mismatch.wordCount + ' 个词；未调用模型。）',
+    );
+  }
 }
 
 /**
@@ -205,6 +266,10 @@ export async function prepareRunExecution(
   if (!context.prompt) throw new Error('找不到本次运行使用的 Prompt 版本');
   const initialStatus = context.run.status;
   if (initialStatus === 'completed' || initialStatus === 'cancelled' || initialStatus === 'awaiting_acceptance') return null;
+
+  // Reject a clear language/configuration mismatch before any whole-book preprocessing
+  // or translation model call. A mixed-language sample is only rejected at a high confidence margin.
+  assertRunSourceLanguageMatchesText(store, projectId, runId, context.run as Record<string, any>);
 
   // 全书分析与证据归服务端所有；扩展只负责提交 Run 和渲染状态。
   if (!(await ensureLiteraryPreprocessingBeforeRun(projectId, runId, context.run as Record<string, any>))) return null;
@@ -336,7 +401,7 @@ export async function prepareRunExecution(
   });
 
   const reviewLimiter = createConcurrencyLimiter(reviewConcurrency);
-  const reviewTasks: Promise<void>[] = [];
+  const reviewTasks: RunBatchScope['reviewTasks'] = [];
   return {
     context, items, batches, strategy, reviewStrength, reviewEnabled, modelReviewEnabled,
     poolSize, translationConcurrency, reviewConcurrency, detachReviews, reviewDrainConcurrency,
@@ -359,7 +424,7 @@ export interface PreparedRunExecution {
   detachReviews: boolean;
   reviewDrainConcurrency: number;
   reviewLimiter: ReturnType<typeof createConcurrencyLimiter>;
-  reviewTasks: Promise<void>[];
+  reviewTasks: RunBatchScope['reviewTasks'];
 }
 
 /**
@@ -563,6 +628,9 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
       batches: prepared.batches,
       reviewStrength: prepared.reviewStrength,
       detachReviews: prepared.detachReviews,
+      poolSize: prepared.poolSize,
+      reviewConcurrency: prepared.reviewConcurrency,
+      reviewDrainConcurrency: prepared.reviewDrainConcurrency,
       reviewLimiter: prepared.reviewLimiter,
       reviewTasks: prepared.reviewTasks,
     };
@@ -627,6 +695,26 @@ async function scheduleTranslationWaves(
     ).all(context.run.sourceRevisionId) as Array<{ segment_id: string; ordinal: number }>;
     for (const row of sourceOrdinals) ordinalById.set(row.segment_id, Number(row.ordinal));
 
+    // Reserve the configured translation workers first, then use the remaining
+    // shared session capacity for reviews throughout the run. This avoids the old
+    // two-reviewer bottleneck without creating per-wave oversubscription.
+    const modelReviewEnabled = scope.reviewStrength === 'strong' || scope.reviewStrength === 'medium';
+    const reviewConcurrencyDuringTranslation = Math.min(
+      scope.reviewDrainConcurrency,
+      Math.max(scope.reviewConcurrency, scope.poolSize - translationConcurrency),
+    );
+    if (modelReviewEnabled && reviewConcurrencyDuringTranslation > scope.reviewLimiter.getConcurrency()) {
+      const previous = scope.reviewLimiter.getConcurrency();
+      const applied = scope.reviewLimiter.setConcurrency(reviewConcurrencyDuringTranslation);
+      store.appendEvent(projectId, runId, 'review.translation.capacity.expanded', {
+        from: previous,
+        to: applied,
+        translationConcurrency,
+        poolSize: scope.poolSize,
+        policy: 'reserve-translation-capacity-and-share-remaining-sessions',
+      });
+    }
+
     // 人名第一次出现的批次与同波中重复提到它的批次不能并发：
     // 前者必须先完成，才能把经过当前 Reviewer 结果回校的临时译名注入后者。
     // 只有确实存在这种依赖时才切分波次；其余批次仍保持原有并发宽度。
@@ -676,7 +764,6 @@ async function scheduleTranslationWaves(
         memoryEntityCount: Array.isArray(batchContext.memory?.entities) ? batchContext.memory.entities.length : 0,
         policy: 'freeze-within-wave; source-order-delta-visibility; first-use-name-dependencies',
       });
-      const reviewTaskStart = scope.reviewTasks.length;
       await runWithConcurrency(
         wave,
         translationConcurrency,
@@ -690,26 +777,35 @@ async function scheduleTranslationWaves(
       if (status === 'cancelled' || status === 'paused') break;
       waveIndex++;
 
-      // A first-use decision is derived only after all reviews scheduled by its
-      // leader wave settle. This is a targeted barrier, not a global serial review.
-      if (context.run.translationMode === 'literary' &&
-          hasUnstagedRunNameCandidates(store, projectId, runId, batchIndexes)) {
-        await Promise.allSettled(scope.reviewTasks.slice(reviewTaskStart));
-        const staged = prepareRunFirstUseDecisions(
+      // Wait only for reviewers of batches that introduced a new canonical name.
+      // Other reviews continue concurrently while the next translation wave starts.
+      if (context.run.translationMode === 'literary') {
+        const leaderBatchIndexes = getUnstagedRunNameCandidateLeaderBatchIndexes(
           store, projectId, runId, context, batches, batchIndexes,
         );
-        if (staged.length) {
-          context.runNameDecisions = mergeRunNameDecisions(
-            context.runNameDecisions || [],
-            staged,
+        if (leaderBatchIndexes.length) {
+          const leaderSet = new Set(leaderBatchIndexes);
+          const leaderReviews = scope.reviewTasks
+            .filter((item) => leaderSet.has(item.batchIndex - 1))
+            .map((item) => item.task);
+          await Promise.allSettled(leaderReviews);
+          const staged = prepareRunFirstUseDecisions(
+            store, projectId, runId, context, batches, leaderBatchIndexes,
           );
-          store.appendEvent(projectId, runId, 'translation.naming.first-use.barrier.completed', {
-            waveIndex: waveIndex + 1,
-            batchIndexes: batchIndexes.map((index) => index + 1),
-            provisionalDecisionCount: staged.length,
-            availableToLaterWaves: true,
-            durableLiteraryMemory: false,
-          });
+          if (staged.length) {
+            context.runNameDecisions = mergeRunNameDecisions(
+              context.runNameDecisions || [],
+              staged,
+            );
+            store.appendEvent(projectId, runId, 'translation.naming.first-use.barrier.completed', {
+              waveIndex: waveIndex + 1,
+              leaderBatchIndexes: leaderBatchIndexes.map((index) => index + 1),
+              provisionalDecisionCount: staged.length,
+              availableToLaterWaves: true,
+              durableLiteraryMemory: false,
+              policy: 'wait-for-first-use-leader-reviews-only',
+            });
+          }
         }
       }
     }
@@ -753,7 +849,7 @@ async function drainAndSettleReviews(
 
   // 算终态之前要等所有已拆出去的审校结束。翻译和审校是重叠进行的，
   // 但只要有审校还在跑，这次 Run 就不能算完成。
-  const reviewResults = await Promise.allSettled(reviewTasks);
+  const reviewResults = await Promise.allSettled(reviewTasks.map((item) => item.task));
   if (schedulerError) throw schedulerError;
   const failedReviewTask = reviewResults.find((result): result is PromiseRejectedResult => result.status === 'rejected');
   if (failedReviewTask) {

@@ -84,3 +84,70 @@ export function applyRunLanguageDirection(
     .replace(/^输入语言：.*$/m, () => sourceLine)
     .replace(/^目标语言：.*$/m, () => targetLine);
 }
+
+
+export interface SourceLanguageMismatch {
+  requestedLang: string;
+  detectedLang: string;
+  requestedScore: number;
+  detectedScore: number;
+  wordCount: number;
+}
+
+const LANGUAGE_SIGNAL_WORDS: Record<string, Set<string>> = {
+  en: new Set([
+    'the', 'and', 'of', 'to', 'in', 'is', 'it', 'that', 'was', 'he', 'she',
+    'you', 'his', 'her', 'with', 'for', 'on', 'as', 'but', 'not', 'had',
+    'have', 'they', 'we', 'said', 'were', 'from', 'at', 'by', 'be', 'been',
+    'are', 'if', 'then', 'when', 'which', 'who', 'what', 'would', 'could',
+    'their', 'there', 'this', 'these', 'those', 'into', 'after', 'before',
+  ]),
+  fr: new Set([
+    'le', 'la', 'les', 'des', 'du', 'de', 'et', 'est', 'que', 'qui', 'dans',
+    'une', 'un', 'pour', 'pas', 'avec', 'sur', 'il', 'elle', 'vous', 'nous',
+    'mais', 'avait', 'était', 'sont', 'ont', 'aux', 'au', 'ce', 'cette',
+    'ces', 'son', 'sa', 'ses', 'être', 'comme', 'plus', 'tout', 'tous',
+    'leur', 'leurs', 'après', 'avant', 'qui', 'quoi', 'dont', 'fait',
+  ]),
+};
+
+/**
+ * Lightweight local language guard for the common English/French confusion.
+ * It deliberately requires a substantial sample and a clear stop-word margin:
+ * code-switched dialogue and short selections must not be rejected on a guess.
+ */
+export function detectSourceLanguageMismatch(
+  segments: Array<{ text?: unknown }> | null | undefined,
+  requestedLanguage: unknown,
+): SourceLanguageMismatch | null {
+  const requested = String(requestedLanguage ?? '').trim().toLowerCase().split(/[-_]/)[0] || '';
+  if (!['en', 'fr'].includes(requested)) return null;
+  const other = requested === 'en' ? 'fr' : 'en';
+  const sample = (Array.isArray(segments) ? segments : [])
+    .map((item) => typeof item?.text === 'string' ? item.text : '')
+    .filter(Boolean)
+    .join(' ')
+    .slice(0, 30_000);
+  const words = sample.toLocaleLowerCase().match(/[a-zÀ-ÿ]+/gu) || [];
+  if (words.length < 80) return null;
+  const score = (language: string): number => {
+    let total = 0;
+    const signals = LANGUAGE_SIGNAL_WORDS[language];
+    if (!signals) return total;
+    for (const word of words) {
+      if (signals.has(word)) total++;
+    }
+    return total;
+  };
+  const requestedScore = score(requested);
+  const detectedScore = score(other);
+  if (detectedScore < 8 || detectedScore - requestedScore < 5 ||
+      detectedScore / words.length < 0.035) return null;
+  return {
+    requestedLang: requested,
+    detectedLang: other,
+    requestedScore,
+    detectedScore,
+    wordCount: words.length,
+  };
+}
