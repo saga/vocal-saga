@@ -16,7 +16,7 @@ import {
   startContextGraphAnalysis,
 } from './contextGraph.ts';
 import { normalizeDocumentTranslationStrategy, type DocumentTranslationStrategy } from './documentStrategy.ts';
-import { sourceLanguageMatches } from './languageMatch.ts';
+import { detectSourceLanguageMismatch, sourceLanguageMatches } from './languageMatch.ts';
 import { type DocumentProjectStore, getDocumentProjectStore } from './projectStore.ts';
 import { mergeTranslationContextDeltasIntoMemory, type ValidatedTranslationContextDelta } from './translationContextDelta.ts';
 import { runProjectQualityAudit } from './qualityAudit.ts';
@@ -81,6 +81,67 @@ export function shouldUseLightweightLiteraryContext(
   if (!valid.length || valid.length > 12) return false;
   const sourceChars = valid.reduce((total, segment) => total + String(segment.text).length, 0);
   return sourceChars <= 6_000;
+}
+
+/** Read bounded source samples from early, middle and late portions of one immutable revision. */
+export function readSourceLanguagePreflightSamples(
+  db: any,
+  sourceRevisionId: string,
+  sampleSize = 8,
+): Array<{ text: string }> {
+  const row = db.prepare(
+    'SELECT COUNT(*) AS total FROM source_segments WHERE source_revision_id = ?',
+  ).get(sourceRevisionId) as { total?: number } | undefined;
+  const total = Math.max(0, Number(row?.total || 0));
+  if (!total) return [];
+  const size = Math.max(1, Math.min(12, Math.floor(sampleSize) || 8));
+  const lastOffset = Math.max(0, total - size);
+  const offsets = Array.from(new Set([
+    0,
+    Math.max(0, Math.floor((total - size) / 2)),
+    lastOffset,
+  ]));
+  const seen = new Set<string>();
+  const samples: Array<{ text: string }> = [];
+  const query = db.prepare(
+    'SELECT text FROM source_segments WHERE source_revision_id = ? ORDER BY ordinal LIMIT ? OFFSET ?',
+  );
+  for (const offset of offsets) {
+    const rows = query.all(sourceRevisionId, size, offset) as Array<{ text?: unknown }>;
+    for (const item of rows) {
+      const text = typeof item.text === 'string' ? item.text.trim() : '';
+      if (text && !seen.has(text)) {
+        seen.add(text);
+        samples.push({ text });
+      }
+    }
+  }
+  return samples;
+}
+
+function assertRunSourceLanguageMatchesText(
+  store: DocumentProjectStore,
+  projectId: string,
+  runId: string,
+  run: Record<string, any>,
+): void {
+  const { db } = store.getProjectContext(projectId);
+  const samples = readSourceLanguagePreflightSamples(db, String(run.sourceRevisionId || ''));
+  const mismatch = detectSourceLanguageMismatch(samples, run.sourceLang);
+  store.appendEvent(projectId, runId, 'source-language.preflight', {
+    requestedLang: String(run.sourceLang || 'auto'),
+    sampleSegmentCount: samples.length,
+    mismatch,
+    detector: 'local-en-fr-stopword-signal-v1',
+  });
+  if (mismatch) {
+    throw new Error(
+      '源语言设置与原文样本明显不符：当前设置为 ' + mismatch.requestedLang +
+      '，样本更接近 ' + mismatch.detectedLang +
+      '。为避免整本翻译方向错误，请修改项目源语言后重新创建 Run。' +
+      '（本地预检覆盖 ' + mismatch.wordCount + ' 个词；未调用模型。）',
+    );
+  }
 }
 
 /**
@@ -205,6 +266,10 @@ export async function prepareRunExecution(
   if (!context.prompt) throw new Error('找不到本次运行使用的 Prompt 版本');
   const initialStatus = context.run.status;
   if (initialStatus === 'completed' || initialStatus === 'cancelled' || initialStatus === 'awaiting_acceptance') return null;
+
+  // Reject a clear language/configuration mismatch before any whole-book preprocessing
+  // or translation model call. A mixed-language sample is only rejected at a high confidence margin.
+  assertRunSourceLanguageMatchesText(store, projectId, runId, context.run as Record<string, any>);
 
   // 全书分析与证据归服务端所有；扩展只负责提交 Run 和渲染状态。
   if (!(await ensureLiteraryPreprocessingBeforeRun(projectId, runId, context.run as Record<string, any>))) return null;
