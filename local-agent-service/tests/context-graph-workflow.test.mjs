@@ -79,6 +79,7 @@ test('entity extraction explicitly covers recurring named vessels and resolves v
   assert.match(prompt, /object\/artifact/);
   assert.match(prompt, /早\/中\/晚样本/);
   assert.match(prompt, /不要仅凭词面相似合并/);
+  assert.match(prompt, /significance 应用简短、来自原文的身份\/作用描述区分同名对象/);
 });
 
 test('stage waves cover every stage once and keep dependencies in earlier waves', () => {
