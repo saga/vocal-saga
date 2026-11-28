@@ -48,8 +48,7 @@ const common = {
 };
 
 /**
- * 各任务的默认档案。取舍原则是「初译要快，审校与分析要好」：
- * 初译关思考、低强度（体量大，单段质量靠上下文与术语约束兜底）；
+ * 各任务的默认档案。小说文学初译启用思考并使用低推理强度；
  * 准确性审校中等、文风审校高（需要判断语气与人物一致性）；
  * 文学分析与全书预处理改用长上下文模型并给高强度。
  */
@@ -58,7 +57,7 @@ export const DEFAULT_CODEBUDDY_TASK_PROFILES: CodeBuddyTaskProfiles = {
     ...common,
     model: 'deepseek-v4.1-flash',
     fallbackModel: 'hy3',
-    thinkingMode: 'disabled',
+    thinkingMode: 'enabled',
     effort: 'low',
   },
   accuracyReview: {
@@ -113,11 +112,11 @@ export function normalizeCodeBuddyTaskProfile(
   const raw = input && typeof input === 'object' && !Array.isArray(input)
     ? input as Record<string, unknown>
     : {};
-  // Translation is a high-volume generation task, not a reasoning task. Force thinking off
-  // even for persisted legacy profiles that explicitly saved "enabled"; this prevents old
-  // project snapshots from silently reintroducing the 8k-token reasoning overhead.
+  // Local Agent translation is literary novel translation: keep reasoning enabled even when
+  // an old profile persisted "disabled". Effort remains independently configurable and
+  // defaults to low, so enabling reasoning does not silently raise the reasoning intensity.
   const thinkingMode = task === 'translation'
-    ? 'disabled'
+    ? 'enabled'
     : typeof raw.thinkingMode === 'string' && validThinkingModes.has(raw.thinkingMode as CodeBuddyThinkingMode)
       ? raw.thinkingMode as CodeBuddyThinkingMode
       : defaults.thinkingMode;
