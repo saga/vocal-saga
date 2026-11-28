@@ -11,8 +11,11 @@ import {
 } from '../src/agents/taskProfiles.ts';
 import { buildWorkbuddyOptions } from '../src/agents/workbuddy.ts';
 
-test('defaults assign different reasoning budgets by task', () => {
-  assert.deepEqual(codeBuddyThinkingOption(DEFAULT_CODEBUDDY_TASK_PROFILES.translation), { type: 'disabled' });
+test('literary translation defaults to enabled thinking at low effort', () => {
+  assert.deepEqual(codeBuddyThinkingOption(DEFAULT_CODEBUDDY_TASK_PROFILES.translation), {
+    type: 'enabled',
+    budgetTokens: 8192,
+  });
   assert.deepEqual(codeBuddyThinkingOption(DEFAULT_CODEBUDDY_TASK_PROFILES.accuracyReview), { type: 'adaptive' });
   assert.equal(DEFAULT_CODEBUDDY_TASK_PROFILES.translation.effort, 'low');
   assert.equal(DEFAULT_CODEBUDDY_TASK_PROFILES.styleReview.effort, 'high');
@@ -73,7 +76,7 @@ test('task prompts are supplemental and cannot drop the generated task payload',
 test('old or partial profiles are filled with explicit per-task defaults', () => {
   const profiles = normalizeCodeBuddyTaskProfiles({ translation: { effort: 'low' } });
   assert.equal(profiles.translation.effort, 'low');
-  assert.equal(profiles.translation.thinkingMode, 'disabled');
+  assert.equal(profiles.translation.thinkingMode, 'enabled');
   assert.equal(profiles.styleReview.effort, 'high');
   assert.equal(profiles.contextGraph.thinkingMode, 'adaptive');
 });
@@ -101,15 +104,17 @@ test('effective model prefers the task profile over the pool default', () => {
 });
 
 
-test('legacy translation profiles cannot re-enable reasoning for high-volume draft generation', () => {
+test('literary translation always enables thinking without raising low effort', () => {
   const profile = normalizeCodeBuddyTaskProfile({
-    thinkingMode: 'enabled',
+    thinkingMode: 'disabled',
     thinkingBudgetTokens: 8192,
     effort: 'low',
   }, 'translation');
-  assert.equal(profile.thinkingMode, 'disabled');
-  assert.deepEqual(codeBuddyThinkingOption(profile), { type: 'disabled' });
+  assert.equal(profile.thinkingMode, 'enabled');
+  assert.equal(profile.effort, 'low');
+  assert.deepEqual(codeBuddyThinkingOption(profile), { type: 'enabled', budgetTokens: 8192 });
+
   const reviewer = normalizeCodeBuddyTaskProfile({ thinkingMode: 'enabled' }, 'accuracyReview');
   assert.equal(reviewer.thinkingMode, 'enabled',
-    'reasoning remains configurable for accuracy review');
+    'other task profiles remain independently configurable');
 });
