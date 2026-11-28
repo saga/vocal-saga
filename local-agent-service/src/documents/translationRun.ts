@@ -36,7 +36,7 @@ import { processBatch, type RunBatchScope } from './translationRunBatch.ts';
 import {
   buildRunNameDependencyWaves,
   consolidateAcceptedRunNames,
-  hasUnstagedRunNameCandidates,
+  getUnstagedRunNameCandidateLeaderBatchIndexes,
   mergeRunNameDecisions,
   prepareRunFirstUseDecisions,
   prepareRunNameDecisions,
@@ -401,7 +401,7 @@ export async function prepareRunExecution(
   });
 
   const reviewLimiter = createConcurrencyLimiter(reviewConcurrency);
-  const reviewTasks: Promise<void>[] = [];
+  const reviewTasks: RunBatchScope['reviewTasks'] = [];
   return {
     context, items, batches, strategy, reviewStrength, reviewEnabled, modelReviewEnabled,
     poolSize, translationConcurrency, reviewConcurrency, detachReviews, reviewDrainConcurrency,
@@ -424,7 +424,7 @@ export interface PreparedRunExecution {
   detachReviews: boolean;
   reviewDrainConcurrency: number;
   reviewLimiter: ReturnType<typeof createConcurrencyLimiter>;
-  reviewTasks: Promise<void>[];
+  reviewTasks: RunBatchScope['reviewTasks'];
 }
 
 /**
@@ -628,6 +628,9 @@ async function executeRun(projectId: string, runId: string): Promise<void> {
       batches: prepared.batches,
       reviewStrength: prepared.reviewStrength,
       detachReviews: prepared.detachReviews,
+      poolSize: prepared.poolSize,
+      reviewConcurrency: prepared.reviewConcurrency,
+      reviewDrainConcurrency: prepared.reviewDrainConcurrency,
       reviewLimiter: prepared.reviewLimiter,
       reviewTasks: prepared.reviewTasks,
     };
@@ -741,7 +744,28 @@ async function scheduleTranslationWaves(
         memoryEntityCount: Array.isArray(batchContext.memory?.entities) ? batchContext.memory.entities.length : 0,
         policy: 'freeze-within-wave; source-order-delta-visibility; first-use-name-dependencies',
       });
-      const reviewTaskStart = scope.reviewTasks.length;
+      // The review limiter shares the real Workbuddy session pool with translation.
+      // Expand review concurrency to the capacity left by this wave's actual width,
+      // without oversubscribing the pool or waiting until every translation batch ends.
+      const modelReviewEnabled = scope.reviewStrength === 'strong' || scope.reviewStrength === 'medium';
+      const waveTranslationWidth = Math.min(translationConcurrency, wave.length);
+      const waveReviewConcurrency = Math.min(
+        scope.reviewDrainConcurrency,
+        Math.max(scope.reviewConcurrency, scope.poolSize - waveTranslationWidth),
+      );
+      if (modelReviewEnabled && waveReviewConcurrency > scope.reviewLimiter.getConcurrency()) {
+        const previous = scope.reviewLimiter.getConcurrency();
+        const applied = scope.reviewLimiter.setConcurrency(waveReviewConcurrency);
+        store.appendEvent(projectId, runId, 'review.wave.expanded', {
+          waveIndex: waveIndex + 1,
+          batchIndexes: batchIndexes.map((index) => index + 1),
+          translationWidth: waveTranslationWidth,
+          from: previous,
+          to: applied,
+          poolSize: scope.poolSize,
+          policy: 'share-unused-session-capacity-during-translation',
+        });
+      }
       await runWithConcurrency(
         wave,
         translationConcurrency,
@@ -755,26 +779,35 @@ async function scheduleTranslationWaves(
       if (status === 'cancelled' || status === 'paused') break;
       waveIndex++;
 
-      // A first-use decision is derived only after all reviews scheduled by its
-      // leader wave settle. This is a targeted barrier, not a global serial review.
-      if (context.run.translationMode === 'literary' &&
-          hasUnstagedRunNameCandidates(store, projectId, runId, batchIndexes)) {
-        await Promise.allSettled(scope.reviewTasks.slice(reviewTaskStart));
-        const staged = prepareRunFirstUseDecisions(
+      // Wait only for reviewers of batches that introduced a new canonical name.
+      // Other reviews continue concurrently while the next translation wave starts.
+      if (context.run.translationMode === 'literary') {
+        const leaderBatchIndexes = getUnstagedRunNameCandidateLeaderBatchIndexes(
           store, projectId, runId, context, batches, batchIndexes,
         );
-        if (staged.length) {
-          context.runNameDecisions = mergeRunNameDecisions(
-            context.runNameDecisions || [],
-            staged,
+        if (leaderBatchIndexes.length) {
+          const leaderSet = new Set(leaderBatchIndexes);
+          const leaderReviews = scope.reviewTasks
+            .filter((item) => leaderSet.has(item.batchIndex - 1))
+            .map((item) => item.task);
+          await Promise.allSettled(leaderReviews);
+          const staged = prepareRunFirstUseDecisions(
+            store, projectId, runId, context, batches, leaderBatchIndexes,
           );
-          store.appendEvent(projectId, runId, 'translation.naming.first-use.barrier.completed', {
-            waveIndex: waveIndex + 1,
-            batchIndexes: batchIndexes.map((index) => index + 1),
-            provisionalDecisionCount: staged.length,
-            availableToLaterWaves: true,
-            durableLiteraryMemory: false,
-          });
+          if (staged.length) {
+            context.runNameDecisions = mergeRunNameDecisions(
+              context.runNameDecisions || [],
+              staged,
+            );
+            store.appendEvent(projectId, runId, 'translation.naming.first-use.barrier.completed', {
+              waveIndex: waveIndex + 1,
+              leaderBatchIndexes: leaderBatchIndexes.map((index) => index + 1),
+              provisionalDecisionCount: staged.length,
+              availableToLaterWaves: true,
+              durableLiteraryMemory: false,
+              policy: 'wait-for-first-use-leader-reviews-only',
+            });
+          }
         }
       }
     }
@@ -818,7 +851,7 @@ async function drainAndSettleReviews(
 
   // 算终态之前要等所有已拆出去的审校结束。翻译和审校是重叠进行的，
   // 但只要有审校还在跑，这次 Run 就不能算完成。
-  const reviewResults = await Promise.allSettled(reviewTasks);
+  const reviewResults = await Promise.allSettled(reviewTasks.map((item) => item.task));
   if (schedulerError) throw schedulerError;
   const failedReviewTask = reviewResults.find((result): result is PromiseRejectedResult => result.status === 'rejected');
   if (failedReviewTask) {
