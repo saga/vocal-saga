@@ -260,17 +260,29 @@ export function setReviewFindingDisposition(store: DocumentProjectStore, project
       throw Object.assign(new Error('中文编辑建议尚未完成双语忠实度复核，暂时不能采纳。'), { status: 409 });
     }
 
-    if (action === 'apply' && row.finding_status === 'applied' && finding.applicationStatus === 'applied' && finding.appliedResultId) {
-      const saved = db.prepare(
-        'SELECT translation_text FROM translation_results WHERE result_id = ? AND accepted = 1',
-      ).get(finding.appliedResultId) as { translation_text?: string } | undefined;
-      if (saved?.translation_text) {
+    if (action === 'apply' && row.finding_status === 'applied' && finding.applicationStatus === 'applied') {
+      const proposed = typeof finding.proposedTranslation === 'string' ? finding.proposedTranslation.trim() : '';
+      const saved = finding.appliedResultId
+        ? db.prepare(
+            'SELECT result_id, translation_text FROM translation_results WHERE result_id = ? AND accepted = 1',
+          ).get(finding.appliedResultId) as { result_id?: string; translation_text?: string } | undefined
+        : db.prepare(
+            'SELECT result_id, translation_text FROM translation_results ' +
+            'WHERE source_revision_id = ? AND segment_id = ? AND accepted = 1 ' +
+            'ORDER BY COALESCE(accepted_at, created_at) DESC, rowid DESC LIMIT 1',
+          ).get(currentSourceRevisionId, row.segment_id) as { result_id?: string; translation_text?: string } | undefined;
+      // Older and newly auto-adopted findings may have no appliedResultId. If the
+      // latest accepted text already equals the grounded proposal, confirming it is
+      // idempotent and must not attempt a second UPDATE of a non-pending finding.
+      if (saved?.translation_text && proposed && saved.translation_text.trim() === proposed) {
         db.exec('ROLLBACK');
         return {
           findingId, segmentId: row.segment_id, applicationStatus: 'applied',
-          resultId: finding.appliedResultId, text: saved.translation_text, alreadyApplied: true,
+          resultId: saved.result_id || finding.appliedResultId || undefined,
+          text: saved.translation_text, alreadyApplied: true,
         };
       }
+      throw Object.assign(new Error('这条审校建议已经应用，当前正文已发生变化；请刷新后核对正文。'), { status: 409 });
     }
     if (action === 'dismiss' && (row.finding_status === 'dismissed' || finding.applicationStatus === 'dismissed')) {
       db.exec('ROLLBACK');
