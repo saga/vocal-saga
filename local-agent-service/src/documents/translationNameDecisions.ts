@@ -36,6 +36,18 @@ interface NameGroup {
   explicitTargets: Array<{ target: string; source: 'memory' | 'context-graph' }>;
 }
 
+/**
+ * 只为具名、值得跨批次保持译名一致的实体建立首次出现屏障。
+ * 普通概念、头衔和泛称不在这里升级；非人物实体已经先经过 context_delta 的价值与证据校验。
+ */
+const RUN_CANONICAL_FIRST_USE_KINDS = new Set([
+  'person', 'place', 'object', 'organization', 'work', 'artifact',
+]);
+
+function supportsRunCanonicalFirstUse(kind: unknown): boolean {
+  return RUN_CANONICAL_FIRST_USE_KINDS.has(normalizeCanonicalEntityKind(kind));
+}
+
 export interface TargetVote {
   target: string;
   count: number;
@@ -277,7 +289,7 @@ export function readRunFirstUseDecisions(
 
 /**
  * Split only waves where a later batch in the same parallel window reuses a
- * person name first introduced by an earlier batch in that window. This keeps
+ * canonical entity first introduced by an earlier batch in that window. This keeps
  * normal concurrency while ensuring the first-use batch can establish a
  * run-scoped mapping before dependent batches start.
  */
@@ -311,7 +323,7 @@ export function buildRunNameDependencyWaves(
   const dependencies = batches.map(() => new Set<number>());
 
   for (const [key, group] of groups) {
-    if (group.kind !== 'person' || decided.has(key)) continue;
+    if (!supportsRunCanonicalFirstUse(group.kind) || decided.has(key)) continue;
     const firstOrdinal = firstMentions.get(key);
     if (firstOrdinal === undefined) continue;
     const firstSegmentId = segmentAtOrdinal.get(firstOrdinal);
@@ -343,7 +355,7 @@ export function buildRunNameDependencyWaves(
   return waves;
 }
 
-/** Detect a new person-name proposal in this wave before deciding whether its reviewers must be drained. */
+/** Detect a new canonical-entity proposal before deciding whether its leader reviewers must be drained. */
 export function hasUnstagedRunNameCandidates(
   store: DocumentProjectStore,
   projectId: string,
@@ -365,7 +377,7 @@ export function hasUnstagedRunNameCandidates(
   for (const row of rows) {
     const delta = parseJson(row.delta_json, {});
     for (const candidate of Array.isArray(delta.entityCandidates) ? delta.entityCandidates : []) {
-      if (normalizeCanonicalEntityKind(candidate?.kind) !== 'person') continue;
+      if (!supportsRunCanonicalFirstUse(candidate?.kind)) continue;
       const source = typeof candidate?.canonicalSource === 'string' ? candidate.canonicalSource.trim() : '';
       const key = normalizeEntityName(source);
       if (source && key && !decided.has(key)) return true;
@@ -437,7 +449,7 @@ export function prepareRunFirstUseDecisions(
       const key = normalizeEntityName(source);
       const target = typeof candidate?.targetProposal === 'string'
         ? candidate.targetProposal.trim().slice(0, 120) : '';
-      if (!source || !key || kind !== 'person' || !target || decided.has(key)) continue;
+      if (!source || !key || !supportsRunCanonicalFirstUse(kind) || !target || decided.has(key)) continue;
       const nameGroup = groups.get(key);
       if (nameGroup?.explicitTargets.length) continue;
       const firstOrdinal = firstMentions.get(key);
@@ -550,6 +562,7 @@ export function prepareRunFirstUseDecisions(
     decisions: persisted.map((item) => ({
       source: item.source,
       target: item.target,
+      kind: item.kind,
       decidedOrdinal: item.decidedOrdinal,
       evidenceSegmentIds: item.evidenceSegmentIds,
     })),
@@ -571,7 +584,7 @@ export function chooseFirstUseRunNameDecision(input: {
 }): RunNameDecision | null {
   const source = String(input.source || '').trim();
   const kind = normalizeCanonicalEntityKind(input.kind);
-  if (!source || kind !== 'person') return null;
+  if (!source || !supportsRunCanonicalFirstUse(kind)) return null;
   const vote = chooseAcceptedTranslationTarget(input.targets, input.rows);
   if (!vote) return null;
   const target = validateCanonicalTarget({
