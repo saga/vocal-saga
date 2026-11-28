@@ -4,6 +4,7 @@ import { buildBatches, buildStandaloneReviewContextGraph, buildStandaloneReviewM
 import { buildCanonicalTermProtections, canonicalMarkerCountsMatch, maskCanonicalTermText, normalizeContextDeltaCanonicalTargets, protectCanonicalReviewSegments, restoreCanonicalMarkersDeep, restoreCanonicalTermMarkers } from '../src/documents/canonicalTermProtection.ts';
 import { normalizeDocumentTranslationStrategy } from '../src/documents/documentStrategy.ts';
 import { buildProjectVoiceContext } from '../src/documents/voiceContext.ts';
+import { LITERARY_TRANSLATION_CONTRACT } from '../src/documents/translationSchema.ts';
 import { isLiteraryReviewFindingGrounded } from '../src/literary.ts';
 
 test('literary Project Agent separates preceding context from translatable segments', () => {
@@ -875,4 +876,10 @@ test('medium and strong literary review include short lines, dialogue and title-
   assert.deepEqual(selectModelReviewTargets(items, 'strong'), items);
   assert.deepEqual(selectModelReviewTargets(items, 'weak'), []);
   assert.deepEqual(selectModelReviewTargets(items, 'off'), []);
+});
+
+test('literary translation preserves uncertain invented slang instead of guessing from word shape', () => {
+  assert.match(LITERARY_TRANSLATION_CONTRACT, /混合语、造词、黑话/);
+  assert.match(LITERARY_TRANSLATION_CONTRACT, /证据不足时保留原词或采用稳定音译/);
+  assert.match(LITERARY_TRANSLATION_CONTRACT, /不要为了消除外语残留而把未知黑话强行解释/);
 });
